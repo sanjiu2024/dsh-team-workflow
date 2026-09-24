@@ -1,12 +1,21 @@
 # dsh-team-workflow bundle patch
 #
-# 两行：
+# 三件事：
 #   1. 把包内 skills/ 目录挂成一个独立的 skill provider（不碰默认根目录）
-#   2. 挂载插件本体
-#      （团队规范注入 / 审计日志 / 上下文节流 / rtk 输出压缩 / lens / CLI 命令）
+#   2. 把 web 服务的搜索后端指到自带的免 key provider
+#   3. 挂载插件本体
+#      （团队规范注入 / 审计日志 / 上下文节流 / rtk 输出压缩 / lens / 联网搜索 / CLI 命令）
 #
 # `baseUrl` 由 loader 解析为该 bundle 包所在目录的 file:// URL，
 # 所以下面按包根拼 skills/。折叠标量避免超长行。
+#
+# 为什么第 2 条能改到已有行：profile 的补丁是按 bundle 顺序逐层叠的
+# （dsh-app-boot 的 composeEntries），同一 id 后面的层覆盖前面的。
+# `web` 行是 dsh-base 建在 host 层的，而 tauri profile 的 bundle 列表里
+# dsh-base 排在我们前面，所以这里的 config 会盖掉出厂的
+# searchProvider: deepseek-official。
+# 注：tauri 宿主（dsh-web-app）还会把 `tool-web` 整行 disabled: true，
+# 那是给预设留的口子（预设里重新开），不是这里要管的事。
 
 - insert:
     - id: dsh-team-workflow-skills
@@ -21,3 +30,9 @@
 
     - id: dsh-team-workflow
       name: dsh-team-workflow
+
+- id: web
+  name: '@deepseek-ai/dsh-web'
+  config:
+    searchProvider: bing
+    fetchProvider: http

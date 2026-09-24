@@ -40,6 +40,8 @@ const ctx = {
 	effect: (fn) => registered.effects.push(fn),
 	sessions: { list: () => [], create: () => null },
 	systemPrompt: { section: () => () => {} },
+	// 可选依赖：这个桩没有 web 服务，应该静静跳过而不是报错
+	inject: () => () => {},
 };
 
 const { apply } = await import(pathToFileURL(path.join(root, "lib", "index.js")).href);

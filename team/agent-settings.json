@@ -1,11 +1,12 @@
 {
   "_说明": "团队共享的 pi 全局设置补丁（落到 ~/.pi/agent/settings.json）。扩展只补缺：成员已经自己设过的键一律不动，也不删任何东西。以 _ 开头的键只是给人看的，不会写进设置。放这里的应该是「全员必须一致」的设置项 —— subagents 里的模型名指向团队网关的档位别名（tier-*），不是真实模型名：网关那边换后端模型时，这里和成员机器都不用改。成员如果不用这个网关，把对应项删掉再发版。",
-  "_defaultModel 为什么要写": "defaultModel 必须是**裸模型 id**（配 defaultProvider 消歧）。写成 `newapi/tier-std` 这种 provider/id 形式时 pi 解析不到，会**静默回退到模型列表的第一个**——曾因此让默认档落到每账户每天只有 100 次请求的免费档上（2026-09-23）。这里给新成员补一份正确的默认值；已有成员写错的那种形式由扩展的一次性迁移改回来。",
-  "defaultProvider": "newapi",
+  "_defaultModel 为什么要写": "defaultModel 必须是**裸模型 id**（配 defaultProvider 消歧）。写成 `new-api/tier-std` 这种 provider/id 形式时 dsh 解析不到，会**静默回退到模型列表的第一个**——曾因此让默认档落到每账户每天只有 100 次请求的免费档上（2026-09-23）。这里给新成员补一份正确的默认值；已有成员写错的那种形式由扩展的一次性迁移改回来。注意 provider id 是 `new-api`（带连字符），不是上游 pi 那套的 `newapi`。",
+  "defaultProvider": "new-api",
   "defaultModel": "tier-std",
+  "_compaction 为什么要动": "dsh 自带的压缩留作保险，不删。magic-context 的 historian 在 65% 就折叠一次；这里把 dsh 自己的阀值抬到 ~90% 只做最后的兜底，平时不抢 historian 的活。enabled: true 必须显式写——dsh-web-app 在 host 层把 compaction-basic / command-compact / tool-result-pruner 三行都 disabled 了，预设里不显式开就等于完全没有压缩。",
   "compaction": {
     "enabled": true,
-    "reserveTokens": 44800,
+    "reserveTokens": 12800,
     "keepRecentTokens": 25600
   },
   "subagents": {

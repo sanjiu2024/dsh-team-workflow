@@ -73,6 +73,14 @@ function makeCtx(baseUrl) {
 			const dispose = fn();
 			return () => dispose?.();
 		},
+		// 可选依赖：真 cordis 里 `ctx.inject([服务], cb)` 等该服务就结后再跑。
+		// 这里模拟成“服务存在就立刻跑”，这样能真的测到 provider 注册。
+		// 设 _noWeb 就不跑，用来验证没 web 服务时不会把整包带崩。
+		inject(deps, callback) {
+			const scoped = { ...this, web: this._web, logger: this.logger };
+			if (this._web || !deps.includes("web")) callback(scoped);
+			return () => {};
+		},
 		// 探针：这些服务"存在"
 		get: () => undefined,
 		_handlers: handlers,
@@ -81,6 +89,13 @@ function makeCtx(baseUrl) {
 		_tools: tools,
 		_effects: effects,
 		_logs: logs,
+		_web: {
+			providers: [],
+			registerSearchProvider(provider) {
+				this.providers.push(provider);
+				return () => {};
+			},
+		},
 	};
 }
 
@@ -287,8 +302,120 @@ assert.deepEqual(RTK_FIELDS.compactTools(["grep"]), ["grep"], "合法数组应�
 assert.ok(ctx._handlers.has("tools/post-execute"), "没订阅 tools/post-execute");
 assert.ok(ctx._tools.some((t) => t.name === "lens_check"), "缺少 lens_check 工具");
 
-// —— 8. 清理 ——
+// —— 9. 版本号两处一致 ——
+// 发出去了才发现“改了包没记录”或者“记了没改包”的事发生过，所以在这里卡死。
+const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+const changelog = fs.readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8");
+const headings = [...changelog.matchAll(/^## \[([^\]]+)\]/gm)].map((m) => m[1]);
+assert.ok(headings.length > 0, "CHANGELOG.md 里一个版本节都没有");
+assert.equal(headings[0], pkg.version, `CHANGELOG 最新一节是 ${headings[0]}，package.json 是 ${pkg.version}`);
+
+// —— 10. 联网搜索：解析与正文提取 ——
+// 解析器是纯函数，拿真实形状的 HTML 片段测。这两段是从必应/DDG 实际响应里
+// 剪出来的结构，不是编的 —— 编的片段测不出选择器写错。
+const { decodeEntities, htmlToText, parseBingHtml, parseDdgHtml } = await import(new URL("../lib/web.js", import.meta.url).href);
+
+assert.equal(decodeEntities("a&amp;b &lt;c&gt; &#65; &nbsp;x"), "a&b <c> A \u00a0x", "实体解码不对");
+assert.equal(decodeEntities("&unknown; &#xZZ;"), "&unknown; &#xZZ;", "未知实体应原样保留，不能吃掉");
+
+const bingHtml = `
+<ol id="b_results">
+<li class="b_algo"><h2><a href="https://example.com/a">示例<b>标题</b></a></h2>
+<div class="b_caption"><p class="b_lineclamp4">第一段&nbsp;摘要</p></div></li>
+<li class="b_algo"><h2><a href="/relative/b">相对链接</a></h2>
+<p class="b_lineclamp2">第二段摘要</p></li>
+<li class="b_algo"><h2><a href="mailto:x@y.com">非 http</a></h2></li>
+</ol>`;
+const bing = parseBingHtml(bingHtml, 5);
+assert.equal(bing.length, 2, `必应应解析出 2 条（mailto 要丢掉），实际 ${bing.length}`);
+assert.equal(bing[0].url, "https://example.com/a", "绝对链接应原样保留");
+assert.equal(bing[0].title, "示例标题", "标题里的标签要剥掉");
+assert.equal(bing[0].snippet, "第一段 摘要", "摘要要解实体并合并空白");
+assert.equal(bing[1].url, "https://cn.bing.com/relative/b", "相对链接要按必应域名补全");
+
+const ddgHtml = `<div class="result"><a rel="nofollow" class="result__a" href="https://ddg.example/1">DDG 标题</a>
+<a class="result__snippet">DDG 摘要</a></div>`;
+const ddg = parseDdgHtml(ddgHtml, 5);
+assert.equal(ddg.length, 1, "DDG 应解析出 1 条");
+assert.equal(ddg[0].url, "https://ddg.example/1", "DDG 的 href 是直链，不该被改写");
+assert.equal(ddg[0].snippet, "DDG 摘要", "DDG 摘要没解析出来");
+
+const page = `<html><body><nav>导航垃圾</nav><main><h1>正文标题</h1>${"<p>正文段落内容在此。</p>".repeat(30)}</main></body></html>`;
+const text = htmlToText(page);
+assert.ok(text.startsWith("正文标题"), "应优先取 <main> 而不是整个 body");
+assert.ok(!text.includes("导航垃圾"), "nav 里的内容不该进正文");
+assert.equal(htmlToText(""), "", "空输入要返回空串，不能抛");
+// 正文太短时要能退回整个 body，否则 SPA 页面会一个字都拿不到
+const thin = `<html><body><div class="x">${"短内容。".repeat(20)}</div></body></html>`;
+assert.ok(htmlToText(thin).length > 0, "候选区太短时应退回 body");
+
+// —— 11. provider 真注册了，而且搜索链路跑得通 ——
+// 这一段用假 ctx.web 走完整条路：Bing → 解析 → （假）抓正文 → 组装 content。
+// 不是只试纯函数，而是试“组装出来的东西真的是 dsh 要的形状”。
+const provider = ctx._web.providers.find((p) => p.id === "bing");
+assert.ok(provider, `没注册 id=bing 的搜索 provider，注册了：${ctx._web.providers.map((p) => p.id)}`);
+assert.equal(provider.available(), true, "免 key 的 provider 必须恒可用，否则 dsh 会报 PROVIDER_CONFIGURED_UNAVAILABLE");
+
+// 假 ctx.web.fetch。搜索和正文都走官方 fetch provider，拦的是那一个入口。
+// （以前这里换的是 globalThis.fetch；搜索改用 ctx.web.fetch 后就拦不住了。）
+const realFetch = globalThis.fetch;
+const seen = [];
+ctx._web.fetch = async ({ url }) => {
+	seen.push(String(url));
+	const content = String(url).includes("bing.com")
+		? bingHtml
+		: `<html><body><main>${"<p>抓回来的正文段落。</p>".repeat(20)}</main></body></html>`;
+	return { url, statusCode: 200, body: { kind: "html", content }, truncated: false };
+};
+try {
+	const result = await provider.search({ query: "测试", maxResults: 5 });
+	assert.ok(Array.isArray(result.sources), "sources 必须是数组");
+	assert.equal(result.sources.length, 2, `应返回 2 条 sources，实际 ${result.sources.length}`);
+	assert.equal(result.truncated, false, "没超上限时 truncated 应为 false");
+	assert.ok(typeof result.content === "string" && result.content.length > 0, "没带正文——「一步到位抓正文」没生效");
+	assert.ok(result.content.includes("抓回来的正文段落"), "content 里应含抓回来的正文");
+	assert.ok(result.content.includes("https://example.com/a"), "content 里应标明正文对应哪个来源");
+	assert.ok(seen.some((u) => u.includes("bing.com")), "没真的去请求必应");
+
+	// 正文条数上限真的生效：maxBodies=3，4 条结果只该抓 3 次正文
+	seen.length = 0;
+	const many = await provider.search({ query: "测试", maxResults: 5 });
+	assert.ok(many, "第二次搜索应能完成");
+	const bodyHits = seen.filter((u) => !u.includes("bing.com")).length;
+	assert.ok(bodyHits <= 3, `maxBodies=3，实际抓了 ${bodyHits} 次正文`);
+
+	// 后端坏掉时不能静默返回空 —— 空结果和不工作看着一模一样，排查时也一样。
+	// 这条是踩过的坑：搜索拿不到结果时，模型和人都以为「真没结果」。
+	const workingFetch = ctx._web.fetch;
+	ctx._web.fetch = async () => {
+		throw Object.assign(new Error('URL hostname "x" resolves to a non-public IP address'), {
+			code: "WEB_BLOCKED_URL",
+		});
+	};
+	const empty = await provider.search({ query: "测试", maxResults: 5 });
+	assert.deepEqual(empty.sources, [], "后端坏了应该是 0 条 sources");
+	assert.ok(empty.content && empty.content.length > 0, "后端坏了必须给出可读原因，不能静默返回空");
+	assert.ok(
+		empty.content.includes("bing") && empty.content.includes("duckduckgo"),
+		`content 应说明两个后端都试过，实际：${empty.content}`,
+	);
+	assert.ok(
+		empty.content.includes("non-public IP"),
+		`content 应带上失败原因，实际：${empty.content}`,
+	);
+	ctx._web.fetch = workingFetch;
+} finally {
+	globalThis.fetch = realFetch;
+}
+
+// 没 web 服务时必须静静跳过，不能把整包带崩
+const bareCtx = makeCtx(new URL("../", import.meta.url).href);
+bareCtx._web = undefined;
+apply(bareCtx, {});
+assert.ok(bareCtx._sections.some((s) => s.name === "team:baseline"), "没 web 服务时团队基线也应照常加载");
+
+// —— 12. 清理 ——
 
 fs.rmSync(tempHome, { recursive: true, force: true });
 
-console.log("✓ 自检通过：系统提示段 / 命令 / 审计落盘与脱敏 / 节流统计 / rtk 压缩范围 / 异常隔离");
+console.log("✓ 自检通过：系统提示段 / 命令 / 审计落盘与脱敏 / 节流统计 / rtk 压缩范围 / 版本一致 / 搜索解析与组装 / 异常隔离");

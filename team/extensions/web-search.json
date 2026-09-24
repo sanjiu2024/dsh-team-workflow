@@ -1,0 +1,10 @@
+{
+  "_说明": "免 key 的联网搜索后端。dsh 自带 web_search/web_fetch 工具，缺的是能用的 provider —— 出厂的 web-search-deepseek 要 DEEPSEEK_API_KEY。这里注册一个 id=bing 的 provider（Bing 主、DDG 备），并把正文塞进结果里，这样模型一次调用就拿到摘要 + 正文。",
+  "_providerId 为什么要改": "dsh 的 web 服务行显式配了 searchProvider: deepseek-official。要让新 provider 生效，必须同时用 bundle patch 把那一行的 searchProvider 改成这里这个 id —— 光注册不换选是选不中的。",
+  "providerId": "bing",
+  "fallback": true,
+  "fetchBodies": true,
+  "maxBodies": 3,
+  "bodyChars": 6000,
+  "bodyTimeoutMs": 15000
+}

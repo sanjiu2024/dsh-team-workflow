@@ -1,6 +1,6 @@
 {
   "name": "dsh-team-workflow",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "private": true,
   "description": "团队基线工作流插件包（dsh 版）：团队规范注入、审计日志、上下文节流、rtk 输出压缩、pi-lens 代码智能、团队预设与 CLI。",
   "type": "module",
@@ -33,7 +33,8 @@
     "presets",
     "tools",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "dsh": {
     "bundle": {

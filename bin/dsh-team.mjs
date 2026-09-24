@@ -265,7 +265,7 @@ function cmdSkills() {	const dir = path.join(PKG_ROOT, "skills");
 	}
 }
 
-/** team 预设 = standard 预设 + 团队 compaction / subagent 配置 */
+/** team 预设 = standard 预设 + 团队 compaction 阀值 + 团队 persona */
 function cmdPresetInstall() {
 	const standard = findStandardPreset();
 	if (!standard) fail("找不到 standard 预设目录");
@@ -273,24 +273,33 @@ function cmdPresetInstall() {
 	const dest = path.join(dshHome, ".agent-presets", PRESET_ID);
 	fs.mkdirSync(dest, { recursive: true });
 
-	let cordis = fs.readFileSync(path.join(standard, "agent.cordis.yml"), "utf8");
-	const pristine = cordis;
+	const pristine = fs.readFileSync(path.join(standard, "agent.cordis.yml"), "utf8");
+	let cordis = pristine;
 	const compaction = teamSettings.compaction;
-	let patched;
+
+	// dsh 自带的压缩保留作保险：magic-context 的 historian 在 65% 就折叠，
+	// dsh 压缩退居 90% 的兜底（阀值见 team/agent-settings.json）。
+	// 全删掉是不行的：historian 万一不触发，就真没东西拦住上下文撑爆了。
+	let undo = null;
 	if (compaction) {
-		patched = patchCompactionRow(cordis, compaction);
+		const patched = patchCompactionRow(pristine, compaction);
 		cordis = patched.cordis;
+		undo = (s) => s.replace(patched.block, () => patched.plain);
 	} else {
-		console.log("  警告：team/agent-settings.json 里没有 compaction，预设压杯阈保持 standard 默认");
+		console.log("  警告：team/agent-settings.json 里没有 compaction，预设阀值保持 standard 默认");
 	}
+
 	const persona = teamSettings.persona;
 	if (persona) cordis = patchPersonaRow(cordis, persona);
 
-	// 我们只能改 compaction 那一行。把补丁换回去必须逐字节等于 standard——
+	// 把我们的改动从产物里撤回去，必须逐字节等于 standard——
 	// 这是能在没有图形界面时真正验证“预设没被改坏”的最直接的断言。
 	// （dsh-agent-presets 只在 host 组合（tauri/web）里，headless 跑不到它，
 	//   所以这里只能静态自证，端到端得重启 app 看。）
-	if (patched && cordis.replace(patched.block, patched.plain) !== pristine) {
+	if (!undo) {
+		fail("预设自检失败：找到了 compaction 段却没有产出补丁记录");
+	}
+	if (undo(cordis) !== pristine) {
 		fail("预设自检失败：除 compaction 那一行外还有其他改动，不要装");
 	}
 	console.log("  自检：除 compaction 那一行外与 standard 逐字一致 ✓");
@@ -300,7 +309,7 @@ function cmdPresetInstall() {
 		path.join(dest, "preset.yml"),
 		[
 			"name: 团队模式",
-			"description: 标准能力 + 团队基线插件、审计日志、上下文节流与团队压缩阈值。",
+			"description: 标准能力 + 团队基线插件、审计日志、magic-context 折叠；dsh 自带压缩抬到 0.9 只做兜底。",
 			"order: 0",
 			"",
 		].join("\n"),
