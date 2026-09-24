@@ -5,8 +5,8 @@
   "defaultModel": "tier-std",
   "compaction": {
     "enabled": true,
-    "reserveTokens": 32768,
-    "keepRecentTokens": 20000
+    "reserveTokens": 44800,
+    "keepRecentTokens": 25600
   },
   "subagents": {
     "disableThinking": true,

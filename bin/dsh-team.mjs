@@ -565,6 +565,19 @@ function cmdMcInstall() {
 		);
 		fs.copyFileSync(path.join(PKG_ROOT, "tools", "pi-tui-shim.js"), path.join(shimDir, "index.js"));
 		console.log("  写 pi-tui 桩");
+
+		// 伪 CLI 得落在**无空格**目录：bundle 用 `cmd.exe /d /s /c <path>` 调它，
+		// 没加引号的路径会在空格处断开。插件启动时也会重装一遍（stagePiShim），
+		// 这里做是为了让 `mc check` 之后立即可用，不用等下次启动。
+		const piShimSrc = path.join(PKG_ROOT, "tools", "pi-shim");
+		const piShimDest = path.join(os.homedir(), ".dsh", "team-workflow", "pi-shim");
+		if (fs.existsSync(piShimSrc)) {
+			fs.mkdirSync(piShimDest, { recursive: true });
+			for (const name of fs.readdirSync(piShimSrc)) {
+				fs.copyFileSync(path.join(piShimSrc, name), path.join(piShimDest, name));
+			}
+			console.log(`  伪 CLI → ${piShimDest}（historian 靠它在 PATH 上找到 pi）`);
+		}
 	} finally {
 		fs.rmSync(tmp, { recursive: true, force: true });
 	}

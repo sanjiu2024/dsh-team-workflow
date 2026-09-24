@@ -258,7 +258,31 @@ for (const handler of sessionEvents) {
 	handler(session, null);
 }
 
-// —— 7. tools/post-execute 挂上了 ——
+// —— 7. rtk 压缩：只碰无总预算的工具，read 必须放过 ——
+
+const { compactText, RTK_DEFAULTS, RTK_FIELDS } = await import("../lib/rtk.js");
+const rtkCfg = { ...RTK_DEFAULTS };
+
+// 超长文本真的被压小，且带省略标记
+const big = Array.from({ length: 400 }, (_, i) => `src/f${i}.ts:${i}: 命中行`).join("\n");
+const compacted = compactText(big, rtkCfg);
+assert.ok(typeof compacted === "string", "超长 grep 输出应该被压");
+assert.ok(compacted.length < big.length, "压缩后应该真的变短");
+assert.ok(compacted.includes("省略"), "压缩后必须告知被截断，否则模型会以为这就是全部命中");
+
+// 短输出不动
+assert.equal(compactText("短", rtkCfg), null, "小于 minChars 的输出不该动");
+
+// read 不在压缩名单里（行号断了会害模型读错位置）
+assert.ok(!RTK_DEFAULTS.compactTools.includes("read"), "read 不能被 rtk 压");
+assert.ok(RTK_DEFAULTS.compactTools.includes("grep"), "grep 必须被 rtk 压（250 命中 × 2KB 无总预算）");
+
+// 配置校验器：坏值一律拒绝（退到默认）
+assert.equal(RTK_FIELDS.compactTools("bash"), undefined, "非数组应被拒");
+assert.equal(RTK_FIELDS.compactTools([1, 2]), undefined, "非字符串元素应被拒");
+assert.deepEqual(RTK_FIELDS.compactTools(["grep"]), ["grep"], "合法数组应放行");
+
+// —— 8. tools/post-execute 挂上了 ——
 
 assert.ok(ctx._handlers.has("tools/post-execute"), "没订阅 tools/post-execute");
 assert.ok(ctx._tools.some((t) => t.name === "lens_check"), "缺少 lens_check 工具");
@@ -267,4 +291,4 @@ assert.ok(ctx._tools.some((t) => t.name === "lens_check"), "缺少 lens_check �
 
 fs.rmSync(tempHome, { recursive: true, force: true });
 
-console.log("✓ 自检通过：系统提示段 / 命令 / 审计落盘与脱敏 / 节流统计 / 异常隔离");
+console.log("✓ 自检通过：系统提示段 / 命令 / 审计落盘与脱敏 / 节流统计 / rtk 压缩范围 / 异常隔离");
