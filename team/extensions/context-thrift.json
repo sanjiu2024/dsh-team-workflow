@@ -1,0 +1,9 @@
+{
+  "_来源": "pi-workflow team/extensions/context-thrift.json",
+  "_说明": "pi 版的 keepRecent/toolPruning/toolOutputStub 在 dsh 里没有对应钩子（请求深冻结，改不了）。dsh 用自带的 compaction-basic + compaction-tool-result-pruner，配置见 profile patch。这里只放本插件自己的阈值与统计开关。",
+  "enabled": true,
+  "compactThresholdRatio": 0.8,
+  "pruneThresholdChars": 20000,
+  "pruneHeadChars": 4000,
+  "pruneTailChars": 2000
+}

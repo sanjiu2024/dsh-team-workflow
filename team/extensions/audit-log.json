@@ -1,0 +1,6 @@
+{
+  "_来源": "pi-workflow team/extensions/audit-log.json（值未改，键改成 dsh 平铺形式）",
+  "enabled": true,
+  "maxFieldChars": 2000,
+  "recordFullPrompt": false
+}

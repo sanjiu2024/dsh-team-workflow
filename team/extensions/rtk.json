@@ -1,0 +1,11 @@
+{
+  "_来源": "pi-workflow team/extensions/pi-rtk-optimizer.json 的 outputCompaction 段",
+  "_改动": "pi 的 mode=rewrite 在 dsh 实现不了（参数深冻结），改成系统提示路由 routeViaPrompt。聚合/分组那几项没搬，交给 dsh 自带的 tool-result-pruner。",
+  "enabled": true,
+  "routeViaPrompt": true,
+  "compactOutput": true,
+  "stripAnsi": true,
+  "maxChars": 12000,
+  "maxLines": 220,
+  "minChars": 1000
+}

@@ -1,0 +1,23 @@
+# dsh-team-workflow bundle patch
+#
+# 两行：
+#   1. 把包内 skills/ 目录挂成一个独立的 skill provider（不碰默认根目录）
+#   2. 挂载插件本体
+#      （团队规范注入 / 审计日志 / 上下文节流 / rtk 输出压缩 / lens / CLI 命令）
+#
+# `baseUrl` 由 loader 解析为该 bundle 包所在目录的 file:// URL，
+# 所以下面按包根拼 skills/。折叠标量避免超长行。
+
+- insert:
+    - id: dsh-team-workflow-skills
+      name: '@deepseek-ai/dsh-skill-filesystem'
+      config:
+        includeDefaultRoots: false
+        providerName: dsh-team-workflow
+        customSkillDirs:
+          - !!js >-
+              process.getBuiltinModule('node:url')
+              .fileURLToPath(baseUrl + 'skills/')
+
+    - id: dsh-team-workflow
+      name: dsh-team-workflow
