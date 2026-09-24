@@ -3,3 +3,8 @@ vendor/
 *.tgz
 *.log
 .DS_Store
+
+# 密钥、token、连接串一律走环境变量，绝不进仓库
+.env
+.env.*
+!.env.example

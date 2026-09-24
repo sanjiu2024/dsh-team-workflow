@@ -177,6 +177,10 @@ dsh --profile mc-verify headless "调用一次 web_search…"
   GET 和 POST 都一样。留着当别的环境的备胎，不为它再折腾。
 - **`bodyIsHtml` 这个分支永远不会成立**，已删。正文一律按 HTML 处理；
   `ctx.web.fetch` 返回非 HTML 时会降级成纯文本。
+- **HTML 解析是自己写的正则，不是真解析器。** 已修掉 O(n²) 回溯，但只做
+  「够用」的降噪：能处理常见站点的结构，遇到套得极深或故意构造的畸形标签
+  会丢内容（不会卡死、不会报错）。SPA（内容靠 JS 渲染）的页面只能拿到骨架，
+  这是已知上限，不打算上无头浏览器。
 - **historian 还没在真实会话里跑过**：需要对话超过窗口 65%。目前只有直连测试。
 - **本机是 tauri profile 无法 headless 验证**，搜索的端到端都在 `mc-verify` 上做的。
 - **15 个 bundle 事件处理器尚未逐个验证**，特别是 `session_before_compact`。

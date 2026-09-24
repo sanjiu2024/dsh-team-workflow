@@ -349,6 +349,23 @@ assert.equal(htmlToText(""), "", "空输入要返回空串，不能抛");
 const thin = `<html><body><div class="x">${"短内容。".repeat(20)}</div></body></html>`;
 assert.ok(htmlToText(thin).length > 0, "候选区太短时应退回 body");
 
+// 畸形页面不能把事件循环拖死。正文是不受控输入，抓到的东西可以很脏。
+// 曾经的两个正则 `<[^>]+>` 和 `<[^>]+class="…"` 里的 `[^>]` 允许跨过下一个 `<`，
+// 于是一串 `<` 会让每个位置都向后重扫到串尾——O(n²)。
+// 实测：8 万个 `<` 要 11.9 秒，直接把 agent 卡住；改成 `[^<>]` 后 1ms。
+// 这里卡 3 秒就算失败，防的是“有人又把 `[^<>]` 改回 `[^>]`”。
+{
+	const evil = "<".repeat(80000);
+	const t0 = Date.now();
+	htmlToText(evil);
+	const ms = Date.now() - t0;
+	assert.ok(ms < 3000, `畸形输入耗时 ${ms}ms——正则可能又退化成 O(n²) 了`);
+
+	// 顺带守住：改完要还能从真实页面里认出正文容器，不能为了快把功能丢下
+	const real = `<div class="markdown-body vp-doc">${"<p>正文内容</p>".repeat(50)}</div>`;
+	assert.ok(htmlToText(real).includes("正文内容"), "class= 候选容器应该还能认出来");
+}
+
 // —— 11. provider 真注册了，而且搜索链路跑得通 ——
 // 这一段用假 ctx.web 走完整条路：Bing → 解析 → （假）抓正文 → 组装 content。
 // 不是只试纯函数，而是试“组装出来的东西真的是 dsh 要的形状”。
