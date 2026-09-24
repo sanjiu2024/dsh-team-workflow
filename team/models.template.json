@@ -1,39 +1,40 @@
 {
-  "_说明": "团队模型配置模板 —— 扩展把这个文件里**缺的** provider / 档位补进每个成员的 ~/.pi/agent/models.json。规则：provider 缺就整段补；provider 已在（比如成员自己写过 newapi）则只补它缺的字段 + 追加缺的档位，已有档位定义一律不动；成员自建的东西一律不碰。⚠️ 这个文件进的是**公开**仓库：apiKey 只能写环境变量引用（$XXX）或命令（!cmd），**绝不能写明文 key**。改这里 = 改全团队，发版后成员重启两次生效。",
-  "_档位顺序（别改）": "数组**第一个档位必须是 tier-std**。pi 的 settings.defaultModel 解析不到时会**静默回退到本列表的第一个模型**（不报错）—— 首位放免费档，全员默认就悄悄跑在 tier-free 上，而这个档每账户每天只有 100 次请求，一天就能烧光（2026-09-23 实况：2 个账户 200 次被打满）。免费档放最后，只供显式 `pi -m tier-free` 探测用。",
-  "providers": {
-    "newapi": {
-      "_说明": "团队自建 new-api 网关。成员要自己导出 NEWAPI_API_KEY，或用 pi 的 /login 给这个 provider 存一份 key（auth.json）。档位别名（tier-*）指向网关那边配好的模型，网关换后端模型时这里不用改。",
-      "name": "团队网关",
-      "baseUrl": "https://xn--7ov1ng90a.top/v1",
-      "api": "openai-completions",
-      "apiKey": "$NEWAPI_API_KEY",
-      "models": [
-        {
-          "id": "tier-std",
-          "name": "档位·标准",
-          "contextWindow": 128000,
-          "maxTokens": 32000
-        },
-        {
-          "id": "tier-power",
-          "name": "档位·能力",
-          "contextWindow": 128000,
-          "maxTokens": 32000
-        },
-        {
-          "id": "tier-max",
-          "name": "档位·顶配",
-          "contextWindow": 272000,
-          "maxTokens": 64000
-        },
-        {
-          "id": "tier-free",
-          "name": "档位·免费（仅探测用，每天 100 次/账户）",
-          "contextWindow": 128000,
-          "maxTokens": 32000
-        }
-      ]
+  "_说明": "团队档位说明 —— **只给人看**。dsh 的 provider / model 注册在 ~/.dsh/settings.yaml 的 llm-pi-ai.providers 里，本文件不会被插件读取来生成配置。保留它是为了让新成员知道四档的定位与禁忌。",
+  "_档位顺序（别改）": "dsh 的默认档是 settings.yaml 里的 agent-default-model（team 基线要求写 tier-std）。**任何情况下都不要把 tier-free 设为默认档** —— 每账户每天只有 100 次请求，一天就能烧光（2026-09-23 实况：2 个账户 200 次被打满）。free 只供显式探活。",
+  "_分工": "派子代理时**显式传** provider/model，不传就继承主 agent。侦察 → tier-std；审查 / 调研 → tier-power；质疑方案 / 架构决策 → tier-max；探活 → tier-free。详见 team/RULES.md。",
+  "provider": "new-api",
+  "baseURL": "http://38.76.221.190:3000/v1",
+  "api": "openai-completions",
+  "apiKeyEnv": "NEW_API_API_KEY",
+  "models": [
+    {
+      "id": "tier-std",
+      "name": "档位·标准",
+      "use": "默认档；侦察、读代码、常规实现",
+      "contextWindow": 128000,
+      "maxTokens": 32000
+    },
+    {
+      "id": "tier-power",
+      "name": "档位·能力",
+      "use": "审查、调研、多文件改动",
+      "contextWindow": 128000,
+      "maxTokens": 32000
+    },
+    {
+      "id": "tier-max",
+      "name": "档位·顶配",
+      "use": "质疑方案、架构决策、难 bug",
+      "contextWindow": 272000,
+      "maxTokens": 64000,
+      "reasoningEfforts": false
+    },
+    {
+      "id": "tier-free",
+      "name": "档位·免费（仅探活，每天 100 次/账户）",
+      "use": "只用于探测连通性；不要用于常规活",
+      "contextWindow": 128000,
+      "maxTokens": 32000
     }
-  }
+  ]
 }
