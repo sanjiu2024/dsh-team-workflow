@@ -126,15 +126,14 @@ function readProvider(providerName) {
 	}
 }
 
-/** 把 --system-prompt 指向的临时文件读出来（bundle 写在那，不在 argv 里）。 */
+/** 把 --system-prompt 指向的临时文件读出来（bundle 写在那，不在 argv 里）。
+ *
+ * 明确给了 flag 却读不到 —— 别静默降级：那会让 historian 在无提示下跑，
+ * 产出解不出的摘要却毫无痕迹。抛出去让 main() 走 fail()，错误能落到 meta。 */
 function readSystemPrompt(argv) {
 	const file = flagValue(argv, "--system-prompt");
 	if (!file) return "";
-	try {
-		return fs.readFileSync(file, "utf8");
-	} catch {
-		return "";
-	}
+	return fs.readFileSync(file, "utf8");
 }
 
 async function main() {

@@ -572,11 +572,17 @@ function cmdMcInstall() {
 		const piShimSrc = path.join(PKG_ROOT, "tools", "pi-shim");
 		const piShimDest = path.join(os.homedir(), ".dsh", "team-workflow", "pi-shim");
 		if (fs.existsSync(piShimSrc)) {
-			fs.mkdirSync(piShimDest, { recursive: true });
-			for (const name of fs.readdirSync(piShimSrc)) {
-				fs.copyFileSync(path.join(piShimSrc, name), path.join(piShimDest, name));
+			// 文件被占用（historian 正在跑）时不能把整个 mc install 拖崩
+			// —— vendor 已经装好了，shim 下次启动会重试。
+			try {
+				fs.mkdirSync(piShimDest, { recursive: true });
+				for (const name of fs.readdirSync(piShimSrc)) {
+					fs.copyFileSync(path.join(piShimSrc, name), path.join(piShimDest, name));
+				}
+				console.log(`  伪 CLI → ${piShimDest}（historian 靠它在 PATH 上找到 pi）`);
+			} catch (error) {
+				console.warn(`  警告：伪 CLI 未更新（${error.message}）；插件启动时会重试`);
 			}
-			console.log(`  伪 CLI → ${piShimDest}（historian 靠它在 PATH 上找到 pi）`);
 		}
 	} finally {
 		fs.rmSync(tmp, { recursive: true, force: true });
