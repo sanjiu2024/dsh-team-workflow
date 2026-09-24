@@ -8,6 +8,48 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [0.2.3]
+
+### 修复
+
+- **magic-context 的占用率上报字段名写错了，导致折叠永远不触发。**
+  适配层 `getContextUsage()` 原来返回 `{contextWindow, usedTokens}`，
+  但 bundle 读的是 `piUsage.tokens` / `piUsage.percent` —— 名字对不上，
+  `percent` 是 `undefined`，于是每次触发评估都拿 `0 tokens` 去比阈值，
+  日志永远停在 `usage=0.0% ... below proactive floor (63%)`，
+  `compartments` 表恒为空。现在改成 bundle 读的那三个名字
+  （`tokens` / `percent` / `contextWindow`），并且**拿不到就返回 `null` 直接跳过**，
+  不再假装 `0%`：`0%` 看起来像一个合法的「上下文是空的」，会让折叠静默失效，
+  而 `null` 只是这一轮不评估，下一轮拿到数据照样能触发。
+- 适配层读 `ctx.tokenMeter` 改用 `ctx.get("tokenMeter")`。cordis 的 `ctx` 是访问器代理，
+  没 `inject` 时直接读会**抛异常**（不是返回 `undefined`），原来的写法必然抛。
+  同时把 `tokenMeter` 留在静态 `inject` 之外，装在没有 token-meter 的环境里也不会挂。
+- `scripts/selftest-mc.mjs` 加守门用例：断言字段名必须是 `tokens`/`percent`/`contextWindow`，
+  以及 `percent` 要能算对（90000/128000 = 70.3%，高于 63% 的触发下限）。
+  这个用例已反向验证过 —— 把字段名改回 `usedTokens` 会红。
+- **桥接层给 bundle 传了精简 ctx，6 个 `ctx_*` 工具 + 7 个 `/ctx-*` 命令全部是死的。**
+  bundle 的工具第一件事就是 `ctx.sessionManager.getSessionId()`，精简 ctx 上没有
+  `sessionManager`，每次都抛 `TypeError` 被包成 `isError`。之所以一直没被发现，是因为
+  报错长得像「工具本身有问题」：审计日志里 `ctx_memory` 17/17、`ctx_search` 8/8、
+  `ctx_note` 6/6、`ctx_reduce` 5/5 全是失败，且结果长度**恒为 67 字节**、sha256 完全相同。
+  现在改传 `facadeCtx` —— 它的 `sessionManager` 是跟着 `sessionRef` 走的 getter，
+  agent 出现后自动是真 session。
+- **工具/命令的返回值契约修了两处，修之前内容一个字都到不了模型。**
+  一是 `execute` 的返回值必须过 `output.schema` 校验再由 `render` 出文本，
+  原写法 schema 声明 object、`execute` 返回字符串、`render` 返回 `undefined`，
+  模型收到 `tool "ctx_note" returned invalid output`；二是 pi 用返回值里的 `isError`
+  表示失败、dsh 用抛错表示失败，不转换的话 bundle 那 7 处 `isError: true` 全变成
+  成功结果，审计日志从此查无此错。
+- **7 个 `/ctx-*` 命令的正文要靠捕获窗口捞回来。**
+  pi 的命令 handler 不 return 正文，正文走 `pi.appendEntry` / `ctx.ui.notify`；
+  dsh 恰好相反，只认 handler 返回值。不开捕获窗口，命令是 `kind: "success"` 配空字符串。
+  实测 `/ctx-status` 本来算出了完整状态面板，桥接层把它丢了。
+
+### 说明
+
+- 折叠的第二道门（未折叠 tail 要够大：≥12 条消息或 ≥6000 tokens）是 bundle 自身的
+  设计，不是移植缺陷；正常长会话到这个量级自然会过。
+
 ## [0.2.2]
 
 ### 修复

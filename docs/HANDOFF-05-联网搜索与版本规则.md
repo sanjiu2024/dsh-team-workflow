@@ -181,8 +181,53 @@ dsh --profile mc-verify headless "调用一次 web_search…"
   「够用」的降噪：能处理常见站点的结构，遇到套得极深或故意构造的畸形标签
   会丢内容（不会卡死、不会报错）。SPA（内容靠 JS 渲染）的页面只能拿到骨架，
   这是已知上限，不打算上无头浏览器。
-- **historian 还没在真实会话里跑过**：需要对话超过窗口 65%。目前只有直连测试。
-- **本机是 tauri profile 无法 headless 验证**，搜索的端到端都在 `mc-verify` 上做的。
+- **historian 的触发评估已在真实 headless 会话里跑通**（占用率字段名修复之后）：
+  日志里是 `historian trigger eval: usage=10.8% (13874 tokens) [piUsage fallback]`，
+  梯子继续走到 `compartment trigger: cheap-skip at 10.8% (below proactive floor 18%)`。
+  但**还没真折叠过一次** —— 卡在未折叠 tail 太小（`MIN_PROACTIVE_TAIL_MESSAGE_COUNT=12` /
+  `MIN_PROACTIVE_TAIL_TOKEN_ESTIMATE=6000`），不是卡在占用率。
+- **本机 headless 验证可行** —— 此前「本机是 tauri profile 无法 headless 验证」的说法作废，
+  配方见 §8。搜索的端到端仍在 `mc-verify` 上做的。
 - **15 个 bundle 事件处理器尚未逐个验证**，特别是 `session_before_compact`。
 - `~/.dsh/.env` 依赖本机 Clash 在 7897 端口。换环境要跟着改；
   用别的代理或直连的话，这个文件应该删掉。
+
+## 8. 本机 headless 验证配方
+
+`~/.dsh` 在 workspace-write 沙箱外，而 `prepareProfile` 每次启动都**无条件重写**
+`$DSH_HOME/profiles/<name>/cordis.yml`，所以直接 `dsh --profile X` 必死：
+
+```text
+Error: EPERM: operation not permitted, open 'C:\Users\Administrator\.dsh\profiles\mc-verify\cordis.yml'
+```
+
+绕法是把 `DSH_HOME` 指到沙箱可写处（`$env:TEMP` 下）。注意 `dsh.ps1` 里硬编码了
+`DSH_HOME=~/.dsh`，会**盖掉调用方设的值**，所以必须绕开 shim 直接调入口：
+
+```powershell
+$h = "$env:TEMP\dsh-headless-home"
+# 1) 从 ~/.dsh 复制：settings.yaml / .credentials.yaml / .env
+# 2) 建 profiles\mc-verify\：package.json / cordis.yml / cordis.patch.yml / pnpm-*.yaml
+# 3) node_modules 由 healProfilesModuleFallback 自动生成，但它只补【安装树自带的包】，
+#    不补 package.json 里的 link: 依赖 —— 自己补一个 junction：
+cmd /c mklink /J "$h\profiles\mc-verify\node_modules\dsh-team-workflow" "C:\Users\Administrator\Desktop\deepseek harness cj"
+
+node "$env:APPDATA\dsh-tauri\dependencies\dsh\node_modules\@deepseek-ai\dsh\lib\bin.js" `
+  --profile mc-verify --patch "$env:TEMP\mc-iso.patch.yml" "只回两个字：收到"
+# → exit 0，输出「收到」
+```
+
+存储隔离**必须走 `--patch` 覆盖插件配置**，设环境变量没用：
+
+```yaml
+- id: dsh-team-workflow
+  config:
+    mc:
+      storageDir: 'C:\...\dsh-headless-home\mc'
+```
+
+`lib/mc.js` 的 `applyStorageEnv` 会无条件覆盖 `MAGIC_CONTEXT_STORAGE_DIR`（只尊重
+事先设好的 `MAGIC_CONTEXT_LOG_PATH`），所以设环境变量只会把库写回真实 `~/.dsh` →
+沙箱只读 → `attempt to write a readonly database` → fail-closed 拒绝整轮。
+
+跑完删掉含 `.credentials.yaml` 副本的临时 home。
