@@ -54,3 +54,42 @@ export class Text {
 		return this.text;
 	}
 }
+
+/**
+ * 容器组件。magic-context 用它拼命令面板和状态弹窗；
+ * 这里只把子节点摊平成行数组，不实现边框与滚动。
+ */
+export class Box {
+	constructor(...children) {
+		this.children = children.flat(Infinity).filter((c) => c !== undefined && c !== null);
+	}
+
+	addChild(child) {
+		this.children.push(child);
+		return this;
+	}
+
+	render() {
+		return this.children.flatMap((child) => {
+			if (child && typeof child.render === "function") {
+				const out = child.render();
+				return Array.isArray(out) ? out : [String(out)];
+			}
+			return [String(child)];
+		});
+	}
+
+	toString() {
+		return this.render().join("\n");
+	}
+}
+
+/**
+ * 按键匹配。真实实现要解析终端转义序列；
+ * 这里只做字面量/大小写比较 —— 桩不驱动机器人式交互。
+ */
+export function matchesKey(data, key) {
+	const input = String(data ?? "");
+	const want = String(key ?? "");
+	return input === want || input.toLowerCase() === want.toLowerCase();
+}

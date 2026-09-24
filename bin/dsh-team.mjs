@@ -23,6 +23,8 @@ const PKG_NAME = "dsh-team-workflow";
 const ROW_ID = "dsh-team-workflow";
 const SKILLS_ROW_ID = "dsh-team-workflow-skills";
 const PRESET_ID = "team";
+/** 上游 magic-context 版本。升级前先跑 mc check 确认注册面没变。 */
+const MC_VERSION = "0.43.0";
 
 const pkg = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, "package.json"), "utf8"));
 const dshHome = process.env.DSH_HOME ?? path.join(os.homedir(), ".dsh");
@@ -77,7 +79,13 @@ function run(command, args, options = {}) {
 		return { status: 0 };
 	}
 	console.log(`$ ${pretty}`);
-	return spawnSync(pretty, { stdio: "inherit", shell: true, ...options });
+	const { env, ...rest } = options;
+	return spawnSync(pretty, {
+		stdio: "inherit",
+		shell: true,
+		...rest,
+		...(env ? { env: { ...process.env, ...env } } : {}),
+	});
 }
 
 function readProfilePkg() {
@@ -502,6 +510,86 @@ function cmdLensCheck() {
 	if (result.status !== 0) fail(`analyze-cli 退出码 ${result.status}`);
 }
 
+/**
+ * `dsh-team mc install` —— 把上游 magic-context bundle 拉进 vendor/。
+ *
+ * 不重新实现，也不改一行上游代码：
+ *   npm pack @cortexkit/pi-magic-context@<版本> → 解包 → vendor/pi-magic-context/
+ * 然后把 pi-tui 桩放进它自己的 node_modules，这样 Node 从 dist 往上找时
+ * 命中桩，而不是去够 pi 的安装树。
+ *
+ * vendor/pi-magic-context 是 gitignored 的 —— 8.5M，谁要谁重建。
+ */
+function cmdMcInstall() {
+	const version = typeof flags.version === "string" ? flags.version : MC_VERSION;
+	const dest = path.join(PKG_ROOT, "vendor", "pi-magic-context");
+
+	if (dryRun) {
+		console.log(`[dry-run] npm install @cortexkit/pi-magic-context@${version} → 临时目录`);
+		console.log(`[dry-run] 拷 → ${dest}`);
+		console.log(`[dry-run] pi-tui 桩 → ${path.join(dest, "node_modules", "@earendil-works", "pi-tui")}`);
+		return;
+	}
+
+	const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mc-pack-"));
+	try {
+		// 用 --prefix 装进临时目录，再拷出来。
+		// 不用 npm pack + tar：Windows 的 tar 会把 "C:\…" 当成远程主机名
+		// （把 hdd:path 当主机名），在 GNU tar 上必挂。
+		const stage = path.join(tmp, "stage");
+		fs.mkdirSync(stage, { recursive: true });
+		fs.writeFileSync(path.join(stage, "package.json"), `${JSON.stringify({ name: "mc-stage", private: true }, null, 2)}\n`);
+		const installed = run(
+			"npm",
+			["install", `@cortexkit/pi-magic-context@${version}`, "--prefix", stage, "--no-save", "--no-audit", "--no-fund", "--ignore-scripts"],
+		);
+		if (installed.status !== 0) fail(`npm install 失败：${installed.stderr?.trim() ?? installed.status}`);
+
+		const source = path.join(stage, "node_modules", "@cortexkit", "pi-magic-context");
+		if (!fs.existsSync(path.join(source, "dist", "index.js"))) {
+			fail(`装完没有 dist/index.js；检查 ${source}`);
+		}
+
+		fs.rmSync(dest, { recursive: true, force: true });
+		fs.mkdirSync(path.dirname(dest), { recursive: true });
+		fs.cpSync(source, dest, { recursive: true, dereference: true });
+		console.log(`  拷 magic-context ${version} → ${dest}`);
+
+		// bundle 静态 import { Box, Text, matchesKey, visibleWidth, truncateToWidth }
+		// from "@earendil-works/pi-tui" —— 桩放在它自己的 node_modules 下。
+		const shimDir = path.join(dest, "node_modules", "@earendil-works", "pi-tui");
+		fs.mkdirSync(shimDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(shimDir, "package.json"),
+			`${JSON.stringify({ name: "@earendil-works/pi-tui", version: "0.0.0-dsh-shim", type: "module", main: "index.js", exports: { ".": "./index.js" } }, null, 2)}\n`,
+		);
+		fs.copyFileSync(path.join(PKG_ROOT, "tools", "pi-tui-shim.js"), path.join(shimDir, "index.js"));
+		console.log("  写 pi-tui 桩");
+	} finally {
+		fs.rmSync(tmp, { recursive: true, force: true });
+	}
+
+	ok(`magic-context 已就位：${dest}`);
+	console.log("  验证：dsh-team mc check");
+}
+
+/**
+ * `dsh-team mc check` —— 用一个桩 pi 把 bundle 完整跑一遍，报注册面。
+ *
+ * 这是唯一诚实的验证：不启动真 dsh（要 GUI），但 bundle 的真实注册行为
+ * 全在这里暴露 —— 工具数、命令数、事件处理器数、context 是否真在改写消息。
+ */
+function cmdMcCheck() {
+	const bundleDir = process.env.MC_BUNDLE_DIR ?? path.join(PKG_ROOT, "vendor", "pi-magic-context");
+	const entry = path.join(bundleDir, "dist", "index.js");
+	if (!fs.existsSync(entry)) fail(`没找到 magic-context bundle；先跑 dsh-team mc install（找的是 ${entry}）`);
+
+	const probe = path.join(PKG_ROOT, "tools", "mc-probe.mjs");
+	if (!fs.existsSync(probe)) fail(`缺探针 ${probe}`);
+	const result = run(process.execPath, [probe], { MC_BUNDLE_DIR: bundleDir });
+	process.exit(result.status ?? 1);
+}
+
 const [command, sub] = positional;
 switch (command) {
 	case "install":
@@ -520,6 +608,11 @@ switch (command) {
 		if (sub === "install") cmdLensInstall();
 		else if (sub === "check") cmdLensCheck();
 		else fail("用法：dsh-team lens install | lens check [文件] [--lsp]");
+		break;
+	case "mc":
+		if (sub === "install") cmdMcInstall();
+		else if (sub === "check") cmdMcCheck();
+		else fail("用法：dsh-team mc install [--version 0.43.0] | mc check");
 		break;
 	case "preset":
 		if (sub !== "install") fail("用法：dsh-team preset install");
