@@ -91,4 +91,81 @@ const meta = { date: "2026-01-01", source: "selftest", lines: 0, badLines: 0 };
 	assert.equal(estTokens(1), 0, "不足一个 token 四舍五入到 0");
 }
 
+// ── 6. 跨会话的同参数调用不算重复 ─────────────────────────────────────────
+// 曾经的聚合键是 `${tool}|${argsSha}`，没带 sessionId —— 同一个 read 参数
+// 出现在 9 次调用里就报「同参数调了 9 次」，实际那是跨 3 个会话各读几次。
+// 两个会话不共享上下文，各自读一次谁都没付第二遍钱，不该计入浪费。
+{
+	const call = (sessionId, file, callId, off = undefined) => [
+		{
+			event: "tool_call",
+			sessionId,
+			toolName: "read",
+			toolCallId: callId,
+			argsSha256: `sha-${file}-${off}`,
+			argsPreview: JSON.stringify({ file_path: file, ...(off === undefined ? {} : { offset: off, limit: 50 }) }),
+		},
+		{ event: "tool_result", sessionId, toolCallId: callId, resultChars: 4000, isError: false },
+	];
+	const flat = (arr) => arr.flat();
+
+	// 同一文件、同一参数，但分属两个会话 → 不是浪费
+	const cross = aggregateEvents(
+		flat([call("sA", "/f.txt", "c1"), call("sB", "/f.txt", "c2")]),
+	);
+	const rc = buildReport(cross);
+	assert.equal(rc.duplicates.length, 0, `跨会话同参数不得算重复，实际：${JSON.stringify(rc.duplicates)}`);
+	assert.equal(rc.repeatedReads.length, 0, "跨会话读同一文件不得进「同会话内重复读取」");
+
+	// 同一会话、同一参数两次 → 真的是重复
+	const same = aggregateEvents(flat([call("sA", "/f.txt", "c1"), call("sA", "/f.txt", "c2")]));
+	const rs = buildReport(same);
+	assert.equal(rs.duplicates.length, 1, "同会话同参数两次应算一条重复");
+	assert.equal(rs.duplicates[0].count, 2);
+	assert.equal(rs.duplicates[0].wastedChars, 4000, "多读的那一次结果字符全浪费");
+	assert.equal(rs.repeatedReads.length, 1);
+	assert.equal(rs.repeatedReads[0].sameArgs, 2, "同 offset/limit 才算「同参数」");
+
+	// 同一会话、同文件、不同区段（不同 offset）→ 是在翻文件，不是重复读
+	const paged = aggregateEvents(
+		flat([call("sA", "/f.txt", "c1", 0), call("sA", "/f.txt", "c2", 100)]),
+	);
+	const rp = buildReport(paged);
+	assert.equal(rp.duplicates.length, 0, "不同 offset 不是同参数");
+	assert.equal(rp.repeatedReads.length, 1, "同一文件读了两次要列出来");
+	assert.equal(rp.repeatedReads[0].count, 2);
+	assert.equal(rp.repeatedReads[0].sameArgs, 1, "两次区段不同 → 同参数计数为 1，用来说明不是浪费");
+}
+
+// ── 7. 搜索词重复：跨会话的次数要报出来（缓存是进程级，本该拦住）─────
+// 网络时间跨会话也是真花的；但上下文只在同会话内重复付费，所以两个
+// 数要分开给 —— 不弄清这件事就会把「4 个会话各搜一次」错当成 4 次浪费。
+{
+	const search = (sessionId, callId, queries) => [
+		{
+			event: "tool_call",
+			sessionId,
+			toolName: "web_search",
+			toolCallId: callId,
+			argsSha256: `sha-${callId}`,
+			argsPreview: JSON.stringify({ queries }),
+		},
+		{ event: "tool_result", sessionId, toolName: "web_search", toolCallId: callId, resultChars: 500, isError: false },
+	];
+	const agg = aggregateEvents([
+		...search("sA", "w1", ["vue3"]),
+		...search("sB", "w2", ["vue3"]),
+		...search("sC", "w3", [" vue3 "]), // 空白归一后是同一组词
+	]);
+	const w = buildReport(agg).web;
+	assert.equal(w.repeated.length, 1, "同一组搜索词只该出现一行");
+	assert.equal(w.repeated[0].count, 3, "次数跨会话累计");
+	assert.equal(w.repeated[0].sessions, 3, "同时报出横跨几个会话，读者才能分清网络时间与上下文");
+
+	// 单会话内搜两次也是重复（这次上下文也真付了两遍）
+	const one = buildReport(aggregateEvents([...search("sA", "w1", ["vue3"]), ...search("sA", "w2", ["vue3"])])).web;
+	assert.equal(one.repeated[0].count, 2);
+	assert.equal(one.repeated[0].sessions, 1);
+}
+
 console.log("✓ 用量日报自检通过");

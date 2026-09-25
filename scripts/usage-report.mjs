@@ -323,10 +323,19 @@ export function aggregateEvents(events) {
 					agg.callArgs.set(callId, args);
 					agg.resultsByCallId.set(callId, undefined);
 				}
-				// 同一工具 + 同一参数摘要 = 重复调用
-				const pairKey = `${ev.toolName ?? "?"}|${ev.argsSha256 ?? "?"}`;
+				// 同一工具 + 同一参数摘要 = 重复调用。
+				// 键里必须带 sessionId：两个会话不共享上下文，同一个参数各调一次
+				// 谁都没付第二遍钱，算成「重复」是虚报（曾经把跨 3 个会话的 9 次
+				// read 报成「同参数调了 9 次」）。
+				const pairKey = `${ev.sessionId ?? "?"}|${ev.toolName ?? "?"}|${ev.argsSha256 ?? "?"}`;
 				if (!agg.pairs.has(pairKey)) {
-					agg.pairs.set(pairKey, { tool: ev.toolName ?? "?", count: 0, callIds: [], args });
+					agg.pairs.set(pairKey, {
+						tool: ev.toolName ?? "?",
+						sessionId: ev.sessionId ?? null,
+						count: 0,
+						callIds: [],
+						args,
+					});
 				}
 				const pair = agg.pairs.get(pairKey);
 				pair.count += 1;
@@ -476,17 +485,33 @@ export function buildReport(agg, options = {}) {
 	duplicates.sort((a, b) => b.wastedChars - a.wastedChars || b.count - a.count);
 
 	// —— 同一文件重复读取 ——
+	// 按「会话 + 文件」计，不按文件路径全局计：跨会话各读一次不算浪费。
+	// 同时分开数「同参数（同 offset/limit）」的真重复 —— 顺序翻页读同一文件
+	// 的不同区段是正常做法，按路径混在一起数会把它算成重复读。
 	const readFiles = new Map();
 	for (const pair of agg.pairs.values()) {
-		if (pair.tool !== "read" || !pair.args) continue;
-		const f = pair.args.file_path ?? pair.args.path;
-		if (typeof f !== "string") continue;
-		readFiles.set(f, (readFiles.get(f) ?? 0) + pair.count);
+		if (pair.tool !== "read") continue;
+		for (const id of pair.callIds) {
+			const a = agg.callArgs.get(id);
+			if (!a) continue;
+			const f = a.file_path ?? a.path;
+			if (typeof f !== "string") continue;
+			const key = `${pair.sessionId ?? "?"}|${f}`;
+			let entry = readFiles.get(key);
+			if (!entry) readFiles.set(key, (entry = { file: f, count: 0, byArgs: new Map() }));
+			entry.count += 1;
+			const argKey = `${a.offset ?? ""},${a.limit ?? ""}`;
+			entry.byArgs.set(argKey, (entry.byArgs.get(argKey) ?? 0) + 1);
+		}
 	}
-	const repeatedReads = [...readFiles.entries()]
-		.filter(([, n]) => n > 1)
-		.map(([file, count]) => ({ file, count }))
-		.sort((a, b) => b.count - a.count);
+	const repeatedReads = [...readFiles.values()]
+		.filter((e) => e.count > 1)
+		.map((e) => ({
+			file: e.file,
+			count: e.count,
+			sameArgs: Math.max(...e.byArgs.values()),
+		}))
+		.sort((a, b) => b.sameArgs - a.sameArgs || b.count - a.count);
 
 	// —— 单条超大结果 ——
 	const bigResults = tools
@@ -775,9 +800,9 @@ export function buildFindings(r) {
 		push(
 			"low",
 			"repeated-web-query",
-			`同一组搜索词搜了 ${q.count} 次：\`${q.query}\``,
+			`同一组搜索词在 ${q.sessions} 个会话里共搜了 ${q.count} 次：\`${q.query}\``,
 			`累计返回 ${fmt(q.chars)} 字符`,
-			"重复搜索白花网络时间也白花上下文，结果几乎一样 —— 直接复用上一次的结果",
+			"跨会话的网络时间是白花的（缓存是进程级，本该拦住）；上下文只在同会话内重复付费",
 		);
 	}
 
@@ -954,7 +979,8 @@ export function buildWeb(agg, topN = 10) {
 		if ((it.ms ?? 0) > t.maxMs) t.maxMs = it.ms ?? 0;
 	}
 
-	// 同一组搜索词被搜多次 = 白花的网络时间 + 白花的上下文
+	// 同一组搜索词被搜多次 = 白花的网络时间（缓存是进程级，跨会话也算）
+	// + 白花的上下文（只在同会话内成立）。两个数分开给，不混成一个「重复」。
 	const queries = new Map();
 	for (const it of items) {
 		if (it.tool !== "web_search") continue;
@@ -966,10 +992,11 @@ export function buildWeb(agg, topN = 10) {
 			.sort()
 			.join(" | ");
 		if (!key) continue;
-		if (!queries.has(key)) queries.set(key, { query: key, count: 0, chars: 0 });
+		if (!queries.has(key)) queries.set(key, { query: key, count: 0, chars: 0, sessions: new Set() });
 		const q = queries.get(key);
 		q.count += 1;
 		q.chars += it.chars ?? 0;
+		if (it.sessionId) q.sessions.add(it.sessionId);
 	}
 
 	return {
@@ -980,6 +1007,7 @@ export function buildWeb(agg, topN = 10) {
 		byTool: [...byTool.values()].sort((a, b) => b.calls - a.calls),
 		repeated: [...queries.values()]
 			.filter((q) => q.count > 1)
+			.map((q) => ({ ...q, sessions: q.sessions.size }))
 			.sort((a, b) => b.count - a.count)
 			.slice(0, topN),
 		slowest: [...items]
@@ -1016,9 +1044,10 @@ export function buildFeatureIdeas(r) {
 			title: `${topAmp.name} 结果的会话内缓存`,
 			evidence:
 				`\`${topAmp.name}\` 放大后约 ${fmt(topAmp.ampTokens)} tokens，占计费输入的 ${pct(topAmp.ampTokens, r.tokens.billing)}%` +
-				(repeated ? `；同一文件最多被读 ${repeated.count} 次` : ""),
-			why: "工具结果留在上下文里，之后每一步模型请求都重新带上它 —— 同一份材料读两次，就是把它在每一步都付两遍钱",
-			now: "缓存落地前：先 grep 定位再 read；read 一律带 offset/limit，同一文件一次读全",
+				(repeated ? `；同一会话内同一文件最多读 ${repeated.count} 次，其中同参数重复 ${repeated.sameArgs} 次` : ""),
+			why: "工具结果留在上下文里，之后每一步模型请求都重新带上它 —— 同一份材料在同会话里读两次，就是把它在每一步都付两遍钱",
+			now: "缓存落地前：先 grep 定位再 read；read 带上 offset/limit，但同一区段别重读 —— 分页翻同一文件不同区段是正常的，" +
+				"浪费的是同一区段读两遍",
 		});
 	}
 
@@ -1054,8 +1083,8 @@ export function buildFeatureIdeas(r) {
 		add(r.web.chars, {
 			id: "web-cache",
 			title: "联网搜索的查询缓存",
-			evidence: `同一组搜索词当天被搜了 ${q.count} 次（\`${q.query}\`）；全天联网 ${r.web.calls} 次共 ${fmt(r.web.ms)}ms`,
-			why: "重复搜索既是白花的网络时间，也是白花的上下文 —— 结果几乎一样",
+			evidence: `同一组搜索词当天在 ${q.sessions} 个会话里被搜了 ${q.count} 次（\`${q.query}\`）；全天联网 ${r.web.calls} 次共 ${fmt(r.web.ms)}ms`,
+			why: "跨会话重复搜的网络时间是白花的 —— 同一进程内结果几乎一样，缓存一次就够",
 			now: "当天先复用上一次结果，别换着措辞反复搜",
 		});
 	}
@@ -1313,11 +1342,17 @@ export function renderMarkdown(report, meta) {
 			out.push("");
 		}
 		if (W.repeated.length) {
-			out.push("同一组搜索词被搜了多次（网络时间 + 上下文都付了两遍）：", "");
-			out.push("| 搜索词 | 次数 | 累计结果字符 |");
-			out.push("| --- | ---: | ---: |");
-			for (const q of W.repeated) out.push(`| ${q.query} | ${q.count} | ${fmt(q.chars)} |`);
-			out.push("");
+			out.push("同一组搜索词被搜了多次（网络时间白花的，会重复搜就说明缓存没拦住）：", "");
+			out.push("| 搜索词 | 次数 | 其中会话数 | 累计结果字符 |");
+			out.push("| --- | ---: | ---: | ---: |");
+			for (const q of W.repeated) {
+				out.push(`| ${q.query} | ${q.count} | ${q.sessions} | ${fmt(q.chars)} |`);
+			}
+			out.push(
+				"",
+				"上下文的账只在同会话内算 —— 跨会话各搜一次不重复付上下文钱，但网络时间是真花了。",
+				"",
+			);
 		}
 	} else {
 		out.push("- 当天没有联网调用。", "");
@@ -1325,7 +1360,7 @@ export function renderMarkdown(report, meta) {
 
 	out.push("## 7. 冗余与浪费", "");
 	if (report.duplicates.length) {
-		out.push("重复调用（同一工具 + 同一参数摘要）：", "");
+		out.push("重复调用（同一会话内 + 同一工具 + 同一参数摘要）：", "");
 		out.push("| 工具 | 次数 | 平均结果字符 | 重复浪费（粗估） |");
 		out.push("| --- | ---: | ---: | ---: |");
 		for (const d of report.duplicates.slice(0, 10)) {
@@ -1340,11 +1375,15 @@ export function renderMarkdown(report, meta) {
 	}
 
 	if (report.repeatedReads.length) {
-		out.push("同一文件被重复读取：", "");
-		out.push("| 文件 | 次数 |");
-		out.push("| --- | ---: |");
-		for (const r2 of report.repeatedReads.slice(0, 10)) out.push(`| \`${r2.file}\` | ${r2.count} |`);
-		out.push("");
+		out.push("同一会话内重复读取的文件：", "");
+		out.push("| 文件 | 次数 | 其中同参数 |");
+		out.push("| --- | ---: | ---: |");
+		for (const r2 of report.repeatedReads.slice(0, 10)) out.push(`| \`${r2.file}\` | ${r2.count} | ${r2.sameArgs} |`);
+		out.push(
+			"",
+			"「同参数」= offset/limit 也一样的真重复；次数多但同参数少，说明是在翻同一个文件的不同区段，不算浪费。",
+			"",
+		);
 	}
 
 	if (report.bigResults.length) {
