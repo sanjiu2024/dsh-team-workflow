@@ -42,7 +42,7 @@
     }
   },
   "scripts": {
-    "test": "node scripts/selftest.mjs && node scripts/selftest-mc.mjs && node scripts/selftest-surface.mjs && node scripts/selftest-fold.mjs && node scripts/selftest-patch.mjs && node scripts/selftest-usage.mjs && node scripts/selftest-lens-tools.mjs",
+    "test": "node scripts/selftest.mjs && node scripts/selftest-mc.mjs && node scripts/selftest-surface.mjs && node scripts/selftest-fold.mjs && node scripts/selftest-patch.mjs && node scripts/selftest-usage.mjs && node scripts/selftest-lens-tools.mjs && node scripts/selftest-context7.mjs",
     "test:fold": "node scripts/e2e-fold.mjs"
   },
   "engines": {

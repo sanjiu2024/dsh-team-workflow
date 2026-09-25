@@ -1,0 +1,14 @@
+{
+  "enabled": true,
+  "_defaultTokens 说明": "文档长度预算（token）。实测 ≈4~5 字符/token，2000 约 7,800 字符，正好在每步新增内容的 p90 附近。",
+  "defaultTokens": 2000,
+  "_maxTokens 说明": "上限。8000 约 34,000 字符；再高就等于把上下文窗口三分之一灌进一条工具结果。",
+  "maxTokens": 8000,
+  "_maxChars 说明": "外部服务失控时的硬兜底。采样 16 个库 tokens=8000 最大 34,581 字符，所以正常永远碰不到。",
+  "maxChars": 40000,
+  "_cacheTtlMs 说明": "文档变化慢，比搜索缓存的 10 分钟给得长。",
+  "cacheTtlMs": 3600000,
+  "cacheMaxEntries": 32,
+  "maxCandidates": 3,
+  "timeoutMs": 20000
+}
