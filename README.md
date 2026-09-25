@@ -2,7 +2,7 @@
 
 把 [pi-workflow](https://github.com/kurumi1ksllq/pi-workflow) 的团队基线搬进 **DeepSeek Harness (dsh)**。
 一个 npm 包，装完提供：系统提示里的团队规范、审计日志、上下文节流统计、rtk 输出压缩、
-pi-lens 静态检查、一个 `/review` skill 和 10 个技能。
+pi-lens 静态检查、上下文超限时的自动会话交接、一个 `/review` skill 和 10 个技能。
 
 不用 MCP —— 全部走 dsh 的 plugin / skill / command 三个原生面。
 
@@ -40,6 +40,7 @@ dsh-team uninstall                   # 卸载
 | pi-lens 工具集 | `lens_tools` 一个入口工具，按需点亮 | 把 pi-lens 的 12 个代码情报工具（符号搜索、AST 检索/替换、LSP 跳转/引用/hover）接进来。**默认一个都不常驻**：声明体积是每次调用都重发的，全常驻等于地板涨 75%。模型先调 `lens_tools` 点亮，回合结束自动撤销 |
 | context7 | `docs` 工具 | 查第三方库官方文档（免 key，直连 HTTP，不走 MCP）。一个工具内部完成「搜库 → 取文档」，因为多一次工具调用 = 多一整个 step，比多注册一个工具贵约 45 倍 |
 | 命令 | `/team-baseline` `/thrift` `/audit-log` | `commands.register`，只回显给 UI，不进模型上下文 |
+| 会话交接 | `agent/error` + `sessionController` | 上下文超限且 dsh 自救失败时：写交接文档（未完成任务）→ 建新会话 → 把任务注入并开跑 → 旧会话留提示 |
 | 技能 | `skills/*/SKILL.md` | 复用 dsh 原生 skill 系统，含 `/review`（用户可调用） |
 
 ## 和 pi 版的差异（都是 dsh 的硬约束，不是偷懒）
@@ -59,6 +60,54 @@ dsh-team uninstall                   # 卸载
   没装 LSP server 的机器上就是死重量，所以没做。
 - **`/review` 是 skill 不是命令。** dsh 的 `commands.register` 不产生模型消息，
   而 `/review` 要模型干活。
+- **交接不切 UI。** 「自动切到新会话」在 pi 版靠 UI 跳转；dsh 里让 UI 换当前会话的
+  `sessions.open(id)` 只存在于 `dsh-api-session-controller` 的 client half，
+  而本包是纯 host 包（`package.json` 没有 `dsh.client`）。所以做的是
+  「建新会话 + 注入任务 + 旧会话里写明去哪」，不假装跳转。
+
+## 会话交接
+
+上下文压不动时会自动接力。触发条件**复用 dsh 自己的判定**，本包不自造阈值：
+
+- `dsh-compaction-basic` 挂在 `agent/request-error`（waterfall）上，遇到
+  `CONTEXT_WINDOW_EXCEEDED` 就压一次并 `{kind:"retry"}`；重试次数用尽
+  （`maxOverflowRetries`，默认 1）或压缩没造成实质变化时它返回 `next()`。
+- 于是 `dsh-agent-loop` 抛出 LlmError → `throwError()` **emit `agent/error`**。
+
+**`agent/error` 只在 dsh 放弃时才 emit** —— 自救成功的那次是 `retry`，从不到这里。
+所以「`agent/error` 且 `error.code === "CONTEXT_WINDOW_EXCEEDED"`」精确等于
+「dsh 已经放弃自救」，不需要猜窗口大小、也不用数重试次数。
+
+那一刻做四件事：
+
+1. 从会话日志里捡出**最后一条用户请求** + **最后一次 todo 快照**（跨 turn 保留，
+   因为要的是「干到哪了」而不是 UI 的「当前计划」）。
+2. 写 `<DSH_HOME>/storages/handoffs/<日期>-<会话id>-<短hash>.md`，未完成任务排在已完成之前。
+   文件名里的 id 会先消毒（防 `../` 目录穿越），消毒是有损的，所以尾巴上挂 id 的短 hash 防同名覆盖。
+3. `sessionController.create`（继承来源会话的 `cwd` / `agentPreset`）+ `prompt` ——
+   **注入即让新会话自动开跑**，不用人再敲一遍。preset 优先读日志里的
+   `agent-preset/selected`，拿不到才回落 header（header 记的是「启动时那个」）。
+4. 在旧会话里 `append` 一条 `user/message`（`source.kind = "plugin"`），写明新会话 id 和文档路径。
+
+```bash
+# 查交接历史
+ls ~/.dsh/storages/handoffs/
+```
+
+三条刻意的克制：
+
+- **不给旧会话发 prompt。** 往旧会话发消息 = 再跑一轮模型调用，而它刚刚正因为上下文超限失败。
+  所以只 `append` 一条消息：session invariant 对 `user/message` 没有 turn/step 约束
+  （`system/message` 有，turn 闭合后用不了），Chat 也会把它渲染成 context 行而非用户发言。
+- **一个会话只交一次，且总数有上限。** 去重挡不住 A→B→C：每代新会话都是「新」会话，
+  任务本身一个上下文装不下时就会一直建下去。所以额外有进程级上限（`MAX_HANDOFFS = 5`）：
+  到上限仍写文档、仍给提示，只是不再自动建会话（这时该由人来看）。
+  `ponytail:` 去重表是进程内常驻字符串，不回收；真到上万会话再换 LRU。
+- **新会话靠 `agentPreset` 和 `cwd` 继承。** 没有 `sessionController` 的 profile
+  （headless / 精简）里，这块**整个关掉**并报「待命」，不会拖垮整包。
+
+任一步失败都不抛，只降级并写进 `/team-baseline` 的状态：建会话失败也照样写文档 +
+在旧会话里给出手工出路；注入失败则新会话已在、文档已在，人去那边发一条即可。
 
 ## 依赖
 
@@ -81,10 +130,21 @@ dsh-team uninstall                   # 卸载
 ## 自检
 
 ```bash
-node scripts/selftest.mjs
+npm test
 ```
 
-假 ctx 跑一遍：系统提示段顺序、三个命令、审计落盘与脱敏、节流统计、异常隔离。
+10 个自检，每个都用假 ctx 跑真实逻辑：系统提示段顺序、三个命令、审计落盘与脱敏、节流统计、
+异常隔离、magic-context 折叠、thrift 阈值换算与预设生成、context7、lens 工具集、会话交接。
+
+`scripts/selftest-handoff.mjs` 盯的是「错了会怎样」最狠的四条：
+
+1. **触发条件精确** —— 只有 `CONTEXT_WINDOW_EXCEEDED` 才交接，限流/认证/网络错误一律不动
+   （跟着交接 = 无故打断用户正常会话）；只有 message 文本像、没有结构化 code 也不交接。
+2. **一个会话只交一次** —— 否则新会话再溢出会无限建会话。
+3. **内容取舍** —— 注入新会话的文本必须短且只带未完成任务（它一进去就是第一条消息，
+   太长会把新会话也顶爆）；会话 id 里的 `../` 不能把文档写到目录外。
+4. **四级降级不炸** —— 无 `sessionController`、建会话失败、注入失败、旧会话写不进去
+   各自都要有出路，且都不抛。
 
 ## 来源与许可
 

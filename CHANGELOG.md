@@ -8,6 +8,46 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [0.5.0]
+
+### 新增
+
+- **上下文压不动时自动交接。** 触发条件是 **dsh 自己的判定**，本包不自造阈值：
+  `dsh-compaction-basic` 在 `agent/request-error`（waterfall）上遇到 `CONTEXT_WINDOW_EXCEEDED`
+  会压一次并 `{kind:"retry"}`；重试次数用尽（`maxOverflowRetries`，默认 1）或压缩没造成
+  实质变化时它 `next()` → `dsh-agent-loop` 抛 LlmError → `throwError()` emit `agent/error`。
+  **`agent/error` 只在放弃时才 emit**（自救成功那次从不到这里），所以
+  「`agent/error` + `error.code === "CONTEXT_WINDOW_EXCEEDED"`」精确等于「自救已耗尽」。
+
+  那一刻做四件事（`lib/handoff.js`）：
+
+  1. 从会话日志里捡出**最后一条用户请求**（`source.kind === "user"` 的 `user/message`）
+     + **最后一次 `todo/write` 快照**。todo 取整份日志里最后一条、**跨 turn 保留** ——
+     dsh 自己的 `backscanTodos` 会在 `turn/start` 处停，那是给 UI 显示「当前计划」的语义，
+     而交接要的是「这活干到哪了」，跨 turn 的旧清单恰恰最值钱。
+  2. 写 `<DSH_HOME>/storages/handoffs/<日期>-<会话id>-<短hash>.md`：原始请求、未完成任务、
+     已完成（标清楚「不要重做」）、接着怎么干。会话 id 会消毒 —— 它是可以从外部 adopt
+     进来的字符串，不做处理时 id 里的 `../` 能把文档写到目录外。
+  3. `sessionController.create`（继承来源会话的 `cwd` / `agentPreset`）+ `prompt`：
+     **注入即让新会话自动开跑**，不用人再敲一遍。preset 优先读日志里的
+     `agent-preset/selected`（只在运行时切换时 append，且只允许在第一个 turn 之前切），
+     拿不到才回落到 `header.agentPreset` —— header 记的是「启动时那个」，切换过就过期了。
+  4. 旧会话里 `append` 一条 `user/message`（`source.kind = "plugin"`），写明新会话 id 与文档路径。
+
+  三个设计上的克制：
+
+  - **不给旧会话发 prompt。** 发消息 = 再跑一轮模型调用，而它刚正因为上下文超限失败。
+    invariant 对 `user/message` 没有 turn/step 约束（`system/message` 有，turn 闭合后用不了），
+    且 `source.kind = "plugin"` 会让 Chat 渲染成 context 行而非用户发言。
+  - **一个会话只交一次**，且进程内有总数上限 `MAX_HANDOFFS = 5`。
+    按会话去重挡不住 A→B→C（每代新会话都是「新」会话）—— 任务本身一个上下文装不下时
+    就会一直建下去。到上限仍写文档、仍给提示，只是不再自动建会话。
+  - **不做 UI 自动跳转**：切 UI 当前会话的 `sessions.open(id)` 只在
+    `dsh-api-session-controller` 的 client half，而本包是纯 host 包。只建会话 + 点名去哪。
+
+  降级：没有 `sessionController` 的 profile（headless / 精简）里整块关掉并报「待命」，
+  不拖垮整包；建会话失败也照样写文档 + 在旧会话里给出手工出路。四条失败路径全不抛。
+
 ## [0.4.1]
 
 ### 修复

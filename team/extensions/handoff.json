@@ -1,0 +1,6 @@
+{
+  "_说明": "会话上下文压不动时自动交接。触发条件是 dsh 自己的判定（compaction 自救重试耗尽 = agent/error + CONTEXT_WINDOW_EXCEEDED），这里只控开关与篇幅上限，不另设阈值。",
+  "enabled": true,
+  "maxDocChars": 20000,
+  "maxInjectChars": 6000
+}
