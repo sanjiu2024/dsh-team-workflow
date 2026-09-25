@@ -20,7 +20,7 @@ dsh-team install --profile tauri     # 等价于 dsh plugin --profile tauri add 
 ```bash
 dsh-team status                      # 当前状态：装没装、skills 几个、rtk/lens 在不在
 dsh-team skills                      # 列出本包带的技能
-dsh-team thrift apply                # 把 ~/.dsh/team-workflow/thrift.json 写进 profile patch
+dsh-team thrift apply                # 把 ~/.dsh/team-workflow/thrift.json 写进 team 预设（真生效的那两行）
 dsh-team preset install              # 生成 team 预设（团队压缩阈值 + persona）
 dsh-team patch                       # 思考链/工具行默认展开（改安装树，--restore 可还原）
 dsh-team uninstall                   # 卸载
@@ -48,7 +48,8 @@ dsh-team uninstall                   # 卸载
   dsh 的 `llm/stream` 拿到的请求是深冻结的，只能替换回调结果、不能改 `options`；
   `tools/pre-execute` 的参数同样深度冻结。所以压缩交给 dsh 自带的
   `dsh-compaction-basic` 和 `dsh-compaction-tool-result-pruner`，本包只做统计 + overlay。
-  `/thrift compact|prune` 写的是 overlay，要 `dsh-team thrift apply` + 重启才生效 —— 命令里会直说。
+  `/thrift compact|prune` 写的是 overlay，要 `dsh-team thrift apply`（或 `dsh-team preset install`）+ 重启才生效 —— 命令里会直说。
+  `/thrift show` 显示的是**预设里真在跑**的值；overlay 里还没写进预设的会单独列成「待应用」。
 - **rtk 不改写命令参数。** pi 版把 `git status` 重写成 `rtk git status`；dsh 里参数冻结改不了。
   改成往系统提示里塞一段路由说明（跟 `rtk init -g` 装的那个 hook 起同样作用），
   外加 `tools/post-execute` 上的输出压缩。

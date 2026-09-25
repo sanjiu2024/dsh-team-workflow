@@ -7,7 +7,7 @@
  *   dsh-team status    [--profile tauri]   看当前状态
  *   dsh-team preset install [--profile tauri]  生成 team 预设（compaction/subagent 配置）
  *   dsh-team patch   [--dry-run|--restore|--status]  让思考链/工具行默认展开（改安装树）
- *   dsh-team thrift apply   [--profile tauri]  把 ~/.dsh/team-workflow/thrift.json 写进 profile patch
+ *   dsh-team thrift apply   [--profile tauri]  把 ~/.dsh/team-workflow/thrift.json 写进 team 预设
  *   dsh-team skills                         列出本包带的 skills
  *
  * 只做这三件事：调 dsh / pnpm、写 profile 下的 JSON/YAML、打印现状。
@@ -20,6 +20,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { applyPatch, patchStatus, restorePatch } from "../lib/chat-expand.js";
+import { generateTeamPreset, readEffectiveThrift } from "../lib/preset-gen.js";
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PKG_NAME = "dsh-team-workflow";
@@ -140,33 +141,6 @@ function skillDescription(text) {
 		block.push(lines[i].trim());
 	}
 	return block.join(" ").trim();
-}
-
-/** 极简 YAML 输出：只够写 loader patch 那种结构（数组 / 对象 / 标量）；undefined 直接丢 */
-function toYaml(value, indent = 0) {
-	const pad = " ".repeat(indent);
-	if (Array.isArray(value)) {
-		if (value.length === 0) return "[]";
-		return value
-			.map((item) => {
-				const rendered = toYaml(item, indent + 2);
-				return rendered.includes("\n") ? `${pad}-\n${rendered}` : `${pad}- ${rendered.trimStart()}`;
-			})
-			.join("\n");
-	}
-	if (value && typeof value === "object") {
-		const entries = Object.entries(value).filter(([, item]) => item !== undefined);
-		if (entries.length === 0) return "{}";
-		return entries
-			.map(([key, item]) => {
-				const rendered = toYaml(item, indent + 2);
-				const isBlock = rendered.includes("\n") || rendered.startsWith("{") || rendered.startsWith("[");
-				return isBlock ? `${pad}${key}:\n${rendered}` : `${pad}${key}: ${rendered}`;
-			})
-			.join("\n");
-	}
-	if (typeof value === "string") return JSON.stringify(value);
-	return String(value);
 }
 
 // —— 子命令 ——
@@ -297,42 +271,24 @@ function cmdSkills() {	const dir = path.join(PKG_ROOT, "skills");
 function cmdPresetInstall() {
 	const standard = findStandardPreset();
 	if (!standard) fail("找不到 standard 预设目录");
-	const teamSettings = readTeamSettings();
 	const dest = path.join(dshHome, ".agent-presets", PRESET_ID);
-	fs.mkdirSync(dest, { recursive: true });
-
 	const pristine = fs.readFileSync(path.join(standard, "agent.cordis.yml"), "utf8");
-	let cordis = pristine;
-	const compaction = teamSettings.compaction;
 
-	// dsh 自带的压缩保留作保险：magic-context 的 historian 在 65% 就折叠，
-	// dsh 压缩退居 90% 的兜底（阀值见 team/agent-settings.json）。
-	// 全删掉是不行的：historian 万一不触发，就真没东西拦住上下文撑爆了。
-	let undo = null;
-	if (compaction) {
-		const patched = patchCompactionRow(pristine, compaction);
-		cordis = patched.cordis;
-		undo = (s) => s.replace(patched.block, () => patched.plain);
-	} else {
+	// 生成逻辑在 lib/preset-gen.js：纯文本进、纯文本出，好单独自检。
+	// 它内部会做两件必须做的事 —— 把阈值写到真在跑的那两行，且照插件自己的规则校验；
+	// 不合法的值在这里就拦住，否则 dsh 加载期会直接抛错起不来。
+	let generated;
+	try {
+		generated = generateTeamPreset(pristine, { settings: readTeamSettings(), overlay: readThriftOverlay() });
+	} catch (error) {
+		fail(`预设生成失败：${error.message}`);
+	}
+	if (generated.changed === 0) {
 		console.log("  警告：team/agent-settings.json 里没有 compaction，预设阀值保持 standard 默认");
 	}
 
-	const persona = teamSettings.persona;
-	if (persona) cordis = patchPersonaRow(cordis, persona);
-
-	// 把我们的改动从产物里撤回去，必须逐字节等于 standard——
-	// 这是能在没有图形界面时真正验证“预设没被改坏”的最直接的断言。
-	// （dsh-agent-presets 只在 host 组合（tauri/web）里，headless 跑不到它，
-	//   所以这里只能静态自证，端到端得重启 app 看。）
-	if (!undo) {
-		fail("预设自检失败：找到了 compaction 段却没有产出补丁记录");
-	}
-	if (undo(cordis) !== pristine) {
-		fail("预设自检失败：除 compaction 那一行外还有其他改动，不要装");
-	}
-	console.log("  自检：除 compaction 那一行外与 standard 逐字一致 ✓");
-
-	fs.writeFileSync(path.join(dest, "agent.cordis.yml"), cordis, "utf8");
+	fs.mkdirSync(dest, { recursive: true });
+	fs.writeFileSync(path.join(dest, "agent.cordis.yml"), generated.text, "utf8");
 	fs.writeFileSync(
 		path.join(dest, "preset.yml"),
 		[
@@ -344,6 +300,7 @@ function cmdPresetInstall() {
 		"utf8",
 	);
 	ok(`team 预设已写到 ${dest}`);
+	if (generated.changed > 0) console.log(`  已应用 ${generated.changed} 处团队设置（含 thrift overlay 里的阈值）。`);
 	console.log("  在 dsh 里把 agent-presets.default 改成 team，或在空会话里切换预设。");
 	console.log("  注意：预设切换只在空会话生效。");
 }
@@ -366,72 +323,68 @@ function readTeamSettings() {
 	return readJson(path.join(PKG_ROOT, "team", "agent-settings.json"), {});
 }
 
-/** 把 team 的 reserveTokens/keepRecentTokens 换成 ratio 形式的 compaction-basic 配置 */
-function patchCompactionRow(cordis, compaction) {
-	const contextWindow = compaction.contextWindow ?? 128000;
-	const thresholdRatio = Number((1 - (compaction.reserveTokens ?? 32768) / contextWindow).toFixed(4));
-	const retainRatio = Number(((compaction.keepRecentTokens ?? 20000) / contextWindow).toFixed(4));
-	if (!(retainRatio < thresholdRatio)) fail("团队压缩配置不合法：keepRecentTokens 必须小于窗口减去 reserveTokens");
-
-	const block = [
-		"    - id: compaction-basic",
-		"      name: '@deepseek-ai/dsh-compaction-basic'",
-		"      config:",
-		`        thresholdRatio: ${thresholdRatio}`,
-		`        retainRatio: ${retainRatio}`,
-		`        auto: ${compaction.enabled === false ? "false" : "true"}`,
-	].join("\n");
-
-	const plain = "    - id: compaction-basic\n      name: '@deepseek-ai/dsh-compaction-basic'";
-	if (!cordis.includes(plain)) fail("standard 预设里没找到 compaction-basic 行，预设结构变了？");
-	return { cordis: cordis.replace(plain, block), block, plain };
-}
-
-function patchPersonaRow(cordis, persona) {
-	const marker = "      You are a coding agent powered by the {{model}} model.";
-	if (!cordis.includes(marker)) return cordis;
-	return cordis.replace(
-		marker,
-		`      ${persona.replace(/\n/g, "\n      ")}`.trimEnd(),
-	);
-}
-
-/** 把 thrift overlay 写进 profile patch，覆盖插件行的 config */
-function cmdThriftApply() {
-	requireProfile();
-	const overlayFile = path.join(dshHome, "team-workflow", "thrift.json");
-	let overlay = {};
+/** 读 thrift overlay（`/thrift` 写的那个文件）；坏 JSON 当成空，别把预设生成拖下水 */
+function readThriftOverlay() {
+	const file = path.join(dshHome, "team-workflow", "thrift.json");
 	try {
-		overlay = JSON.parse(fs.readFileSync(overlayFile, "utf8"));
+		const raw = JSON.parse(fs.readFileSync(file, "utf8"));
+		return raw && typeof raw === "object" ? raw : {};
 	} catch {
-		ok(`${overlayFile} 不存在或不是 JSON，按默认值写`);
+		return {};
 	}
-	const patchFile = path.join(profileDir, "cordis.patch.yml");
-	const existing = fs.existsSync(patchFile) ? fs.readFileSync(patchFile, "utf8") : "[]\n";
+}
 
-	const thrift = Object.fromEntries(
-		["compactThresholdRatio", "pruneThresholdChars", "pruneHeadChars", "pruneTailChars"]
-			.filter((key) => overlay[key] !== undefined)
-			.map((key) => [key, overlay[key]]),
-	);
-	if (Object.keys(thrift).length === 0) {
-		ok(`${overlayFile} 里没有可覆盖的键，保持默认，不动 profile patch`);
+/**
+ * 把 thrift overlay 变成**真实生效**的预设。
+ *
+ * 为什么是重生成整份预设而不是写 profile patch：真在跑的两行在预设里
+ * （`agent.cordis.yml` 的 compaction group；host 那边三行被 dsh-web-app
+ * `disabled: true` 了），而预设是整份 entry list、**没有 patch 层** ——
+ * 原来的实现往 profile patch 写，目标 row 和键名又都不对，所以静默无效。
+ * 这里走和 `preset install` 完全同一条生成/校验路径，不另开一套。
+ */
+function cmdThriftApply() {
+	const standard = findStandardPreset();
+	if (!standard) fail("找不到 standard 预设目录");
+	const presetFile = path.join(dshHome, ".agent-presets", PRESET_ID, "agent.cordis.yml");
+	if (!fs.existsSync(presetFile)) {
+		fail(`team 预设还没生成（${presetFile}）：先跑 dsh-team preset install`);
+	}
+
+	const overlay = readThriftOverlay();
+	const overlayFile = path.join(dshHome, "team-workflow", "thrift.json");
+	if (Object.keys(overlay).length === 0) {
+		ok(`${overlayFile} 不存在、不是 JSON 或没有可覆盖的键，保持默认，不改预设`);
 		return;
 	}
 
-	// profile patch 只覆盖我们那一行的 config 键；其余原样保留
-	const patch = [{ id: ROW_ID, config: { thrift } }];
+	const pristine = fs.readFileSync(path.join(standard, "agent.cordis.yml"), "utf8");
+	let generated;
+	try {
+		generated = generateTeamPreset(pristine, { settings: readTeamSettings(), overlay });
+	} catch (error) {
+		// 不合法就在这里死：写进去 dsh 加载期会直接抛错，比现在报错严重得多
+		fail(`拒绝写入：${error.message}`);
+	}
 
-	const body = `${existing.trimEnd()}\n\n# dsh-team thrift apply 生成：覆盖 ${ROW_ID} 的节流阈值\n${toYaml(patch)}\n`;
+	const before = fs.readFileSync(presetFile, "utf8");
+	const after = readEffectiveThrift(generated.text);
 	if (dryRun) {
-		console.log(body);
+		console.log(`[dry-run] 写 ${presetFile}`);
+		// 回读不到就别印 undefined —— 那和显示假生效值是同一个毛病
+		console.log(
+			after ? `[dry-run] 将会生效：${JSON.stringify(after)}` : "[dry-run] 回读不到生效值（预设形状变了？先跑 preset install）",
+		);
 		return;
 	}
-	// 反复 apply 会重复追加；先把上一次生成的块切掉
-	const cleaned = existing.split(/# dsh-team thrift apply 生成/)[0].trimEnd();
-	fs.writeFileSync(patchFile, `${cleaned === "[]" ? "" : `${cleaned}\n\n`}${toYaml(patch)}\n`, "utf8");
-	ok(`已写入 ${patchFile}`);
-	console.log("  重启 dsh 后生效（压缩阈值是加载期固定的）。");
+	if (before === generated.text) {
+		ok(`预设已经是这个值，无需修改（${presetFile}）`);
+		return;
+	}
+	fs.writeFileSync(presetFile, generated.text, "utf8");
+	ok(`已写入 ${presetFile}`);
+	if (after) console.log(`  生效值：${JSON.stringify(after)}`);
+	console.log("  重启 dsh 后生效（这些阀值是加载期固定的），或切一次预设。");
 }
 
 /** 补丁结果码 → 中文短标签 */
@@ -501,7 +454,7 @@ function cmdHelp() {
   dsh-team status    [--profile tauri]
   dsh-team skills
   dsh-team preset install [--profile tauri]
-  dsh-team thrift apply   [--profile tauri] [--dry-run]
+  dsh-team thrift apply   [--profile tauri] [--dry-run]  写入 team 预设（需先 preset install）
   dsh-team lens install                把 pi-lens 连依赖一起拷进 vendor/，让本包自包含
   dsh-team lens check [文件] [--lsp]   真跑一次 analyze-cli，验 vendor 可不可用
   dsh-team patch [--status|--restore] [--dry-run]

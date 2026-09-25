@@ -8,6 +8,47 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [0.4.1]
+
+### 修复
+
+- **`/thrift` 改的阈值从来没生效过，而且 `/thrift show` 会把它显示成「已生效」。**
+  两个独立的错叠在一起，所以一直看着像正常：
+
+  - **写不到地方。** `dsh-team thrift apply` 把阈值写进 profile 的 `cordis.patch.yml`，
+    目标是 row `dsh-team-workflow`、键名 `pruneThresholdChars` 那一套。但真在跑的是
+    **agent 预设**（`~/.dsh/.agent-presets/team/agent.cordis.yml`）里 compaction group 下的
+    `compaction-basic` / `tool-result-pruner` 两行 —— 预设是**整份 entry list、没有 patch 层**，
+    profile patch 够不到它。而且键名也不对：插件只认
+    `thresholdChars` / `headChars` / `tailChars`，对未知键**直接 throw**。
+  - **显示假值。** `/thrift show` 打的是自己那份 overlay 文件，所以刚写完看着像已经生效，
+    实际重启后一切照旧。
+
+  修法是新增 `lib/preset-gen.js`：把「standard 预设 → team 预设」做成**纯文本进、纯文本出**的
+  纯函数（好单独自检），`thrift apply` 与 `preset install` 走同一条生成/校验路径，
+  `/thrift show` 从生成好的预设里**回读**真值。
+
+  顺带把两类**会让 dsh 起不来**的值拦在写出之前 —— 这两个插件的 config 是加载期解析的，
+  而用户改阈值只是一条 `/thrift`：
+
+  - `retainRatio ≥ thresholdRatio`（`compaction-basic` 会 throw）
+  - `thresholdRatio` / `retainRatio` 超出 `(0, 1]`（同一条 `assertRatio`；
+    `/thrift compact 2` 与手改 overlay 都能写进来 —— 这是本轮独立审查抓出来的缺口：
+    chars 三值拦住了、ratio 没拦住）
+  - `headChars + 标记 + tailChars > thresholdChars`（pruner 会 throw；标记 39 个字符，
+    照插件源码的 `codePointLength` 算，不是按 UTF-16 长度）
+  - 非整数 / 负数阈值
+
+  `/thrift show` 也分开报「生效中」与「待应用 overlay」：没有 overlay 就说没有，
+  不再拿内部默认值冒充用户意图。
+
+### 测试
+
+- `scripts/selftest-preset-gen.mjs` —— 覆盖换算与出厂默认、非法组合必须在写出前拦住、
+  键名映射到插件真键名、生成物改到真在跑的那两行、多处改动互不覆盖、
+  回读抗嵌套同名诱饵、`/thrift show` 区分生效值与待应用。
+  找不到 dsh 安装树时**跳过第 3 节并明说跳过了什么**，不只印「全部通过」。
+
 ## [0.4.0]
 
 ### 新增
