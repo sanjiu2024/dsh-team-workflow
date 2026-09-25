@@ -444,6 +444,7 @@ const PATCH_LABEL = {
 	restored: "已还原",
 	"would-restore": "待还原（dry-run）",
 	modified: "已被改过，跳过",
+	"backup-missing": "备份丢了，跳过（重跑 patch 会重留）",
 	gone: "文件已不存在",
 	broken: "还原后语法检查失败",
 };
@@ -726,6 +727,8 @@ switch (command) {
 		else fail("用法：dsh-team mc install [--version 0.43.0] | mc check");
 		break;
 	case "patch":
+		// patch 没有子词；`patch status`（漏敲 `--`）不能静默落到真改安装树
+		if (sub !== void 0) fail("用法：dsh-team patch [--status|--restore] [--dry-run]");
 		cmdPatch();
 		break;
 	case "preset":

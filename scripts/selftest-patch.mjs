@@ -122,9 +122,12 @@ const original = fs.readFileSync(chatFile, "utf8");
 
 	// 幂等：重复 apply 不重复写、不报错
 	const afterFirst = fs.readFileSync(chatFile, "utf8");
+	const manifestFile = path.join(tempHome, "team-workflow", "patch-cache", "manifest.json");
+	const manifestBefore = fs.readFileSync(manifestFile, "utf8");
 	const second = applyPatch({ dshHome: tempHome, profilesRoot });
 	assert.ok(second.every((row) => row.headers.every((h) => h.status === "already")), "重复 apply 应全是 already");
 	assert.equal(fs.readFileSync(chatFile, "utf8"), afterFirst, "重复 apply 不该再动文件");
+	assert.equal(fs.readFileSync(manifestFile, "utf8"), manifestBefore, "重复 apply 也不该重写 manifest");
 
 	// dry-run 只算不写
 	const beforeDry = fs.readFileSync(chatFile, "utf8");
