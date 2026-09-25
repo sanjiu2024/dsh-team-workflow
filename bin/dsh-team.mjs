@@ -26,7 +26,7 @@ const PRESET_ID = "team";
 /** 上游 magic-context 版本。升级前先跑 mc check 确认注册面没变。 */
 const MC_VERSION = "0.43.0";
 
-const pkg = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, "package.json"), "utf8"));
+const pkg = readJson(path.join(PKG_ROOT, "package.json"));
 const dshHome = process.env.DSH_HOME ?? path.join(os.homedir(), ".dsh");
 
 // —— 参数 ——
@@ -60,6 +60,23 @@ function ok(message) {
 	console.log(`✓ ${message}`);
 }
 
+/** 读一个 JSON 文件。文件不在就返回 fallback；格式坏了就报清楚是哪个文件，
+ * 而不是抛一个裸的 SyntaxError。 */
+function readJson(file, fallback) {
+	let text;
+	try {
+		text = fs.readFileSync(file, "utf8");
+	} catch (error) {
+		if (fallback !== undefined && error.code === "ENOENT") return fallback;
+		fail(`读不了 ${file}：${error.message}`);
+	}
+	try {
+		return JSON.parse(text);
+	} catch (error) {
+		fail(`解析不了 ${file}：${error.message}`);
+	}
+}
+
 function requireProfile() {
 	if (!fs.existsSync(path.join(profileDir, "package.json"))) {
 		fail(`profile "${profile}" 不存在：${profileDir}`);
@@ -90,7 +107,7 @@ function run(command, args, options = {}) {
 
 function readProfilePkg() {
 	requireProfile();
-	return JSON.parse(fs.readFileSync(path.join(profileDir, "package.json"), "utf8"));
+	return readJson(path.join(profileDir, "package.json"));
 }
 
 /** 取 SKILL.md 的 description；ponytail 那批用的是折叠块标量 `description: >` */
@@ -146,7 +163,7 @@ function toYaml(value, indent = 0) {
 function cmdInstall() {
 	requireProfile();
 	const pkgFile = path.join(profileDir, "package.json");
-	const before = JSON.parse(fs.readFileSync(pkgFile, "utf8"));
+	const before = readJson(pkgFile);
 	const deps = before.dependencies ?? {};
 	const bundles = before.dsh?.profile?.bundles ?? [];
 	const spec = `link:${PKG_ROOT}`;
@@ -188,7 +205,7 @@ function cmdInstall() {
 function cmdUninstall() {
 	requireProfile();
 	const pkgFile = path.join(profileDir, "package.json");
-	const before = JSON.parse(fs.readFileSync(pkgFile, "utf8"));
+	const before = readJson(pkgFile);
 	const deps = { ...(before.dependencies ?? {}) };
 	delete deps[PKG_NAME];
 	const bundles = (before.dsh?.profile?.bundles ?? []).filter((b) => b !== PKG_NAME);
@@ -334,12 +351,8 @@ function findStandardPreset() {
 }
 
 function readTeamSettings() {
-	const file = path.join(PKG_ROOT, "team", "agent-settings.json");
-	try {
-		return JSON.parse(fs.readFileSync(file, "utf8"));
-	} catch {
-		return {};
-	}
+	// 文件不在时保持旧行为：安静地返回空设置，让 preset install 走「没有 compaction」的警告分支。
+	return readJson(path.join(PKG_ROOT, "team", "agent-settings.json"), {});
 }
 
 /** 把 team 的 reserveTokens/keepRecentTokens 换成 ratio 形式的 compaction-basic 配置 */
