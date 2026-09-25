@@ -1,0 +1,22 @@
+{
+  "_说明": [
+    "linux/bash 命令工具。让 AI 在 Windows 上也能跑 sed/grep/find/awk 这类 linux 命令。",
+    "",
+    "为什么本包自己注册工具，而不是打开 dsh 自带的 tool-bash：",
+    "dsh 的 ctx.shell 是单例缝，Windows 上被 pwsh-sandbox 占着；只把 tool-bash 打开",
+    "会得到一个『名叫 bash、实际跑 PowerShell』的工具。换执行器要改 dsh 安装树的预设，",
+    "升级会被覆盖。所以这里自己 spawn bash，只往 tools 注册表加工具。",
+    "",
+    "代价：这些命令不经过 dsh 的 sandbox 管辖（dsh 的 Windows ACL 后端本身也只有",
+    "partial 保证）。要更强的隔离，把 enabled 关掉，用 dsh 自己的 pwsh 工具。",
+    "",
+    "mode: auto  用 PATH 里的 bash（Windows 上由 Git for Windows 提供，MINGW 层）",
+    "      wsl   用 wsl.exe -e bash（真 Linux 内核；需要机器已装 WSL 发行版）"
+  ],
+  "enabled": true,
+  "mode": "auto",
+  "timeoutMs": 120000,
+  "maxTimeoutMs": 600000,
+  "maxOutputBytes": 65536,
+  "maxSessionOutputChars": 16384
+}

@@ -41,6 +41,7 @@ dsh-team uninstall                   # 卸载
 | context7 | `docs` 工具 | 查第三方库官方文档（免 key，直连 HTTP，不走 MCP）。一个工具内部完成「搜库 → 取文档」，因为多一次工具调用 = 多一整个 step，比多注册一个工具贵约 45 倍 |
 | 命令 | `/team-baseline` `/thrift` `/audit-log` | `commands.register`，只回显给 UI，不进模型上下文 |
 | 会话交接 | `agent/error` + `sessionController` | 上下文超限且 dsh 自救失败时：写交接文档（未完成任务）→ 建新会话 → 把任务注入并开跑 → 旧会话留提示 |
+| linux 命令 | `tools.register`（自己 spawn bash） | Windows 上也能跑 `sed`/`grep`/`find`/`awk` 等 linux 命令。`bash` 一次性、`bash_open`/`bash_send`/`bash_close` 持久会话（`cd`/变量/函数保留）。见「## linux 命令」 |
 | 技能 | `skills/*/SKILL.md` | 复用 dsh 原生 skill 系统，含 `/review`（用户可调用） |
 
 ## 和 pi 版的差异（都是 dsh 的硬约束，不是偷懒）
@@ -64,6 +65,85 @@ dsh-team uninstall                   # 卸载
   `sessions.open(id)` 只存在于 `dsh-api-session-controller` 的 client half，
   而本包是纯 host 包（`package.json` 没有 `dsh.client`）。所以做的是
   「建新会话 + 注入任务 + 旧会话里写明去哪」，不假装跳转。
+
+## linux 命令
+
+让 AI 在 Windows 上也能跑 linux 命令（`sed`/`grep`/`find`/`awk`/`wc`/`sort`/`xargs` 等）。
+
+### 为什么不直接打开 dsh 自带的 `tool-bash`
+
+dsh **已经有** `tool-bash`，但出厂预设按平台二选一
+（`dsh-agent-presets/presets/standard/agent.cordis.yml`）：
+
+```yaml
+- id: tool-bash
+  disabled: !!js process.platform === 'win32'   # Windows 上禁用
+- id: tool-pwsh
+  disabled: !!js process.platform !== 'win32'
+```
+
+而 **`ctx.shell` 是单例缝**（`dsh-shell/lib/index.js` 的注释写明「a host composes
+exactly one provider of `ctx.shell`」，两个一起挂会因服务重名抛错）。Windows 上这个
+单例被 `pwsh-sandbox` 占着，所以**只把 `tool-bash` 打开会得到一个「名叫 bash、实际
+跑 PowerShell」的工具** —— 比没有更糟。换执行器则要改 dsh 安装树的预设，升级会被覆盖。
+
+所以本包**自己 spawn bash，只往 `tools` 注册表加工具**，完全不碰 `ctx.shell`。
+
+### 四个工具
+
+| 工具 | 用途 |
+| --- | --- |
+| `bash` | 一次性。每次全新 shell，`cd`/变量不保留。查文件、跑构建、git 之类 |
+| `bash_open` | 开持久会话（同一会话重复调用只复用） |
+| `bash_send` | 往持久会话发命令，`cd`/变量/shell 函数跨调用保留 |
+| `bash_close` | 收掉持久会话（不收也不泄漏，组合拆除时会自动清理） |
+
+实测（本机 Windows + Git Bash）：
+
+```bash
+$ uname -s                 # MINGW64_NT-10.0-26200
+$ grep --version | head -1 # grep (GNU grep) 3.0
+$ printf 'a\nb\nc\n' | grep -c .   # 3（多行命令正确）
+```
+
+持久会话里 `cd /tmp` 之后下一次 `bash_send` 的 `pwd` 仍是 `/tmp`；`export X=1`
+和 `myfn() { ...; }` 都跨调用保留。语法错误只会得到一个非零退出码，不会杀死会话。
+
+### 两个形态都做，是因为取舍不同
+
+一次性会话可预测（每条命令互不影响），但「反复 cd 进一个目录」很费 token；
+持久会话省 token，代价是**状态会让「这次为什么不通」变难查**。所以两个都给，
+模型按场景选。
+
+持久会话的已知天花板：
+
+- **交互式命令不能用**（`vim`、要密码的 `ssh`）—— 会挂到超时，然后会话判死重建。
+- **持久会话里 `exit` 会真的关掉会话**（bash 语义如此）。想继续用就重开一个。
+- **命令在后台持续写 stdout 会污染下一条命令的输出** —— 彻底解决要上 PTY +
+  独立 fd（dsh 的 `tool-bash-persistent` 那么做），本包按「够用」收手。
+
+### 安全边界（重要）
+
+这些命令**不经过 dsh 的 sandbox 管辖** —— 因为绕开了 `ctx.shell` 单例。
+（dsh 在 Windows 上的 ACL 后端本身也只声明 `partial` 保证。）要更强的隔离：
+把 `team/extensions/bash-linux.json` 的 `enabled` 设为 `false`，改用 dsh 自带的 `pwsh` 工具。
+
+配置：
+
+```jsonc
+// team/extensions/bash-linux.json
+{
+  "enabled": true,
+  "mode": "auto",     // auto = PATH 里的 bash（MINGW）；wsl = wsl.exe -e bash（真 Linux 内核）
+  "timeoutMs": 120000,
+  "maxTimeoutMs": 600000,
+  "maxOutputBytes": 65536,
+  "maxSessionOutputChars": 16384
+}
+```
+
+`mode: "wsl"` 走**真 Linux 内核**而不是 MINGW 模拟层，但需要机器装过 WSL 发行版
+（`wsl --install`）；没装会在调用时报一条可读的错误。
 
 ## 会话交接
 
@@ -133,8 +213,9 @@ ls ~/.dsh/storages/handoffs/
 npm test
 ```
 
-10 个自检，每个都用假 ctx 跑真实逻辑：系统提示段顺序、三个命令、审计落盘与脱敏、节流统计、
-异常隔离、magic-context 折叠、thrift 阈值换算与预设生成、context7、lens 工具集、会话交接。
+11 个自检，每个都用假 ctx 跑真实逻辑：系统提示段顺序、三个命令、审计落盘与脱敏、节流统计、
+异常隔离、magic-context 折叠、thrift 阈值换算与预设生成、context7、lens 工具集、会话交接、
+linux 命令工具。
 
 `scripts/selftest-handoff.mjs` 盯的是「错了会怎样」最狠的四条：
 
@@ -145,6 +226,22 @@ npm test
    太长会把新会话也顶爆）；会话 id 里的 `../` 不能把文档写到目录外。
 4. **四级降级不炸** —— 无 `sessionController`、建会话失败、注入失败、旧会话写不进去
    各自都要有出路，且都不抛。
+
+`scripts/selftest-bash-linux.mjs` **真跑 bash**（没装 bash 的机器会跳过并明说），守的几条是：
+
+1. **持久会话真的持久** —— `cd`、`export`、`myfn() {}` 都要跨 `bash_send` 保留。
+   这是持久会话唯一的存在理由，不验它等于没测。
+2. **多行命令不被拆开 / 引号不被吃掉** —— 这两条都是真踩过的坑（单引号拼接方案
+   把 `printf 'a\nb\nc\n' | grep -c .` 拆成了三条命令）。
+3. **语法错误不杀死 shell** —— 否则一次误输入就丢掉整个会话状态。
+4. **stderr 也受上限约束** —— 真 bug：原来只截 stdout，一个猛写 stderr 的命令
+   会把上下文顶爆（实测超限 16 倍）。
+5. **超时后进程能自己退出** —— 真 bug：`taskkill` 没 `unref`、stdio 管道没关，
+   超时路径会引住事件循环，跑完不退（在 dsh 里就是关不干净）。这条**另起子进程**
+   验证，因为 `_getActiveHandles()` 里泄漏的是 Socket 而不是 ChildProcess。
+6. **命令读 stdin 不会吞掉协议** —— 真 bug：命令自己读 stdin（`read`、要密码的
+   `ssh`）会吃掉后面的协议行（含哨兵），导致输出错位到下一次调用。
+   靠 `eval ... < /dev/null` 隔离。
 
 ## 来源与许可
 

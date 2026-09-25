@@ -8,6 +8,55 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [0.6.0]
+
+新增 linux/bash 命令工具：Windows 上也能跑 `sed`/`grep`/`find`/`awk`/`xargs` 这些 linux 命令。
+
+背景：dsh **已经有** `tool-bash`，但出厂预设按平台二选一（`tool-bash` 在 win32 禁用）。
+而且**不能只把它打开** —— `ctx.shell` 是单例缝（`dsh-shell` 的注释写明「a host composes
+exactly one provider of ctx.shell」，两个一起挂会因服务重名报错），Windows 上这个单例
+被 `pwsh-sandbox` 占着。所以打开 `tool-bash` 会得到一个「名叫 bash、实际跑 PowerShell」
+的工具 —— 比没有更糟；而换执行器要改 dsh 安装树的预设，升级会被覆盖。
+
+做法：本包自己 spawn bash，只往 `tools` 注册表加工具，不碰 `ctx.shell`。
+四件：`bash`（一次性，每次新 shell）/ `bash_open` / `bash_send` / `bash_close`（持久会话，
+`cd`、变量、shell 函数跨调用保留）。两个形态都给，因为取舍不同：一次性可预测但反复 `cd`
+费 token，持久省 token 但状态会让「这次为何不通」变难查。
+
+`mode: "wsl"` 可改走 `wsl.exe -e bash`（真 Linux 内核而非 MINGW 模拟层），
+需机器装过 WSL 发行版；没装会报一条可读错误。
+
+实现上踩过并修掉的坑（都留了回归测试）：
+
+- **持久会话不能用 `bash -i`**。实测 `-i` 在管道下会回显输入 + 吐提示符 + 带 ANSI，
+  而回显的脚本文本就含自用的哨兵串，会在错误位置提前匹配。改用 `bash -s`（非交互，
+  同样是**一个进程**，所以状态照旧保留）。
+- **命令必须 base64 编码后再 eval**，不能单引号拼接。单引号方案在三种输入上全错：
+  多行命令被拆成多条（`printf 'a\nb\nc\n' | grep -c .` 返回错结果）、函数定义
+  无法跨调用保留、命令自带单引号时转义链易错。
+- **`shellQuote` 曾被写坏**：转义结果漏了反斜杠，任何含单引号的字符串都会跑错。
+  自检改成**用真 shell 验往返**，不比对字面串（抄转义层数会假绿）。
+- **stderr 曾被无界输出**：只对 stdout 调了截断，且收集预算是「先判后推」——
+  实测 `head -c 2MB /dev/urandom | base64 >&2` 一次送来 65536 字节，而配置上限 4096，
+  超了 16 倍且完全没截。改成「推后判 + 滚动裁剪」，且 stdout/stderr 各给一半预算。
+- **超时/中止后不报伪退出码**：那是 `taskkill` 的退出码不是命令的，报出来会误导模型。
+- **超时杀树后进程退不出去**：`taskkill` 是 fire-and-forget 且没关 stdio 管道，
+  实测超时路径会留下 Socket 引住事件循环 —— 脚本跑完不退（退出码 124），
+  在 dsh 里就是「关不干净」。修法：`unref()` taskkill + `destroy()` 两侧管道。
+  回归测试**另起子进程**看它会不会自己结束 —— `_getActiveHandles()` 里泄漏的是
+  Socket 而不是 ChildProcess，查错对象就查不出来（试过）。
+- **`pwd -W` 而不是 `$PWD`**：`$PWD` 在 Git Bash 里是 MSYS 路径（`/c/Users`），
+  而 Node 在 Windows 上 `spawn({cwd})` 要原生路径（`C:/Users`）—— 拿 MSYS 路径去
+  起新 shell 直接 ENOENT。这会静默堵死超时后的会话重建，而且错误文字指向 bash
+  （『找不到 bash』），极难查。
+
+安全边界说清楚：这些命令**不经过 dsh 的 sandbox 管辖**（因为绕开了 `ctx.shell` 单例；
+dsh 在 Windows 上的 ACL 后端本身也只声明 `partial` 保证）。要更强隔离就把
+`team/extensions/bash-linux.json` 的 `enabled` 设为 `false`，改用 dsh 自带的 `pwsh`。
+
+已知天花板：交互式命令（`vim`、要密码的 `ssh`）会挂到超时；持久会话里 `exit` 会真的
+关掉会话（bash 语义）；后台进程持续写 stdout 会污染下一条命令的输出。
+
 ## [0.5.1]
 
 修一个会**清空用户历史对话**的写盘 bug，两个根因。
