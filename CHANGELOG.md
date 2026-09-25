@@ -8,6 +8,54 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [0.5.1]
+
+修一个会**清空用户历史对话**的写盘 bug，两个根因。
+
+症状：重启 dsh 后旧对话全部消失，报 `stored session "…" is corrupt: session event at
+seq N message must have role "user"`。破坏发生在写盘时，暴露在下次重启时，中间窗口期
+毫无提示 —— 所以一直没被发现。
+
+两个根因属于同一类错误：**dsh 对 surface 消息的校验在 append 时不跑，只在重新加载时跑**
+（`user/message` 在 invariant 里直接 `break`，而 `adoptSessionEvent` 走的是严格的
+`assertMessageEventShape`）。append 时不校验的字段，必须由写入方自己守住。
+
+1. `/` 的 ordinal 剥不掉（`lib/mc.js` / `lib/mc-adapter.js`，158 处）。`stripOrdinal`
+   只锚字符串开头，但 `textOfMessage` 把 reasoning 与 text 各块的文本拼成一个串，
+   而 bundle 只给 text 块打 ordinal —— 它落在拼接串中段（实测下标 603）而剥不掉。
+   于是已存在的 assistant 消息被 `alignSurface` 当成「新增」，再经
+   `toEventData("user/message", …)` 把 assistant 的 role 原样写了进去。
+   **修两处**：逐行剥；且 `user/message` 的 role 无条件强制为 "user"（兜底，
+   防上游改变 ordinal 写法又复发）。
+2. 缺 `id`（`lib/lens.js`，12 处）。`additionalContexts` 构造 message 时漏了 `id`，
+   加载期报 `lacks an identified message`。
+
+新增（工具与自检）：
+
+- `lib/session-log.js`：按 dsh 自己的方式读写多帧 zstd 会话日志。**不能靠搜 magic
+  字节切帧** —— 压缩数据里偶然出现 `28 B5 2F FD` 就会把一行 JSON 劈成碎片（第一版
+  修复脚本就这么错过）。改用 dsh 的结构化扫帧（解析帧头再逐块跳），与 dsh 源码里的
+  `scanZstdFrames` 逐字节比对过 12/12 一致。
+- `scripts/fix-mc-corruption.mjs`：修数据（默认只扫描、退出码 1；`--fix` 才动手，先备份）。
+  修法只有一种 —— 只改 role / 只补 id，其他一律不动（摘掉 surfaceOp 会被 dsh 拒：
+  `requires a surfaceOp marker`；自替换也不行：range 必须小于自身 seq）。
+- `scripts/verify-sessions.mjs`：起最小 cordis、挂 dsh 自己的持久化插件、调
+  `readColdSessionLog` —— 走的就是重启后恢复对话那条路。反向验证时逐字复现了用户的
+  原始报错，修后 12/12 通过。
+- `scripts/selftest-mc-shape.mjs`：形状自检（零依赖，复刻 dsh 的校验判定），已进
+  `npm test`。含「压缩流里的假 magic」回归 —— 搜 magic 的实现在这里会红。
+
+另外（本轮的其余清理）：
+
+- `stagePiShim` 的 `new URL` 包了 try/catch（URL 不合法时降级，不再把插件启动拖下水）。
+- `toEventData` **删掉三个死分支**：它曾经为 `system/message` / `assistant/message` /
+  `tool/result` 预留造法，但三个全写错了 source —— dsh 要求 assistant 是
+  `{kind:"model", provider, model}`、tool/result 是 `{kind:"tool", callId}`，而当时
+  统一写 `{kind:"plugin"}`。现在只造 `user/message`（唯一实际用到的），把四种类型的
+  完整形状写成注释备查，不再预留坏形状。
+- 修数据脚本的备份改到会话目录**外**：备份文件名仍以 `session.` 开头，留在原目录会被
+  dsh 的会话枚举当成第二个会话扫出来。
+
 ## [0.5.0]
 
 ### 新增
