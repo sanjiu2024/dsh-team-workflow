@@ -180,28 +180,60 @@ e2e ✓ 折叠落地 1 次
 
 结论：**replace 路径在生产里是被行使的**，不是死代码。
 
-## 5. 为什么真 dsh 那几轮没折（不是 bug）
+## 5. 真机日志：修复前的证据链
 
-bundle 的触发是**三道闸串联**，缺一不可：
+修复之前，真机（tauri profile）的日志把「折叠白算」这条链完整记了下来。
 
-1. 占用率 ≥ floor（默认 65 − 2 = **63%**）；
-2. 尾部不能太小：`isMeaningful` = `chunk.hasMore || trueRawEligibleTokens >= 6000 || … || messageCount >= 12`
-   （`index.js:18310`）；
-3. `hasProtectedEligibleHead` = `boundary.offset < boundary.protectedTailStart`。
-
-真 dsh 实测曲线：`11.3% → 12.3% → 17.0% → 49.0% → 50.4%`，最后停在：
+**折是折过 2 次的**（不是从没触发）：
 
 ```text
-compartment trigger: not firing at 50.4% because unsummarized tail from 1 is too small
+2026-09-24T21:50:21Z  compartment trigger: proactive fire at 79.2% (floor=63%)
+2026-09-24T21:50:21Z  historian trigger fired — spawning subagent
+2026-09-24T22:07:46Z  compartment trigger: proactive fire at 63.5% (floor=63%)
+2026-09-24T22:07:46Z  historian trigger fired — spawning subagent
 ```
 
-**第 3 道闸**挡的（整个历史都落在受保护尾里）。注意这里 `usage` 是 bundle 从
-`getContextUsage()` 拿到的**真值**（`62685 tokens / 128000`），
-`MC_CONTEXT_WINDOW` 在 `requestContext()` 能给出窗口时不参与换算 —— 所以
-「压窗口」这个手段在真 dsh 里对占用率无效，只能靠**真堆内容 + 多轮对话**
-把第 2、3 道闸一起喂饱。
+DB 里也确有 2 行（`compartments` = 2，创建于 21:51:53Z / 22:07:57Z，即本地 05:51 / 06:07）。
 
-**这是 bundle 的调参问题，不是落地 bug** —— 落地的正确性已由 4.1/4.2 单独证明。
+**但历史没有变短**，于是用量一路顶到 **92.0%**，超过 dsh 自带压缩的
+`thresholdRatio: 0.9`（= 115,200 tokens），审计日志里压缩照常开火：
+
+```text
+compaction_prune  2026-09-25T04:45:43+08:00
+compaction_start  2026-09-25T04:46:06+08:00
+compaction_end    2026-09-25T04:46:39+08:00
+compaction_start  2026-09-25T05:34:39+08:00
+compaction_end    2026-09-25T05:34:54+08:00
+compaction_start  2026-09-25T05:42:46+08:00
+```
+
+**这就是用户看到的现象**：magic-context 折了 2 次、摘要也进了系统提示，
+用量还是撞到 92%、dsh 自带压缩还是开火 —— 因为折叠从没落到 surface 上，
+历史一条没少。（上面这些压缩时刻都早于本次修复的提交时间 09:03，属于旧构建。）
+
+## 5.1 修复后应该看到什么
+
+修复落地后，同样是这两次折叠，日志里会多出：
+
+```text
+[mc] 折叠已落地：N 条 → 1（surface X → Y）
+```
+
+且用量应在 63% 附近被压回去，**不再爬到 90%** —— 这样 dsh 自带的压缩就只
+在 90% 兜底，平时不抢 historian 的活。**这一条需要在真机上确认**（下面的下一步写了怎么验）。
+
+## 5.2 复现测试时的观测（解释清楚，别误读）
+
+用 `mc-verify` profile 压测时另有一套观测，和真机不同，记下来免得误判：
+
+- 曲线 `11.3% → 12.3% → 17.0% → 49.0% → 50.4%`，停在同一句
+  `not firing at 50.4% because unsummarized tail from 1 is too small`；
+- 那是把`execute_threshold_percentage` 压到 20% 的测试配置下的现象 ——
+  那个 profile 里历史总量才 ~62k tokens，可折头部 ~58k，触发闸的门槛与真机不同；
+- `MC_CONTEXT_WINDOW` 在 `requestContext()` 能给出窗口时**不参与换算**（真 dsh 恒返回 128000），
+  所以「压窗口」这个手段在真机无效，只能靠真堆内容。
+
+**这些是 bundle 的触发闸行为，不是落地 bug** —— 落地的正确性由 4.1/4.2 单独证明。
 
 ## 6. 明确的天花板（说清楚，不是遗漏）
 
