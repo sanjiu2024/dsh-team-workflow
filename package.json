@@ -1,6 +1,6 @@
 {
   "name": "dsh-team-workflow",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "description": "团队基线工作流插件包（dsh 版）：团队规范注入、审计日志、上下文节流、rtk 输出压缩、pi-lens 代码智能、团队预设与 CLI。",
   "type": "module",
@@ -42,7 +42,7 @@
     }
   },
   "scripts": {
-    "test": "node scripts/selftest.mjs && node scripts/selftest-mc.mjs && node scripts/selftest-surface.mjs && node scripts/selftest-fold.mjs && node scripts/selftest-patch.mjs && node scripts/selftest-usage.mjs && node scripts/selftest-lens-tools.mjs && node scripts/selftest-context7.mjs && node scripts/selftest-preset-gen.mjs && node scripts/selftest-mc-shape.mjs && node scripts/selftest-handoff.mjs && node scripts/selftest-bash-linux.mjs && node scripts/selftest-auto-update.mjs && node scripts/selftest-worktree.mjs",
+    "test": "node scripts/selftest.mjs && node scripts/selftest-mc.mjs && node scripts/selftest-surface.mjs && node scripts/selftest-fold.mjs && node scripts/selftest-patch.mjs && node scripts/selftest-usage.mjs && node scripts/selftest-lens-tools.mjs && node scripts/selftest-context7.mjs && node scripts/selftest-preset-gen.mjs && node scripts/selftest-mc-shape.mjs && node scripts/selftest-handoff.mjs && node scripts/selftest-bash-linux.mjs && node scripts/selftest-auto-update.mjs && node scripts/selftest-worktree.mjs && node scripts/selftest-tool-schema.mjs",
     "test:fold": "node scripts/e2e-fold.mjs"
   },
   "engines": {

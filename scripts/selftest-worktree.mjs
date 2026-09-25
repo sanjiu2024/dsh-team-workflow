@@ -568,10 +568,14 @@ check("工具注册：4 个工具名与参数齐备，且 dispose 可重入", ()
 		assert.equal(typeof tool.execute, "function");
 	}
 	const del = registered.find((t) => t.name === "worktree_drop");
-	assert.ok(del.parameters.name.required, "drop 必须要求 name");
-	assert.ok(del.parameters.force, "要有 force 但默认关");
-	// 关键：force 不能是 required（默认必须是「安全的那条路」）
-	assert.notEqual(del.parameters.force.required, true, "force 不能是必填");
+	// 注：parameters 已经是**编译后的 JSON Schema**（见 lib/util.js 的 toParameterSchema），
+	// 所以必填看顶层 `required` 数组，不再看属性上的 DSL 布尔值。
+	assert.equal(del.parameters.type, "object", "顶层必须是 type:object");
+	assert.ok(del.parameters.properties.name, "drop 必须有 name 参数");
+	assert.deepEqual(del.parameters.required, ["name"], "只应 name 必填");
+	// 关键：force 不能是必填（默认必须是「安全的那条路」）
+	assert.ok(!del.parameters.required.includes("force"), "force 不能是必填");
+	assert.ok(!del.parameters.required.includes("keepBranch"), "keepBranch 不能是必填");
 	result.dispose();
 	result.dispose();
 });

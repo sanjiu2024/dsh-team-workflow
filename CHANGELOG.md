@@ -8,6 +8,63 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [1.1.1]
+
+修一个从 0.6.0 就存在的线上 400：`bash` 等 8 个工具的 `parameters` 不是合法 JSON Schema。
+
+### 症状
+
+用户会话直接报：
+
+```text
+Invalid schema for function 'bash':
+{"description":"这条命令做什么，5-10 个词的简短说明（显示给用户看）。",
+ "type":"string"} is not of type "string"
+```
+
+### 根因
+
+dsh 的 `ctx.tools.register()` 要的是**编译好的 JSON Schema**。「属性表 DSL」
+（`required: true` 标在属性上）只对 `defineTool()` 有效 —— 它会调
+`parameterSchemaSpecToJsonSchema()` 把 DSL 编译成 `{type:"object", properties, required:[...]}`。
+
+本包不走 `defineTool`（import 不了 `@deepseek-ai/*`），于是 DSL 被**原样透传**：
+
+- `register()` 只校验 `output.schema`，**不碰 `parameters`**
+- `schemaOf()`（`dsh-tools/lib/index.js:2934`）把 `parameters` 一字不改发给 provider
+
+所以顶层既没有 `type: "object"` 也没有 `properties` 包装。而参数名恰好叫
+`description` 时，它在 JSON Schema 里是**注解关键字**（值必须是字符串），
+我们给的是对象 → provider 400。
+
+影响面：`bash` / `bash_open` / `bash_send` / `bash_close` / `worktree_new` /
+`worktree_list` / `worktree_merge` / `worktree_drop`，共 8 个工具。
+（`docs` / `lens_check` / `lens_tools` 一直用的是完整 JSON Schema 字面量，不受影响 ——
+这也说明仓库里两种写法共存了很久，只是 DSL 那种一直没被真机校验过。）
+
+### 为什么以前的自检测不出来
+
+各 `selftest-*.mjs` 里的 `tools.register` 是**假实现**（只把 definition 存进 Map），
+从不校验 schema。所以这个 bug 从 0.6.0 活到了 1.1.0，自检一直是绿的。
+
+### 修法
+
+新增 `toParameterSchema()`（`lib/util.js`）：把属性表 DSL 编译成 dsh 要的 JSON Schema
+（`required: true` 收集进顶层数组、属性自身不再带 `required`、补 `type:object`
+与 `properties`），已是 JSON Schema 形态时**原样返回** —— 两种写法共存，
+既有的 `context7`/`lens`/`lens-tools` 不受影响。8 个工具统一过它，一处修全好。
+
+新增 `scripts/selftest-tool-schema.mjs`：**不再用假 register**，而是照 dsh 的
+`assertSupportedJsonSchema` 子集真校验每个工具的 `parameters`，并带反例断言
+（确保这个自检真能抓到那个 bug）。
+
+### 验证
+
+- 用 dsh **自己的** `assertSupportedJsonSchema` 逐个验：8/8 合法；
+  修复前那份参数被它拒（`command is not a supported keyword`）
+- 反向验证：把 `toParameterSchema` 退化成「原样返回」→ 新自检 6 条变红
+- 15 个自检全绿
+
 ## [1.1.0]
 
 需求先成文、开发时对照；写代码的子代理各自在独立 worktree 里干活，写完合回主分支。
