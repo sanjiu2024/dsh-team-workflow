@@ -20,7 +20,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 const ROOT = new URL("../", import.meta.url);
-const { AUTO_UPDATE_DEFAULTS, checkAndUpdate, compareVersions, decideUpdate, describeUpdate, installAutoUpdate, parseVersion, runGit } = await import(
+const { AUTO_UPDATE_DEFAULTS, checkAndUpdate, compareVersions, decideUpdate, describeUpdate, installAutoUpdate, parseVersion } = await import(
 	new URL("lib/auto-update.js", ROOT).href
 );
 
@@ -72,6 +72,18 @@ check("decideUpdate：本地领先 → 跳过（不合并用户的分支）", ()
 	const d = decideUpdate({ isRepo: true, dirty: false, ahead: 2, behind: 0 });
 	assert.equal(d.action, "skip");
 	assert.equal(d.reason, "ahead");
+});
+check("decideUpdate：分叉（ahead+behind 都 >0）时也报出 behind", () => {
+	const d = decideUpdate({ isRepo: true, dirty: false, ahead: 3, behind: 5 });
+	assert.equal(d.reason, "ahead", "分叉按 ahead 处理（ff 不可能）");
+	assert.match(d.detail, /落后 5/, `应并列报出 behind，实际：${d.detail}`);
+});
+check("decideUpdate：读不出工作树状态时文案与「真有改动」不同", () => {
+	const unknown = decideUpdate({ isRepo: true, dirty: true, dirtyUnknown: true });
+	const real = decideUpdate({ isRepo: true, dirty: true });
+	assert.equal(unknown.reason, "dirty", "仍然跳过（保守方向）");
+	assert.notEqual(unknown.detail, real.detail, "两种情况建议不同，文案不能一样");
+	assert.match(unknown.detail, /读工作树状态失败/, `实际：${unknown.detail}`);
 });
 check("decideUpdate：落后 → 拉", () => {
 	const d = decideUpdate({ isRepo: true, dirty: false, ahead: 0, behind: 3, localVersion: "0.6.0", remoteVersion: "0.7.0" });
@@ -305,6 +317,62 @@ try {
 			assert.ok(r.status === "检查失败" || r.status === "跳过", `实际 ${r.status}`);
 			assert.match(r.detail ?? "", /no-such-branch-xyz|分支/, `应提到分支名：${r.detail}`);
 		});
+	}
+
+	// ⑪ 安全加固（第 3 层审查指出）：
+	// (a) 配置的 remote/branch 不能以 `-` 开头（execFile 不过 shell，但 git 会把
+	//     `--upload-pack=…` 这类值当选项）——纵深防御，零成本。
+	{
+		const byRemote = await checkAndUpdate({ cwd: localDir, config: { ...cfg, remote: "--upload-pack=/bin/sh" } });
+		check("安全：拒绝 `-` 开头的 remote", () => {
+			assert.equal(byRemote.changed, false, "不能去执行它");
+			assert.equal(byRemote.reason, "bad-config", `实际 ${byRemote.reason}`);
+		});
+		const byBranch = await checkAndUpdate({ cwd: localDir, config: { ...cfg, branch: "-x" } });
+		check("安全：拒绝 `-` 开头的 branch", () => {
+			assert.equal(byBranch.reason, "bad-config", `实际 ${byBranch.reason}`);
+		});
+	}
+
+	// (b) 不触发用户仓库自己的 post-merge hook：那些 hook 是用户为手动 git 操作配的，
+	// 自动更新在不告知的情况下跑它们属于越权（可能做部署、跑迁移）。
+	// 这条必须带对照：不抑制时 hook 确实会跑，否则测不出抑制是否生效。
+	{
+		const hookMarker = path.join(scratch, "HOOK_RAN");
+		const hookPath = path.join(localDir, ".git", "hooks", "post-merge");
+		fs.mkdirSync(path.dirname(hookPath), { recursive: true });
+		fs.writeFileSync(hookPath, `#!/bin/sh\ntouch "${hookMarker.replace(/\\/g, "/")}"\n`, "utf8");
+		try {
+			fs.chmodSync(hookPath, 0o755);
+		} catch {
+			/* Windows 上 chmod 可能无效，git 仍按可执行读 */
+		}
+
+		// 对照：手动 merge（不抑制）应该跑 hook
+		writePkg(originDir, "1.1.0");
+		commit(originDir, "v1.1.0");
+		git(localDir, ["fetch", "-q", "origin", "main"]);
+		fs.rmSync(hookMarker, { force: true });
+		try {
+			git(localDir, ["merge", "--ff-only", "origin/main"]);
+		} catch {
+			/* 已经最新时没有 merge 可做 */
+		}
+		const controlRan = fs.existsSync(hookMarker);
+		check("对照：不抑制时 post-merge hook 确实会跑（否则下面的断言测不出东西）", () => {
+			assert.equal(controlRan, true, "对照没跑起来 —— 这个 hook 测试不成立");
+		});
+
+		// 实测：自动更新应该抑制它
+		writePkg(originDir, "1.2.0");
+		commit(originDir, "v1.2.0");
+		fs.rmSync(hookMarker, { force: true });
+		const r = await checkAndUpdate({ cwd: localDir, config: cfg });
+		check("安全：自动更新不触发用户的 post-merge hook", () => {
+			assert.equal(r.status, "已更新", `前提：这次应该真的拉了，实际 ${r.status} / ${r.detail}`);
+			assert.equal(fs.existsSync(hookMarker), false, "自动更新不该跑用户的 hook");
+		});
+		fs.rmSync(hookPath, { force: true });
 	}
 
 	// ⑦ installAutoUpdate 不阻塞、状态可读、绝不抛

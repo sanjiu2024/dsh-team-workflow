@@ -1,10 +1,14 @@
 # dsh-team-workflow
 
 把 [pi-workflow](https://github.com/kurumi1ksllq/pi-workflow) 的团队基线搬进 **DeepSeek Harness (dsh)**。
-一个 npm 包，装完提供：系统提示里的团队规范、审计日志、上下文节流统计、rtk 输出压缩、
-pi-lens 静态检查、上下文超限时的自动会话交接、一个 `/review` skill 和 10 个技能。
+一个 npm 包，装完提供：系统提示里的团队规范（含三层审查）、审计日志、上下文节流统计、
+rtk 输出压缩、pi-lens 静态检查、上下文超限时的自动会话交接、启动自动更新、
+Windows 上可用的 linux 命令工具、一个 `/review` skill 和 10 个技能。
 
 不用 MCP —— 全部走 dsh 的 plugin / skill / command 三个原生面。
+
+> **当前 1.0.0**。接口已冻结 —— 哪些东西不会随便改、哪些明确不保证，
+> 以及**信任假设**（远端能改全团队 AI 的行为），见 [docs/STABILITY.md](docs/STABILITY.md)。
 
 ## 装
 
@@ -42,6 +46,7 @@ dsh-team uninstall                   # 卸载
 | 命令 | `/team-baseline` `/thrift` `/audit-log` | `commands.register`，只回显给 UI，不进模型上下文 || 会话交接 | `agent/error` + `sessionController` | 上下文超限且 dsh 自救失败时：写交接文档（未完成任务）→ 建新会话 → 把任务注入并开跑 → 旧会话留提示 |
 | linux 命令 | `tools.register`（自己 spawn bash） | Windows 上也能跑 `sed`/`grep`/`find`/`awk` 等 linux 命令。`bash` 一次性、`bash_open`/`bash_send`/`bash_close` 持久会话（`cd`/变量/函数保留）。见「## linux 命令」 |
 | 自动更新 | 启动时后台跑 git（不阻塞） | 比对远端版本，落后就 `fetch` + `merge --ff-only`。有未提交改动/本地领先时跳过。见「## 自动更新」 |
+| 三层审查 | `team/RULES.md`（注入系统提示） | 每完成一部分跑第 1 层（正确性，`tier-std`）；全部做完三层全跑（+ 整体性、安全/破坏性）。见 [team/RULES.md](team/RULES.md) 的「## 审查（三层）」 |
 | 技能 | `skills/*/SKILL.md` | 复用 dsh 原生 skill 系统，含 `/review`（用户可调用） |
 
 ## 和 pi 版的差异（都是 dsh 的硬约束，不是偷懒）
