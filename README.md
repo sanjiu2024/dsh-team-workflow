@@ -37,6 +37,7 @@ dsh-team uninstall                   # 卸载
 | 上下文节流 | `session/event` 统计 + 配置 overlay | 压缩本体用 dsh 自带的 compaction / pruner，本包只统计和改阈值 |
 | rtk | 系统提示段（order 650）+ `tools/post-execute` | 引导模型走 `rtk`，顺手压 shell 输出（去 ANSI、截头尾） |
 | pi-lens | `tools/post-execute` 提示 + `lens_check` 工具 | spawn pi-lens 的 `analyze-cli.js` 做冷启动静态检查 |
+| pi-lens 工具集 | `lens_tools` 一个入口工具，按需点亮 | 把 pi-lens 的 12 个代码情报工具（符号搜索、AST 检索/替换、LSP 跳转/引用/hover）接进来。**默认一个都不常驻**：声明体积是每次调用都重发的，全常驻等于地板涨 75%。模型先调 `lens_tools` 点亮，回合结束自动撤销 |
 | 命令 | `/team-baseline` `/thrift` `/audit-log` | `commands.register`，只回显给 UI，不进模型上下文 |
 | 技能 | `skills/*/SKILL.md` | 复用 dsh 原生 skill 系统，含 `/review`（用户可调用） |
 

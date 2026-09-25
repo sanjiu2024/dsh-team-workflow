@@ -513,6 +513,10 @@ function cmdHelp() {
 /** 把已装的 pi-lens 拷进 vendor/，这样换机器不用重新找 */
 /** pi-lens 运行必需的运行时依赖（含传递依赖）；@ast-grep/cli 只要 napi，不要 50MB 的 .exe */
 const LENS_RUNTIME_DEPS = [
+	// typebox 是**必需**的：pi-lens 故意不打包它（dist/clients/deps/typebox.js
+	// 只 `export { Type } from "typebox"`），靠宿主提供。pi 宿主自带，dsh 没有，
+	// 缺了就连 dist/index.js 都 import 不进来 —— 整个工具集静默失效。
+	"typebox",
 	"js-yaml",
 	"minimatch",
 	"brace-expansion",

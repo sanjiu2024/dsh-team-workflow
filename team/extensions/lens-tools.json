@@ -1,0 +1,5 @@
+{
+  "enabled": true,
+  "_path 说明": "pi-lens 目录覆盖。留空则按 vendor/pi-lens → ~/.pi/agent/npm/node_modules/pi-lens → ~/.pi/npm/node_modules/pi-lens 的顺序自动找。",
+  "path": ""
+}
