@@ -157,7 +157,17 @@ export function aggregateEvents(events) {
 		toolCalls: 0,
 		toolResults: 0,
 		toolErrors: 0,
-		tokens: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0 },
+		tokens: {
+			input: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			output: 0,
+			reasoning: 0,
+			thinkingChars: 0,
+			thinkingSteps: 0,
+			/** 网关真的回了 reasoning_tokens 的请求数。0 则下面那些 0 是「没数据」不是「没推理」 */
+			reasoningReported: 0,
+		},
 		peakPrompt: 0,
 		models: new Map(),
 		tools: new Map(),
@@ -274,6 +284,13 @@ export function aggregateEvents(events) {
 				agg.tokens.cacheWrite += cacheWrite;
 				agg.tokens.output += output;
 				agg.tokens.reasoning += num(u.reasoning);
+				// reasoning 这一项来自网关 usage.completion_tokens_details.reasoning_tokens，
+				// 网关不回这个字段时它恒为 null，日报上就是恒 0 —— 看上去像「没有推理」，
+				// 实际是「没这个数据」。审计层记录的 thinkingChars 是本地量的思维块字符数，
+				// 网关给不给都在，缺 reasoning 时用它兜底，总比印个假的 0 强。
+				agg.tokens.thinkingChars += num(ev.thinkingChars);
+				if (num(ev.thinkingChars) > 0) agg.tokens.thinkingSteps += 1;
+				if (u.reasoning !== null && u.reasoning !== undefined) agg.tokens.reasoningReported += 1;
 				// 计费输入口径：三项互斥相加
 				const billing = input + cacheRead + cacheWrite;
 				if (billing > agg.peakPrompt) agg.peakPrompt = billing;
@@ -453,7 +470,7 @@ export function buildReport(agg, options = {}) {
 			avgChars: Math.round(avg),
 			// 多调的那几次，结果字符数基本全浪费
 			wastedChars: Math.round(avg * (pair.count - 1) * (chars.length ? 1 : 0)),
-			sample: sampleArg(pair.tool, pair.args),
+			sample: sampleArg(pair.args),
 		});
 	}
 	duplicates.sort((a, b) => b.wastedChars - a.wastedChars || b.count - a.count);
@@ -566,7 +583,7 @@ export function buildReport(agg, options = {}) {
 
 const isNumber = (v) => typeof v === "number" && Number.isFinite(v);
 
-function sampleArg(toolName, args) {
+function sampleArg(args) {
 	if (!args) return null;
 	if (typeof args.file_path === "string") return args.file_path;
 	if (typeof args.path === "string") return args.path;
@@ -1150,7 +1167,22 @@ export function renderMarkdown(report, meta) {
 	out.push(`| ├ 缓存读 cacheRead | ${fmt(t.cacheRead)} |`);
 	out.push(`| └ 缓存写 cacheWrite | ${fmt(t.cacheWrite)} |`);
 	out.push(`| 输出 output | ${fmt(t.output)} |`);
-	out.push(`| └ 其中推理 reasoning | ${fmt(t.reasoning)} |`);
+	if (num(t.reasoningReported) > 0) {
+		out.push(`| └ 其中推理 reasoning | ${fmt(t.reasoning)} |`);
+	} else {
+		// 这里曾经无条件印一行「推理 reasoning 0」。网关不回
+		// completion_tokens_details.reasoning_tokens 时它恒为 null，日报上就成了
+		// 一个好看的 0 —— 读的人会以为「模型没推理」，而真相是「没这个数据」。
+		// 没数据就说没数据，本地能量到的思维字符数照旧拿出来。
+		out.push(
+			`| └ 其中推理 reasoning | 无此数据（网关 ${fmt(c.requests)} 次请求都没回 ` +
+				"`reasoning_tokens`） |",
+		);
+		out.push(
+			`| └ 思维字符数 thinkingChars | ${fmt(t.thinkingChars)}` +
+				`（${fmt(t.thinkingSteps)} 步有思考） |`,
+		);
+	}
 	out.push("");
 	out.push(`- 缓存命中率：**${(t.cacheHitRate * 100).toFixed(1)}%**（${fmt(t.cacheRead)}/${fmt(t.billing)}）`);
 	out.push(`- 平均每次请求 prompt：${fmt(t.avgPromptPerRequest)} tokens`);
