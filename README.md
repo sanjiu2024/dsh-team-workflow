@@ -22,6 +22,7 @@ dsh-team status                      # 当前状态：装没装、skills 几个�
 dsh-team skills                      # 列出本包带的技能
 dsh-team thrift apply                # 把 ~/.dsh/team-workflow/thrift.json 写进 profile patch
 dsh-team preset install              # 生成 team 预设（团队压缩阈值 + persona）
+dsh-team patch                       # 思考链/工具行默认展开（改安装树，--restore 可还原）
 dsh-team uninstall                   # 卸载
 ```
 

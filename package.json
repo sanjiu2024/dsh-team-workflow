@@ -1,6 +1,6 @@
 {
   "name": "dsh-team-workflow",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "private": true,
   "description": "团队基线工作流插件包（dsh 版）：团队规范注入、审计日志、上下文节流、rtk 输出压缩、pi-lens 代码智能、团队预设与 CLI。",
   "type": "module",
@@ -42,7 +42,7 @@
     }
   },
   "scripts": {
-    "test": "node scripts/selftest.mjs && node scripts/selftest-mc.mjs && node scripts/selftest-surface.mjs && node scripts/selftest-fold.mjs",
+    "test": "node scripts/selftest.mjs && node scripts/selftest-mc.mjs && node scripts/selftest-surface.mjs && node scripts/selftest-fold.mjs && node scripts/selftest-patch.mjs",
     "test:fold": "node scripts/e2e-fold.mjs"
   },
   "engines": {

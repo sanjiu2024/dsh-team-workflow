@@ -6,6 +6,7 @@
  *   dsh-team uninstall [--profile tauri]   移除
  *   dsh-team status    [--profile tauri]   看当前状态
  *   dsh-team preset install [--profile tauri]  生成 team 预设（compaction/subagent 配置）
+ *   dsh-team patch   [--dry-run|--restore|--status]  让思考链/工具行默认展开（改安装树）
  *   dsh-team thrift apply   [--profile tauri]  把 ~/.dsh/team-workflow/thrift.json 写进 profile patch
  *   dsh-team skills                         列出本包带的 skills
  *
@@ -17,6 +18,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { applyPatch, patchStatus, restorePatch } from "../lib/chat-expand.js";
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PKG_NAME = "dsh-team-workflow";
@@ -49,7 +52,15 @@ function parseArgs(argv) {
 const { flags, positional } = parseArgs(process.argv.slice(2));
 const profile = typeof flags.profile === "string" ? flags.profile : "tauri";
 const profileDir = path.join(dshHome, "profiles", profile);
-const dryRun = flags["dry-run"] === true;
+
+/**
+ * 布尔开关只看「写没写」，不看写了什么值。
+ * 否则 `--dry-run=false`、`--status=yes` 会掉进 `=== true` 的比较里、被当成没给，
+ * 于是本该只看一眼的命令真的去改安装树了。
+ */
+const has = (name) => name in flags;
+
+const dryRun = has("dry-run");
 
 function fail(message, code = 1) {
 	console.error(`✗ ${message}`);
@@ -423,6 +434,63 @@ function cmdThriftApply() {
 	console.log("  重启 dsh 后生效（压缩阈值是加载期固定的）。");
 }
 
+/** 补丁结果码 → 中文短标签 */
+const PATCH_LABEL = {
+	patched: "已打补丁",
+	already: "已经是展开态",
+	missing: "找不到组件（上游改名？）",
+	unexpected: "组件变了，没认出展开态（跳过）",
+	unpatched: "未打补丁",
+	restored: "已还原",
+	"would-restore": "待还原（dry-run）",
+	modified: "已被改过，跳过",
+	gone: "文件已不存在",
+	broken: "还原后语法检查失败",
+};
+
+/**
+ * `dsh-team patch` —— 思考链与工具行默认展开。
+ *
+ * 改的是 dsh 客户端 bundle 里的 `useState(false)`：官方没有配置入口，
+ * 组件也没导出，只能就地改。因此一律留原始备份，restore 只回滚
+ * 「当前内容仍是我们写进去的那版」的文件，用户手改过的绝不覆盖。
+ */
+function cmdPatch() {
+	if (has("status")) {
+		const rows = patchStatus({ dshHome });
+		if (rows.length === 0) return fail("找不到 dsh 客户端 bundle；dsh 装在哪？");
+		for (const row of rows) {
+			console.log(`${row.file}${row.profiles.length ? `  [${row.profiles.join(", ")}]` : ""}`);
+			for (const target of row.targets) {
+				console.log(`  ${target.status === "patched" ? "✓" : "·"} ${target.label}：${PATCH_LABEL[target.status] ?? target.status}`);
+			}
+		}
+		return;
+	}
+
+	if (has("restore")) {
+		const rows = restorePatch({ dshHome, dryRun });
+		if (rows.length === 0) return ok("没有可还原的记录（manifest 是空的）");
+		for (const row of rows) {
+			console.log(`${PATCH_LABEL[row.status] ?? row.status}  ${row.file}${row.error ? `\n    ${row.error}` : ""}`);
+		}
+		ok(dryRun ? "dry-run：以上是将会还原的文件" : "已还原；重启 dsh 后恢复折叠态");
+		return;
+	}
+
+	const rows = applyPatch({ dshHome, dryRun });
+	for (const row of rows) {
+		if (row.status === "no-bundles") return fail(row.label);
+		console.log(`${row.file}${row.profiles.length ? `  [${row.profiles.join(", ")}]` : ""}`);
+		for (const target of row.headers) {
+			console.log(`  ${target.status === "patched" || target.status === "already" ? "✓" : "·"} ${target.label}：${PATCH_LABEL[target.status] ?? target.status}`);
+		}
+		if (row.error) console.log(`  ！语法检查失败，已回滚：${row.error}`);
+	}
+	ok(dryRun ? "dry-run：以上是将会改动的文件" : "已写入；dsh 开着会在 0.5 秒内热重载，否则重启生效");
+	console.log("  还原：dsh-team patch --restore");
+}
+
 function cmdHelp() {
 	console.log(`dsh-team ${pkg.version}
 
@@ -435,6 +503,8 @@ function cmdHelp() {
   dsh-team thrift apply   [--profile tauri] [--dry-run]
   dsh-team lens install                把 pi-lens 连依赖一起拷进 vendor/，让本包自包含
   dsh-team lens check [文件] [--lsp]   真跑一次 analyze-cli，验 vendor 可不可用
+  dsh-team patch [--status|--restore] [--dry-run]
+                                      让思考链/工具行默认展开（改 dsh 安装树，可还原）
 
 环境变量：DSH_HOME（默认 ~/.dsh）`);
 }
@@ -654,6 +724,9 @@ switch (command) {
 		if (sub === "install") cmdMcInstall();
 		else if (sub === "check") cmdMcCheck();
 		else fail("用法：dsh-team mc install [--version 0.43.0] | mc check");
+		break;
+	case "patch":
+		cmdPatch();
 		break;
 	case "preset":
 		if (sub !== "install") fail("用法：dsh-team preset install");

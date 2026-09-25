@@ -8,6 +8,20 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [0.4.0]
+
+### 新增
+
+- **`dsh-team patch`：思考链与工具行默认展开。** 这两处的展开态是组件内的
+  `useState(false)`，dsh 没有配置入口、行组件也没导出，所以只能就地改安装树里的
+  `@deepseek-ai/dsh-client-ui-{chat,tool}/lib/client.js`。只动 3 个组件
+  （`ReasoningRow` / `ToolRow` / `BashRow`），其余折叠行（压缩、系统提示、设置面板）不碰；
+  `transcriptView` 保持 `normal`。
+  改前留原始备份（`~/.dsh/team-workflow/patch-cache/`），`--restore` 能逐字节还原。
+  还原只回滚「当前内容仍是它写进去的那版」的文件，用户手改过或 dsh 升级换过的一律跳过。
+- 顺带把 CLI 里 4 处裸 `JSON.parse` 收敛成一个 `readJson()`：文件格式坏了报清楚是哪个文件，
+  不再是裸 `SyntaxError` 崩栈。
+
 ## [0.3.1]
 
 ### 修复
