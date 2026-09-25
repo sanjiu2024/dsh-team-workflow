@@ -8,6 +8,68 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [1.1.0]
+
+需求先成文、开发时对照；写代码的子代理各自在独立 worktree 里干活，写完合回主分支。
+
+### 需求与设计文档（`docs/requirements/`）
+
+以前「要做什么」只存在于对话里。对话一长就被压缩掉，于是出现两种典型失控：需求
+在实现中悄悄膨胀（「顺便把这个也加了吧」），以及收尾时没人记得当初的边界在哪。
+
+现在有一套模板（`docs/requirements/TEMPLATE.md`）和一条硬要求：动手前写
+`REQ-NNN-<主题>.md`，开发期间对照它，收尾时逐条填 §8 验收记录（**没跑过的不能勾**）。
+
+模板里最要紧的三节是「要做什么 / 不做什么 / 验收标准」：
+前者用用户自己的话说，中者划边界，后者**必须可执行** —— 写不出「怎么知道做完了」
+就说明需求还没想清楚。规则写进 `team/RULES.md` 的「## 需求与设计文档」。
+
+### 子代理的 worktree 隔离（`lib/worktree.js`，4 个工具）
+
+真正的动机是**并发写代码互相踩是静默损坏**：`git diff` 只看得到结果，看不到谁覆盖了谁。
+
+先说清做不到的事 —— **dsh 没有原生隔离，这是能力缺失，不是配置问题**：
+
+- `SubagentCapabilities` 里只有 `agentOptions/outputSchema/depthLimit/toolFilter/persona`，
+  **没有 worktree**（`dsh-subagent/lib/types/types.d.ts:122`）
+- 子代理会话 cwd 写死继承父会话：`childSessionMeta()` 的 `cwd: parentHeader.cwd`
+  （`dsh-subagent/lib/index.js:505`），而 `SubagentStartRequest` 根本没有 cwd 字段
+- 本包也接管不了子会话创建：插件是软链，ESM 走 realpath，`import "@deepseek-ai/*"`
+  报 `ERR_MODULE_NOT_FOUND`，注册不了自定义 `SubagentProvider`
+
+所以做成**包外补足的手动闸门**，只用 `ctx.tools` + git CLI：
+`worktree_new` / `worktree_list` / `worktree_merge` / `worktree_drop`。
+
+四个安全属性都是真跑出来的，不是设计的：
+
+- **建在仓库内**（`.dsh-worktrees/`）。沙箱把写权限限制在 `sandboxPolicy.workspaceRoot`
+  （= `process.cwd()`），放仓库外会被拒写。
+- **靠 `.git/info/exclude` 忽略，不碰 `.gitignore`。** 这是硬要求：不忽略的话主仓库
+  变脏，而自动更新看到脏树就跳过 —— 一建 worktree 就永久停掉自动更新。用 `info/exclude`
+  而不是 `.gitignore` 是因为后者是 tracked 文件，改它就是仓库变更。
+- **冲突自动 `merge --abort`。** 实测冲突会让主仓库卡在 `.git/MERGE_HEAD`，
+  不 abort 的话下次会话面对一个半合并的仓库。
+- **默认不加 `--force`。** 有未提交改动时 git 自己会拒绝删除（退出码 128），
+  这正是要的：宁可报错，不静默丢掉还没合并的工作。
+
+另外用 `merge --no-ff` 而不是 `--ff-only` —— 实测主分支只要动过（比如你自己的提交），
+`--ff-only` 就报 `Diverging branches can't be fast-forwarded`，它只在主分支没动时成立。
+合并前查脏 + 查 `MERGE_HEAD`，脏就拒绝（不 stash、不覆盖用户改动，同 auto-update）。
+
+**两个天花板必须知道**：① 子代理的**会话 cwd 仍是主仓库**（dsh 改不了），所以建完
+必须把 worktree 的**绝对路径**写进它的 task；它若用相对路径就会改到主仓库，
+**工具层面拦不住**。② worktree 里没有 `node_modules`，要构建/测试得先自己装。
+
+自检 `scripts/selftest-worktree.mjs` 真跑 git（建-隔离-合并-冲突回退-拒删-拒并），
+四条安全机制都反向验证过：去掉 `info/exclude` → 4 条断言变红；去掉冲突 abort →
+3 条变红；去掉合并前查脏 → 2 条变红；`worktree_drop` 默认加 `--force` → 1 条变红。
+
+### 规范更新
+
+`## 子代理` 那一节改写：「没有隔离」的说法要准确 —— dsh 原生没有，本包用 worktree 补足。
+并且补上**不是 git 仓库时的退路**：回到「两个子代理不得碰同一个文件」，
+隔离不在时那是唯一的安全保障。
+
 ## [1.0.0]
 
 第一个正式版。这一版两件事：新增「三层审查」规范；把接口面冻结下来。
@@ -40,7 +102,8 @@
 
 1.0.0 的意义是**接口冻结**，所以把「什么不会随便改」写清楚：
 
-- **承诺稳定**：8 个模型可见工具名与参数、3 个命令、10 个配置文件的键、CLI 子命令、
+- **承诺稳定**：模型可见工具名与参数（1.1.0 起共 12 个，见 `docs/STABILITY.md`）、
+  3 个命令、配置文件里的键（1.1.0 起 11 个文件）、CLI 子命令、
   落盘路径与格式（字段只增不减）。改工具名/删键/删子命令 = major。
 - **明确不保证**：`lib/` 内部模块划分、`vendor/` 任何东西、文档措辞、中间产物、
   日志文案、默认值数值。

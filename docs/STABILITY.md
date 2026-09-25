@@ -18,6 +18,10 @@
 | `lens_check` | `file` `cwd` `lsp` | 单文件静态体检 |
 | `lens_tools` | 见工具内 schema | 按需点亮 pi-lens 工具集 |
 | `thrift` | 见工具内 schema | 上下文节流 |
+| `worktree_new` | `name` `base` `description` | 给子代理建独立 worktree（`name` 必填） |
+| `worktree_list` | `description` | 列出 worktree 及各棵的脏/净 |
+| `worktree_merge` | `name` `message` `description` | 合回主分支（冲突自动回退） |
+| `worktree_drop` | `name` `force` `keepBranch` `description` | 删 worktree（默认不 `--force`） |
 
 **改工具名或删参数 = major。** 模型侧的历史会话会引用它们，改名等于让旧会话失效。
 **加可选参数 = minor。** 加必填参数 = major（旧调用会失败）。
@@ -28,8 +32,9 @@
 
 ### 配置键
 
-`team/extensions/*.json` 里的键（共 10 个文件：`audit-log` `auto-update` `bash-linux`
-`context-thrift` `context7` `handoff` `lens-tools` `magic-context` `rtk` `web-search`）。
+`team/extensions/*.json` 里的键（共 11 个文件：`audit-log` `auto-update` `bash-linux`
+`context-thrift` `context7` `handoff` `lens-tools` `magic-context` `rtk` `web-search`
+`worktree`）。
 
 - **改键名或删键 = major**（任何人写过的覆盖文件会静默失效）
 - **加键 = minor**（必须给默认值，不给默认值就是 major）
@@ -115,5 +120,5 @@ lib/*.js           （仓库里的代码）→ 在 dsh 进程里**执行**
 - 上面「承诺稳定」那几类**已经收敛**，后续按语义化版本管理。
 - **不代表功能不再增加。** 1.0.0 是「接口冻结」，不是「功能冻结」：新模块、新工具、
   新配置键都会继续加（minor），只是不会偷偷改掉你已经在用的东西。
-- **不代表经过完整验证。** 测试是 13 个自检（其中几个真跑外部程序），
+- **不代表经过完整验证。** 测试是 14 个自检（其中几个真跑外部程序），
   覆盖的是已知场景与已踩过的坑；没有覆盖的不代表没问题。
