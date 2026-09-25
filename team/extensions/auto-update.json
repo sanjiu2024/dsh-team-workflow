@@ -1,0 +1,24 @@
+{
+  "_说明": [
+    "启动时自动更新：比对 git 远端与本地的版本，不一致就拉。",
+    "",
+    "为什么是 git 而不是 npm：本包是**软链**装进 dsh 的",
+    "（~/.dsh/profiles/<profile>/node_modules/dsh-team-workflow -> 本仓库），",
+    "而且没发布到 registry。所以「电脑上装的版本」就是这个工作目录 package.json 的",
+    "version，「最新版本」只能从 git 远端取，「更新」实质是 git pull。",
+    "",
+    "三条安全约束（硬编码，不可配置）：",
+    "  1. 只 git pull --ff-only —— 快进不了就失败，绝不替你决定合并策略。",
+    "  2. 工作目录有未提交改动就跳过 —— 不 stash、不覆盖你正在写的代码。",
+    "  3. 不阻塞启动 —— 检查在后台跑，网络慢或失败只影响它自己那一行状态。",
+    "",
+    "生效时机：拉下来的代码在**下次启动 dsh** 时生效（本进程跑的仍是旧代码）。",
+    "实测 dsh 的 HMR 只监听 cordis.patch.yml，不监听插件源码，所以不会出现",
+    "「一半新一半旧」的中间态。"
+  ],
+  "enabled": true,
+  "remote": "origin",
+  "branch": "",
+  "timeoutMs": 20000,
+  "notifyRestart": true
+}

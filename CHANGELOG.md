@@ -8,6 +8,55 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [0.7.0]
+
+新增启动时自动更新：每次启动 dsh 比对 git 远端与本地的版本，不一致就拉。
+
+为什么是 git 而不是 npm：本包**不是** npm 安装的，而是**软链**指向开发目录
+（`~/.dsh/profiles/<profile>/node_modules/dsh-team-workflow -> 本仓库`），
+而且没发布到 registry（`npm view` 404）。所以「电脑上装的版本」就是**这个工作目录**
+`package.json` 的 version，「最新版本」只能从 git 远端取，"更新"实质是 `git pull`。
+按 npm 安装去写会永远空转。
+
+三条安全约束（硬编码，不可配置）：
+
+1. **只快进**。先 `fetch` 再 `merge --ff-only`，快进不了就失败 —— 绝不替你决定用哪种
+   合并方式。自动更新把开发者的分支搅了是最恶劣的失败。
+2. **工作目录有未提交改动就跳过**。不 stash、不覆盖你正在写的代码（你确认过的取舍）。
+   本地领先远端时同样跳过。
+3. **不阻塞启动**。整个检查 fire-and-forget，带 20s 超时；实测 `installAutoUpdate`
+   同步返回 16ms，网络全在后台。失败只影响自己那一行状态，绝不拖垮启动。
+
+生效时机是**下次启动**：实测 dsh 的 HMR 只监听 `cordis.patch.yml` 一个配置文件
+（`dsh-app-boot` 的 `watchUserPatches`），不监听插件源码 —— 所以拉下来的 JS 不会
+半途热加载，没有「一半新一半旧」的中间态。
+
+实现上踩掉并留了回归测试的坑：
+
+- **不能用 `pull --ff-only`**。多个 dsh 实例同时启动时，并发的 `pull` 会报
+  `Cannot fast-forward to multiple branches`（实测 3 并发出退出码 128）。改成
+  先单独 `fetch`（只读）再 `merge --ff-only`。
+- **并发 `fetch` 本身也会失败**，而且有两种形态：git 的 ref 锁
+  （`cannot lock ref`），以及 Windows 上两个进程同时写 object 文件
+  （`unable to write file .git/objects/…: Permission denied`，实测必现）。
+  按瞬时可重试错误做退避重试（15→480ms，共 6 次）。修前 15 轮 × 8 并发稳定复现失败，
+  修后 8/8 次全绿。
+- **必须校验仓库根就是包目录**。`rev-parse --is-inside-work-tree` 对「包含本目录的
+  **外层**仓库」也返回 true —— 若本包被拷贝（而非软链）进某个 git 项目里，会去
+  fetch/merge **外层仓库**，而 `merge --ff-only` 会改写用户自己的项目文件。
+  这条是独立审查抓出来的，后果最重。
+- **并发合并拿不到 `index.lock` 时不报「失败」**，降级成「另一实例正在更新」—— 
+  用户看到红色失败会去查一个并不存在的问题。
+- **远端没有配置的分支时提前报**，否则会一路走到 merge 才失败，错误指向 merge，
+  看不出真实原因。
+
+配置（`team/extensions/auto-update.json`）：`enabled` / `remote` / `branch`（留空用当前分支）
+/ `timeoutMs` / `notifyRestart`。状态在 `/team-baseline` 里有一行。
+
+不引 semver 依赖：本项目版本号规则就是三段数字（见本文件头部），自己比较即可。
+版本号比对不作为决策依据（拉不拉完全由 ahead/behind 决定），只当诊断哨兵：
+commit 一致但版本号不同时会提示人工看一下。
+
 ## [0.6.0]
 
 新增 linux/bash 命令工具：Windows 上也能跑 `sed`/`grep`/`find`/`awk`/`xargs` 这些 linux 命令。

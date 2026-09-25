@@ -39,9 +39,9 @@ dsh-team uninstall                   # 卸载
 | pi-lens | `tools/post-execute` 提示 + `lens_check` 工具 | spawn pi-lens 的 `analyze-cli.js` 做冷启动静态检查 |
 | pi-lens 工具集 | `lens_tools` 一个入口工具，按需点亮 | 把 pi-lens 的 12 个代码情报工具（符号搜索、AST 检索/替换、LSP 跳转/引用/hover）接进来。**默认一个都不常驻**：声明体积是每次调用都重发的，全常驻等于地板涨 75%。模型先调 `lens_tools` 点亮，回合结束自动撤销 |
 | context7 | `docs` 工具 | 查第三方库官方文档（免 key，直连 HTTP，不走 MCP）。一个工具内部完成「搜库 → 取文档」，因为多一次工具调用 = 多一整个 step，比多注册一个工具贵约 45 倍 |
-| 命令 | `/team-baseline` `/thrift` `/audit-log` | `commands.register`，只回显给 UI，不进模型上下文 |
-| 会话交接 | `agent/error` + `sessionController` | 上下文超限且 dsh 自救失败时：写交接文档（未完成任务）→ 建新会话 → 把任务注入并开跑 → 旧会话留提示 |
+| 命令 | `/team-baseline` `/thrift` `/audit-log` | `commands.register`，只回显给 UI，不进模型上下文 || 会话交接 | `agent/error` + `sessionController` | 上下文超限且 dsh 自救失败时：写交接文档（未完成任务）→ 建新会话 → 把任务注入并开跑 → 旧会话留提示 |
 | linux 命令 | `tools.register`（自己 spawn bash） | Windows 上也能跑 `sed`/`grep`/`find`/`awk` 等 linux 命令。`bash` 一次性、`bash_open`/`bash_send`/`bash_close` 持久会话（`cd`/变量/函数保留）。见「## linux 命令」 |
+| 自动更新 | 启动时后台跑 git（不阻塞） | 比对远端版本，落后就 `fetch` + `merge --ff-only`。有未提交改动/本地领先时跳过。见「## 自动更新」 |
 | 技能 | `skills/*/SKILL.md` | 复用 dsh 原生 skill 系统，含 `/review`（用户可调用） |
 
 ## 和 pi 版的差异（都是 dsh 的硬约束，不是偷懒）
@@ -65,6 +65,67 @@ dsh-team uninstall                   # 卸载
   `sessions.open(id)` 只存在于 `dsh-api-session-controller` 的 client half，
   而本包是纯 host 包（`package.json` 没有 `dsh.client`）。所以做的是
   「建新会话 + 注入任务 + 旧会话里写明去哪」，不假装跳转。
+
+## 自动更新
+
+每次启动 dsh 比对 git 远端与本地的版本，不一致就拉。状态在 `/team-baseline` 里一行。
+
+### 为什么是 git 而不是 npm
+
+本包**不是** npm 安装的，而是**软链**指向开发目录：
+
+```text
+~/.dsh/profiles/<profile>/node_modules/dsh-team-workflow -> <本仓库>
+```
+
+而且没发布到 registry（`npm view dsh-team-workflow` 404）。所以：
+
+- 「电脑上装的版本」= **这个工作目录** `package.json` 的 version
+- 「最新版本」只能从 git 远端取
+- 「更新」实质是 `git pull`
+
+按 npm 安装去实现会永远空转。
+
+### 三条安全约束（硬编码，不可配置）
+
+1. **只快进**。先 `fetch` 再 `merge --ff-only`，快进不了就失败 —— 绝不替你决定用哪种
+   合并方式。自动把开发者的分支搅了是最恶劣的失败。
+2. **工作目录有未提交改动就跳过**。不 stash、不覆盖你正在写的代码；本地领先远端时同样跳过。
+3. **不阻塞启动**。检查在后台跑（实测同步返回 16ms，网络全在后台），带 20s 超时，
+   失败只影响它自己那一行。
+
+### 生效时机
+
+拉下来的代码在**下次启动 dsh** 时生效，本进程跑的仍是旧代码。
+
+实测 dsh 的 HMR 只监听 `cordis.patch.yml` 一个配置文件（`dsh-app-boot` 的
+`watchUserPatches` 是 `hmr.registerConfig(filename, …)`，只重装 patch 层），
+**不监听插件源码** —— 所以不会出现「一半新一半旧」的中间态。
+
+### 配置
+
+```jsonc
+// team/extensions/auto-update.json
+{
+  "enabled": true,
+  "remote": "origin",
+  "branch": "",          // 留空用当前分支
+  "timeoutMs": 20000,
+  "notifyRestart": true   // 拉到新代码后提示需重启
+}
+```
+
+### 实现上的几个坑（都有回归测试）
+
+- **不能用 `pull --ff-only`**：多个 dsh 实例同时启动时，并发 `pull` 会报
+  `Cannot fast-forward to multiple branches`（实测 3 并发出退出码 128）。改成单独 `fetch` + `merge --ff-only`。
+- **并发 `fetch` 本身也会失败**，两种形态：git 的 ref 锁（`cannot lock ref`），以及
+  Windows 上两进程同时写 object 文件（`unable to write file .git/objects/…: Permission denied`）。
+  按瞬时可重试错误做退避重试。修前 15 轮 × 8 并发稳定复现，修后 8/8 全绿。
+- **必须校验仓库根就是包目录**：`rev-parse --is-inside-work-tree` 对「包含本目录的
+  **外层**仓库」也返回 true。若本包被拷贝（而非软链）进某个 git 项目里，会去动
+  **别人的仓库**，而 `merge` 会改写用户的项目文件。
+- **并发拿不到 `index.lock` 不报「失败」**，降级成「另一实例正在更新」。
 
 ## linux 命令
 
@@ -213,9 +274,11 @@ ls ~/.dsh/storages/handoffs/
 npm test
 ```
 
-11 个自检，每个都用假 ctx 跑真实逻辑：系统提示段顺序、三个命令、审计落盘与脱敏、节流统计、
+13 个自检，每个都用假 ctx 跑真实逻辑：系统提示段顺序、三个命令、审计落盘与脱敏、节流统计、
 异常隔离、magic-context 折叠、thrift 阈值换算与预设生成、context7、lens 工具集、会话交接、
-linux 命令工具。
+会话消息形状、linux 命令工具、启动自动更新。
+
+后两个会**真跑外部程序**（真 bash、真 git 沙箱），不以「桩返回了新值」为凭据。
 
 `scripts/selftest-handoff.mjs` 盯的是「错了会怎样」最狠的四条：
 
@@ -242,6 +305,18 @@ linux 命令工具。
 6. **命令读 stdin 不会吞掉协议** —— 真 bug：命令自己读 stdin（`read`、要密码的
    `ssh`）会吃掉后面的协议行（含哨兵），导致输出错位到下一次调用。
    靠 `eval ... < /dev/null` 隔离。
+
+`scripts/selftest-auto-update.mjs` 建**临时 git 仓库**真跑 fetch/merge，守的几条是：
+
+1. **有未提交改动时不覆盖** —— 这是整个功能风险最高的一条：写一句自己的代码，
+   让远端前进，验证既没拉、内容也没被动。
+2. **本地领先时不动** —— 只做快进，不合并、不重置用户的分支。
+3. **包目录在外层仓库内时跳过** —— `--is-inside-work-tree` 对外层仓库也返回 true；
+   不查仓库根就会去改写**别人的项目**。
+4. **并发不互相踩** —— 多个 dsh 实例同时启动。真 bug：并发 `fetch`/`pull` 会因 ref 锁
+   和 object 文件权限失败（Windows 上稳定复现）。
+5. **失败不抛** —— 远端不可达、分支不存在、超时，都要变成一条可读状态，
+   而不能影响启动。
 
 ## 来源与许可
 
