@@ -313,7 +313,7 @@ assert.equal(headings[0], pkg.version, `CHANGELOG 最新一节是 ${headings[0]}
 // —— 10. 联网搜索：解析与正文提取 ——
 // 解析器是纯函数，拿真实形状的 HTML 片段测。这两段是从必应/DDG 实际响应里
 // 剪出来的结构，不是编的 —— 编的片段测不出选择器写错。
-const { decodeEntities, htmlToText, parseBingHtml, parseDdgHtml } = await import(new URL("../lib/web.js", import.meta.url).href);
+const { decodeEntities, htmlToText, parseBingHtml, parseDdgHtml, WEB_DEFAULTS, makeSearchProvider } = await import(new URL("../lib/web.js", import.meta.url).href);
 
 assert.equal(decodeEntities("a&amp;b &lt;c&gt; &#65; &nbsp;x"), "a&b <c> A \u00a0x", "实体解码不对");
 assert.equal(decodeEntities("&unknown; &#xZZ;"), "&unknown; &#xZZ;", "未知实体应原样保留，不能吃掉");
@@ -377,7 +377,12 @@ assert.equal(provider.available(), true, "免 key 的 provider 必须恒可用�
 // （以前这里换的是 globalThis.fetch；搜索改用 ctx.web.fetch 后就拦不住了。）
 const realFetch = globalThis.fetch;
 const seen = [];
-ctx._web.fetch = async ({ url }) => {
+ctx._web.fetch = async ({ url }, signal) => {
+	// 真的 ctx.web.fetch 会看 signal，取消时直接抛。这里也必须照做，否则
+	// 「缓存不该跨会话传递 signal」那条断言就是永真的——不管缓存多错都能过。
+	if (signal?.aborted) {
+		throw Object.assign(new Error("aborted"), { name: "AbortError" });
+	}
 	seen.push(String(url));
 	const content = String(url).includes("bing.com")
 		? bingHtml
@@ -395,21 +400,25 @@ try {
 	assert.ok(seen.some((u) => u.includes("bing.com")), "没真的去请求必应");
 
 	// 正文条数上限真的生效：maxBodies=3，4 条结果只该抓 3 次正文
+	// 这里必须换个 query —— 沿用上面的词会被查询缓存拦住，看不到任何 fetch，
+	// 断言就退化成永真了。
 	seen.length = 0;
-	const many = await provider.search({ query: "测试", maxResults: 5 });
+	const many = await provider.search({ query: "测试正文上限", maxResults: 5 });
 	assert.ok(many, "第二次搜索应能完成");
 	const bodyHits = seen.filter((u) => !u.includes("bing.com")).length;
+	assert.ok(bodyHits > 0, `没抓正文，maxBodies 断言会退化成永真：seen=${seen.join(", ")}`);
 	assert.ok(bodyHits <= 3, `maxBodies=3，实际抓了 ${bodyHits} 次正文`);
 
 	// 后端坏掉时不能静默返回空 —— 空结果和不工作看着一模一样，排查时也一样。
 	// 这条是踩过的坑：搜索拿不到结果时，模型和人都以为「真没结果」。
+	// 同样要换 query：缓存命中的话永远不会走到 fetch，这条就白测了。
 	const workingFetch = ctx._web.fetch;
 	ctx._web.fetch = async () => {
 		throw Object.assign(new Error('URL hostname "x" resolves to a non-public IP address'), {
 			code: "WEB_BLOCKED_URL",
 		});
 	};
-	const empty = await provider.search({ query: "测试", maxResults: 5 });
+	const empty = await provider.search({ query: "测试后端损坏", maxResults: 5 });
 	assert.deepEqual(empty.sources, [], "后端坏了应该是 0 条 sources");
 	assert.ok(empty.content && empty.content.length > 0, "后端坏了必须给出可读原因，不能静默返回空");
 	assert.ok(
@@ -421,6 +430,141 @@ try {
 		`content 应带上失败原因，实际：${empty.content}`,
 	);
 	ctx._web.fetch = workingFetch;
+
+	// —— 11b. 查询缓存 ——
+	// 09-25 那天 13 次 web_search 里 6 次是重复查询，最密一组只隔 26 秒。
+	// 下面这几条钉住：同一个查询不重复打网络，但换 limit / 换抓正文配置就得重新打。
+	//
+	// TTL 默认值定在 09-25 的实测间隔上：那天 6 次重复的间隔是
+	// 26s/127s/293s/315s/448s/2186s。5 分钟只拦得住 3 次，10 分钟拦得住 5 次，
+	// 而 10~30 分钟都是 5 次 —— 所以取 10 分钟（同收益下陈旧窗口最小）。
+	// 这条不只是记数字：有人把默认改成 1 分钟（基本白加）或 1 天（搜索结果严重过期）时得报。
+	assert.ok(
+		WEB_DEFAULTS.cacheTtlMs >= 300_000 && WEB_DEFAULTS.cacheTtlMs <= 1_800_000,
+		`cacheTtlMs 默认 ${WEB_DEFAULTS.cacheTtlMs}ms 超出实测合理区间 [5分,30分]：太小拦不住那 6 次重复，太大搜索结果过期`,
+	);
+	assert.ok(WEB_DEFAULTS.cacheMaxEntries >= 1, "cacheMaxEntries 至少得能存一条，否则等于没缓存");
+	seen.length = 0;
+	const q1 = await provider.search({ query: "缓存测试甲", maxResults: 5 });
+	const netAfterFirst = seen.filter((u) => u.includes("bing.com")).length;
+	assert.ok(netAfterFirst >= 1, "第一次搜索应该真去打网络");
+
+	seen.length = 0;
+	const q2 = await provider.search({ query: "缓存测试甲", maxResults: 5 });
+	assert.equal(
+		seen.filter((u) => u.includes("bing.com")).length,
+		0,
+		`同一查询第二次不该再打网络，实际请求了：${seen.join(", ")}`,
+	);
+	assert.deepEqual(q2.sources, q1.sources, "缓存命中的结果应该和第一次一致");
+	assert.equal(q2.content, q1.content, "缓存的 content 也应该一字不差");
+
+	// limit 不同就是不同请求：5 条和 8 条不能共用一条缓存
+	seen.length = 0;
+	await provider.search({ query: "缓存测试甲", maxResults: 8 });
+	assert.ok(
+		seen.some((u) => u.includes("bing.com")),
+		"maxResults 变了必须重新搜 —— 否则模型拿到的是按 5 条裁过的旧结果",
+	);
+
+	// 不同查询当然不能串味
+	seen.length = 0;
+	const q3 = await provider.search({ query: "缓存测试乙", maxResults: 5 });
+	assert.ok(seen.some((u) => u.includes("bing.com")), "换查询词必须真去搜");
+	assert.equal(q3.sources.length, q1.sources.length, "假 fetch 对任何词都返回同样两条");
+
+	// 失败不能被缓存：网络抖一下就把「搜不到」钉住 5 分钟，比不快多了
+	seen.length = 0;
+	const brokenFetch = ctx._web.fetch;
+	ctx._web.fetch = async () => {
+		throw Object.assign(new Error("boom"), { code: "WEB_BLOCKED_URL" });
+	};
+	const failed = await provider.search({ query: "缓存测试丙", maxResults: 5 });
+	assert.deepEqual(failed.sources, [], "坏后端应该返回 0 条");
+	ctx._web.fetch = brokenFetch;
+	seen.length = 0;
+	const recovered = await provider.search({ query: "缓存测试丙", maxResults: 5 });
+	assert.ok(
+		seen.some((u) => u.includes("bing.com")),
+		"上一次失败的结果不该被缓存 —— 后端恢复了必须能再试",
+	);
+	assert.ok(recovered.sources.length > 0, "后端恢复后应该能拿到结果");
+
+	// 缓存不得跨会话传递调用方的 signal。缓存是进程级的（一份 provider 服务
+	// 所有会话），如果把 in-flight 的 Promise 存进去，那条 Promise 绑的是第一个
+	// 调用方的 signal —— A 会话一取消，B 会话会收到一个不是它引起的取消错误。
+	// 所以只缓存已完成的成功结果：A 带着已 abort 的 signal 去搜，B 用干净
+	// signal 跟在后面，B 必须拿到结果而不是被 A 的取消带连。
+	{
+		seen.length = 0;
+		const aborted = new AbortController();
+		aborted.abort();
+		const a = provider.search({ query: "缓存测试丁", maxResults: 5 }, aborted.signal).catch((e) => ({ error: e }));
+		const b = provider.search({ query: "缓存测试丁", maxResults: 5 });
+		await a;
+		const rb = await b;
+		assert.ok(
+			rb.sources && rb.sources.length > 0,
+			"另一会话用干净 signal 搜同一组词必须拿到结果，不能被别人的取消带连",
+		);
+	}
+
+	// 下面几条要自建 provider（改 TTL / 改容量），得自己拼一个跟真 inject
+	// 里同形状的 ctx：真代码里 `ctx.inject(["web"], ...)` 交下来的是
+	// `{...ctx, web: ctx._web}`，provider 读的正是 `ctx.web.fetch`。
+	const scoped = { ...ctx, web: ctx._web, logger: ctx.logger };
+
+	// TTL 真的会过期：不能只看“命中过”就算完，得看它会不会永远命中。
+	// 缓存过期了还继续命中，搜索结果就永久不刷新了。
+	{
+		seen.length = 0;
+		const shortTtl = makeSearchProvider(scoped, { ...WEB_DEFAULTS, cacheTtlMs: 1 }, () => {});
+		await shortTtl.search({ query: "缓存过期测试", maxResults: 5 });
+		// 让 1ms 的 TTL 真的过去（一次真 await 足够）
+		await new Promise((r) => setTimeout(r, 5));
+		seen.length = 0;
+		await shortTtl.search({ query: "缓存过期测试", maxResults: 5 });
+		assert.ok(
+			seen.some((u) => u.includes("bing.com")),
+			"TTL 过了就必须重新搜 —— 否则搜索结果永久不刷新，比没有缓存还坏",
+		);
+	}
+
+	// cacheTtlMs = 0 是真的关掉缓存（不是“永不命中”也不是“永不失效”）
+	{
+		seen.length = 0;
+		const off = makeSearchProvider(scoped, { ...WEB_DEFAULTS, cacheTtlMs: 0 }, () => {});
+		await off.search({ query: "缓存关闭测试", maxResults: 5 });
+		seen.length = 0;
+		await off.search({ query: "缓存关闭测试", maxResults: 5 });
+		assert.ok(
+			seen.some((u) => u.includes("bing.com")),
+			"cacheTtlMs=0 时必须每次真搜（把缓存关掉）",
+		);
+	}
+
+	// 驱逐：容量满了必须丢最旧的，而且不能把新条目也一起丢了 / 死循环
+	{
+		const tiny = makeSearchProvider(scoped, { ...WEB_DEFAULTS, cacheTtlMs: 600_000, cacheMaxEntries: 2 }, () => {});
+		await tiny.search({ query: "驱逐甲", maxResults: 5 });
+		await tiny.search({ query: "驱逐乙", maxResults: 5 });
+		await tiny.search({ query: "驱逐丙", maxResults: 5 });
+		// 丙刚写进去，必须还在缓存里
+		seen.length = 0;
+		await tiny.search({ query: "驱逐丙", maxResults: 5 });
+		assert.equal(
+			seen.filter((u) => u.includes("bing.com")).length,
+			0,
+			"刚搜过的（最新的）条目被驱逐了 —— 驱逐把新的也丢了",
+		);
+		// 甲是最旧的，容量 2 装了三组，甲应该已被丢
+		seen.length = 0;
+		await tiny.search({ query: "驱逐甲", maxResults: 5 });
+		assert.ok(
+			seen.some((u) => u.includes("bing.com")),
+			"最旧的条目该被驱逐（没驱逐 = 容量上限没生效，会无界涨内存）",
+		);
+	}
 } finally {
 	globalThis.fetch = realFetch;
 }
