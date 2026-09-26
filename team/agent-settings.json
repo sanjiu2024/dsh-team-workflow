@@ -3,11 +3,13 @@
   "_defaultModel 为什么要写": "defaultModel 必须是**裸模型 id**（配 defaultProvider 消歧）。写成 `new-api/tier-std` 这种 provider/id 形式时 dsh 解析不到，会**静默回退到模型列表的第一个**——曾因此让默认档落到每账户每天只有 100 次请求的免费档上（2026-09-23）。这里给新成员补一份正确的默认值；已有成员写错的那种形式由扩展的一次性迁移改回来。注意 provider id 是 `new-api`（带连字符），不是上游 pi 那套的 `newapi`。",
   "defaultProvider": "new-api",
   "defaultModel": "tier-std",
-  "_compaction 为什么要动": "dsh 自带的压缩留作保险，不删。magic-context 的 historian 在 65% 就折叠一次；这里把 dsh 自己的阀值抬到 ~90% 只做最后的兜底，平时不抢 historian 的活。enabled: true 必须显式写——dsh-web-app 在 host 层把 compaction-basic / command-compact / tool-result-pruner 三行都 disabled 了，预设里不显式开就等于完全没有压缩。",
+  "_compaction 为什么要动": "dsh 自带的压缩留作保险，不删。magic-context 的 historian 在 65% 就折叠一次；这里把 dsh 自己的阀值也压到同一量级，平时不抢 historian 的活。enabled: true 必须显式写——dsh-web-app 在 host 层把 compaction-basic / command-compact / tool-result-pruner 三行都 disabled 了，预设里不显式开就等于完全没有压缩。\n\ncontextWindow 必须写，且必须是**模型真实窗口**（tier-std/power = 512000）。2026-09-26 实测：缺这个键时退回 128000，把 thresholdRatio 算成 1-12800/128000=0.9 → 实际阈值 460,800 tokens，而实测最大上下文地板只有 343,453 → **压缩一次都没触发**，两天白烧 2.73 亿 token。retainRatio 同理被算成 0.2×128000 的语义。\n\ncompactThresholdRatio 用实测数据选的：按这两天 2822 次调用的真实 floor 序列模拟，0.25 约省 35%、0.3 约省 32%。取 0.25（128K）—— 留足空间给「读文件 + 改代码 + 跑测试」这种一轮几十 K 的连续操作，不至于刚展开就被折掉；同时比 0.9 高出 3 倍以上的触发机会。",
   "compaction": {
     "enabled": true,
+    "contextWindow": 512000,
     "reserveTokens": 12800,
-    "keepRecentTokens": 25600
+    "keepRecentTokens": 25600,
+    "compactThresholdRatio": 0.25
   },
   "subagents": {
     "disableThinking": true,

@@ -156,8 +156,21 @@ try {
 	assert.equal(gen.changed, 1, `只该改 compaction-basic 一行，实际改了 ${gen.changed} 处`);
 
 	const live = readEffectiveThrift(gen.text);
-	assert.equal(live.thresholdRatio, 0.9, "compaction 阈值比没写进预设");
-	assert.equal(live.retainRatio, 0.2, "retainRatio 没写进预设");
+	// 断言的是**团队设置里声明的值真被写进预设**，不是某个写死的数字。
+	// 以前这里写死 0.9/0.2 —— 那是「缺 contextWindow 时算出来的错误值」，
+	// 把一个 bug 锁在了测试里（它一直绿着，而压缩一直不触发）。
+	const expectRatio = teamSettings.compaction.compactThresholdRatio;
+	const expectRetain = Number((teamSettings.compaction.keepRecentTokens / teamSettings.compaction.contextWindow).toFixed(4));
+	assert.equal(live.thresholdRatio, expectRatio, "团队声明的阈值比没写进预设");
+	assert.equal(live.retainRatio, expectRetain, "retainRatio 没按真实窗口换算");
+	// 关键回归：阈值必须**够得着**真实上下文，否则压缩等于关着。
+	// 2026-09-26 实测最大地板 343,453，而当时阈值是 460,800 → 从未触发。
+	const thresholdTokens = teamSettings.compaction.contextWindow * live.thresholdRatio;
+	assert.ok(
+		thresholdTokens <= 400_000,
+		`阈值 ${Math.round(thresholdTokens)} tokens 太高 —— 实测最大地板 343,453，这样压缩永远不触发`,
+	);
+	assert.ok(live.retainRatio < live.thresholdRatio, "retainRatio 必须小于 thresholdRatio（插件会抛错）");
 	// 关键：没给裁剪 overlay 时**不许**动裁剪器
 	assert.equal(live.thresholdChars, 8192, "没给裁剪 overlay 时不该改 thresholdChars");
 	assert.equal(live.headChars, 4096, "没给裁剪 overlay 时不该改 headChars");
@@ -198,7 +211,7 @@ try {
 	assert.match(gen.text, /你是团队助手。/, "persona 没写进去");
 	const live = readEffectiveThrift(gen.text);
 	assert.equal(live.thresholdChars, 40000, "同时改多处时裁剪覆盖丢了（改动互相覆盖了）");
-	assert.equal(live.thresholdRatio, 0.9, "同时改多处时压缩阈值丢了");
+	assert.equal(live.thresholdRatio, teamSettings.compaction.compactThresholdRatio, "同时改多处时压缩阈值丢了");
 	console.log("✓ 多处改动互不覆盖");
 }
 
@@ -228,7 +241,13 @@ try {
 	const live = readEffectiveThrift(gen.text);
 	assert.deepEqual(
 		live,
-		{ thresholdRatio: 0.9, retainRatio: 0.2, thresholdChars: 8192, headChars: 4096, tailChars: 1024 },
+		{
+			thresholdRatio: teamSettings.compaction.compactThresholdRatio,
+			retainRatio: Number((teamSettings.compaction.keepRecentTokens / teamSettings.compaction.contextWindow).toFixed(4)),
+			thresholdChars: 8192,
+			headChars: 4096,
+			tailChars: 1024,
+		},
 		"回读的生效值与写出值不一致",
 	);
 
