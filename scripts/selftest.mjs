@@ -115,6 +115,11 @@ assert.ok(
 	baselineText.includes("派审查必须给边界") && baselineText.includes("输出上限"),
 	"「派审查必须给边界」纪律段丢失（上游 v1.13.5 移植，见 docs/UPSTREAM-SYNC.md）",
 );
+// 写计划前先派调研 —— 防止这一段被无意删掉（它是计划质量的前置闸门）。
+assert.ok(
+	baselineText.includes("写计划前：先派调研回来") && baselineText.includes("从查到的事实出发"),
+	"「写计划前先派调研回来」纪律段丢失",
+);
 
 // —— 2. 命令 ——
 
