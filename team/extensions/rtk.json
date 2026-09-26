@@ -1,11 +1,13 @@
 {
   "_来源": "pi-workflow team/extensions/pi-rtk-optimizer.json 的 outputCompaction 段",
   "_改动": "pi 的 mode=rewrite 在 dsh 实现不了（参数深冻结），改成系统提示路由 routeViaPrompt。聚合/分组那几项没搬，交给 dsh 自带的 tool-result-pruner。",
+  "_compactTools 为什么写进来": "2026-09-25 日报判读（docs/usage/2026-09-25-判读.md）：web_fetch 平均 10,371 字符/次、最大 30,895 字符，且当时不在压缩名单。注意 config.compactTools 是整组替换 lib 默认值（lib/rtk.js:176-178），lib 默认列表（bash/pwsh/shell/run_code/grep/glob，lib/rtk.js:45）扩充时这里要跟着同步；read 故意不压缩（截断会断行号）。",
   "enabled": true,
   "routeViaPrompt": true,
   "compactOutput": true,
   "stripAnsi": true,
   "maxChars": 12000,
   "maxLines": 220,
-  "minChars": 1000
+  "minChars": 1000,
+  "compactTools": ["bash", "pwsh", "shell", "run_code", "grep", "glob", "web_fetch"]
 }
