@@ -110,6 +110,11 @@ assert.equal(baseline.order, 600, "team:baseline 的 order 必须是 600（TEAM_
 const baselineText = typeof baseline.text === "function" ? baseline.text(ctx) : baseline.text;
 assert.ok(baselineText.includes("团队基线规范"), "团队规范没读进来");
 assert.ok(baselineText.length > 500, "团队规范内容过短，可能没读到 team/RULES.md");
+// 上游 pi-workflow v1.13.5 移植的审查边界纪律 —— 防止它被无意删掉。
+assert.ok(
+	baselineText.includes("派审查必须给边界") && baselineText.includes("输出上限"),
+	"「派审查必须给边界」纪律段丢失（上游 v1.13.5 移植，见 docs/UPSTREAM-SYNC.md）",
+);
 
 // —— 2. 命令 ——
 

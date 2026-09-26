@@ -13,7 +13,7 @@
 
 - 上游仓库：`https://github.com/kurumi1ksllq/pi-workflow`
 - 分支：`main`
-- 已同步到：`213345175f3c5aff1495e9df90e41bf08c8a42fe`（tag `v1.13.3`，2026-09-25）
+- 已同步到：`d435961f0105337a9c59d12a5f6d28e3e661e279`（v1.13.5 + 1 个 chore，2026-09-26）
 
 下次比对范围就是 `<上面这个 SHA>..origin/main`。
 
@@ -59,3 +59,21 @@
 | `ONBOARDING.md` / `README.md` / `docs/audit-log.md` | ❌ 不适用 | pi 安装说明 |
 
 结论：**只有一条能落地，已移植**；其余属于 pi 生态，记在这里备查，不再重复评估。
+
+### v1.13.3 → v1.13.5（2026-09-26）
+
+上游范围 4 个提交（`2133451` → `d435961`）：
+
+| 上游变更 | 判断 | 处理 |
+| --- | --- | --- |
+| `team/RULES.md`：新增「review 只跑一次」 | ❌ 不搬 | 与本地三层审查「修完重跑该层（同一层最多 3 轮）」的**有意设计**冲突；是否改策略属团队决策，不由同步任务代做 |
+| `team/RULES.md`：新增「派 reviewer 必须给边界」（范围/禁止项/输出上限/timeoutMs） | ✅ 半搬 | **已移植**前三件到「### 每层怎么派」（审查范围、禁止项、结论 ≤300 字输出上限 + 派单模板同步收紧）。`timeoutMs ≤ 600000` 落不了地：dsh 的 `subagent` 工具没有该参数（`dsh-subagent/lib` 全包无 timeout 字段），已改写为「控轮数靠前三件事」 |
+| `scripts/test-extension.mjs`：补断言护住新纪律段 | ✅ 换形落地 | 护的是 pi 扩展本体，不适用；按同样做法在 `scripts/selftest.mjs` 补了对新纪律段的断言 |
+| `team/models.template.json`：档位窗口 → 512k/256k + `_contextWindow` 解释键 | ❌ 不搬 | 512k 是**上游网关**（`xn--7ov1ng90a.top`）按 512k 切的事实；本地网关是另一个（`38.76.221.190:3000`），无证据同样切 512k，照搬就是把没核实的事实写进文档 |
+| `team/agent-settings.json` / `templates/project-settings.json`：`reserveTokens` 32768 → 65536 | ❌ 不搬 | 依据是 pi 的 `shouldCompact`（触发点 = 窗口 − reserve，须容下 tier-max 64k 输出）。本地压缩已 dsh 化：12800/25600 → 0.9 兜底阈值（由 `lib/preset-gen.js` 消费，historian 在 65% 主力折叠），照搬反而破坏本地设计 |
+| `extensions/team-baseline.ts`：存量迁移（窗口/reserve）+ healthCheck 跨文件对账 | ❌ 不搬 | pi 扩展代码（改成员 `~/.pi` 文件）；dsh 侧模板不落盘到成员机器，「团队改模板推不到老成员」这个问题不存在 |
+| 附带实测结论：`disableThinking` 不是速效药；reviewer 换 `tier-std` A/B 三轮结论「不换」（异模型审查价值高于速度） | ✅ 无需改码 | 反向确认了本地选档表（审查型 = `tier-power`）；结论记此备查 |
+| `package.json` / `ONBOARDING.md` / `README.md` / `CHANGELOG.md` | ❌ 不适用 | 上游发版说明 |
+| `.gitignore`：本地交接文档不进公开仓库 | ❌ 不适用 | 本地相反：HANDOFF 文档是仓库的一部分且被 `UPSTREAM-SYNC.md` 引用 |
+
+结论：**一条能力落地**（审查边界纪律，适配后移植 + 自检断言），版本 1.1.1 → 1.2.0。
