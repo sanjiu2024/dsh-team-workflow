@@ -585,8 +585,30 @@ bareCtx._web = undefined;
 apply(bareCtx, {});
 assert.ok(bareCtx._sections.some((s) => s.name === "team:baseline"), "没 web 服务时团队基线也应照常加载");
 
-// —— 12. 清理 ——
+// —— 12. 工作流 skill：自然语言驱动的入口（删了/写坏 → dsh 静默忽略它）——
+// dsh 对 skill 的要求：frontmatter 必须同时有 name 与 description，且 name 要过
+// /^[a-z0-9]+(-[a-z0-9]+)*$/ —— 不合格时 dsh 只打一行 warn 然后**直接忽略这个文件**，
+// 表面上「目录还在」但模型永远看不见它。所以这里把三个条件都钉住。
+{
+	const skillUrl = new URL("../skills/workflow/SKILL.md", import.meta.url);
+	assert.ok(fs.existsSync(skillUrl), "skills/workflow/SKILL.md 丢了 —— 自然语言驱动的入口没了");
+	const raw = fs.readFileSync(skillUrl, "utf8");
+	const fm = /^---\n([\s\S]*?)\n---\n/.exec(raw);
+	assert.ok(fm, "workflow skill 缺 frontmatter（dsh 会静默忽略）");
+	const name = /^name:\s*(.+)$/m.exec(fm[1])?.[1]?.trim();
+	const description = /^description:\s*(.+)$/m.exec(fm[1])?.[1]?.trim();
+	assert.equal(name, "workflow", "name 不对");
+	assert.ok(/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name), "name 违反 dsh 的名字语法，会被静默忽略");
+	assert.ok(typeof description === "string" && description.length > 0, "description 是必需的，缺了 dsh 会静默忽略");
+	assert.ok(description.length <= 500, "description 超过 500 字符会被目录截断");
+	// 内容不能被清空：四段关口必须在（这是「工作流」的实质）
+	for (const mark of ["## 1. 理清需求", "## 2. 写计划前", "## 3. 实现", "## 4. 三层审查", "## 5. 验收"]) {
+		assert.ok(raw.includes(mark), `workflow skill 丢了关口段：${mark}`);
+	}
+}
+
+// —— 13. 清理 ——
 
 fs.rmSync(tempHome, { recursive: true, force: true });
 
-console.log("✓ 自检通过：系统提示段 / 命令 / 审计落盘与脱敏 / 节流统计 / rtk 压缩范围 / 版本一致 / 搜索解析与组装 / 异常隔离");
+console.log("✓ 自检通过：系统提示段 / 命令 / 审计落盘与脱敏 / 节流统计 / rtk 压缩范围 / 版本一致 / 搜索解析与组装 / 异常隔离 / 工作流 skill");

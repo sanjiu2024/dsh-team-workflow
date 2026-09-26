@@ -3,7 +3,7 @@
 把 [pi-workflow](https://github.com/kurumi1ksllq/pi-workflow) 的团队基线搬进 **DeepSeek Harness (dsh)**。
 一个 npm 包，装完提供：系统提示里的团队规范（含三层审查）、审计日志、上下文节流统计、
 rtk 输出压缩、pi-lens 静态检查、上下文超限时的自动会话交接、启动自动更新、
-Windows 上可用的 linux 命令工具、子代理的 worktree 隔离、一个 `/review` skill 和 10 个技能。
+Windows 上可用的 linux 命令工具、子代理的 worktree 隔离、一个 `/review` skill 和 11 个技能（含 `/workflow`：自然语言驱动的开发流程）。
 
 不用 MCP —— 全部走 dsh 的 plugin / skill / command 三个原生面。
 
@@ -49,7 +49,7 @@ dsh-team uninstall                   # 卸载
 | 自动更新 | 启动时后台跑 git（不阻塞） | 比对远端版本，落后就 `fetch` + `merge --ff-only`。有未提交改动/本地领先时跳过。见「## 自动更新」 |
 | 子代理 worktree | `tools.register`（4 个 `worktree_*` 工具） | 写代码的子代理各在独立 worktree 干活，写完合回主分支。dsh 原生没有工作区隔离，本工具包外补足。见 [docs/requirements/REQ-001-worktree隔离.md](docs/requirements/REQ-001-worktree隔离.md) |
 | 三层审查 | `team/RULES.md`（注入系统提示） | 每完成一部分跑第 1 层（正确性，`tier-std`）；全部做完三层全跑（+ 整体性、安全/破坏性）。见 [team/RULES.md](team/RULES.md) 的「## 审查（三层）」 |
-| 技能 | `skills/*/SKILL.md` | 复用 dsh 原生 skill 系统，含 `/review`（用户可调用） |
+| 技能 | `skills/*/SKILL.md` | 复用 dsh 原生 skill 系统，含 `/review`（用户可调用）、`/workflow`（需求→调研→实现→审查→提交的全流程） |
 
 ## 和 pi 版的差异（都是 dsh 的硬约束，不是偷懒）
 
