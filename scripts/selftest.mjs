@@ -14,6 +14,15 @@ import * as path from "node:path";
 /** 和 lib/util.js 的 sha256 保持一致，用途：断言哈希算的是哪个字符串 */
 const sha256Ref = (text) => createHash("sha256").update(text, "utf8").digest("hex");
 
+/** JSON.parse 包一层：包/日志坏了时报出是哪份文件，而不是裸 SyntaxError（lens 检查要求 try/catch） */
+function parseJson(text, what) {
+	try {
+		return JSON.parse(text);
+	} catch (err) {
+		throw new Error(`${what} 解析失败：${err?.message ?? err}`);
+	}
+}
+
 // 审计日志、节流 overlay 写到临时目录，别碰真环境
 const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-team-selftest-"));
 process.env.DSH_HOME = tempHome;
@@ -115,6 +124,12 @@ assert.ok(
 	baselineText.includes("派审查必须给边界") && baselineText.includes("输出上限"),
 	"「派审查必须给边界」纪律段丢失（上游 v1.13.5 移植，见 docs/UPSTREAM-SYNC.md）",
 );
+// 版本行 —— 注入文本必须带 package.json 的当前版本（与唯一来源逐字一致，防版本号漂移）。
+const pkgVersion = parseJson(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"), "package.json").version;
+assert.ok(
+	baselineText.includes(`当前基线版本：dsh-team-workflow v${pkgVersion}`),
+	`注入文本必须带版本行「v${pkgVersion}」（来自 package.json）`,
+);
 // 写计划前先派调研 —— 防止这一段被无意删掉（它是计划质量的前置闸门）。
 assert.ok(
 	baselineText.includes("写计划前：先派调研回来") && baselineText.includes("从查到的事实出发"),
@@ -213,7 +228,7 @@ const lines = raw.split("\n");
 assert.ok(lines.length >= 7, `审计条数太少：${lines.length}`);
 for (const line of lines) {
 	assert.ok(Buffer.byteLength(line, "utf8") <= 8192, "审计行超过 8192 字节上限");
-	const rec = JSON.parse(line);
+	const rec = parseJson(line, "审计行");
 	assert.equal(rec.v, 1, "记录版本 v 不对");
 	assert.ok(typeof rec.ts === "string" && rec.ts.length > 0, "缺 ts");
 	assert.ok(typeof rec.event === "string", "缺 event");
@@ -221,7 +236,7 @@ for (const line of lines) {
 
 const byEvent = new Map();
 for (const line of lines) {
-	const rec = JSON.parse(line);
+	const rec = parseJson(line, "审计行");
 	byEvent.set(rec.event, (byEvent.get(rec.event) ?? 0) + 1);
 }
 for (const expected of ["turn_start", "tool_call", "tool_result", "compaction_prune", "turn_end"]) {
@@ -235,7 +250,7 @@ assert.ok(!raw.includes("sk-abcdefgh12345678"), "审计日志里出现了明文 
 
 // 哈希字段是 sha256 形状
 // 字段没读歪：真机上这三个曾经全是 null（事件形状猜错了）
-const recs = lines.map((l) => JSON.parse(l));
+const recs = lines.map((l) => parseJson(l, "审计行"));
 const callRec = recs.find((r) => r.event === "tool_call");
 assert.ok(callRec, "没有 tool_call 记录");
 assert.equal(callRec.toolName, "bash", "tool_call.toolName 读歪了");
@@ -314,7 +329,7 @@ assert.ok(ctx._tools.some((t) => t.name === "lens_check"), "缺少 lens_check �
 
 // —— 9. 版本号两处一致 ——
 // 发出去了才发现“改了包没记录”或者“记了没改包”的事发生过，所以在这里卡死。
-const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+const pkg = parseJson(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"), "package.json");
 const changelog = fs.readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8");
 const headings = [...changelog.matchAll(/^## \[([^\]]+)\]/gm)].map((m) => m[1]);
 assert.ok(headings.length > 0, "CHANGELOG.md 里一个版本节都没有");

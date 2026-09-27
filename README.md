@@ -7,7 +7,7 @@ Windows 上可用的 linux 命令工具、子代理的 worktree 隔离、一个 
 
 不用 MCP —— 全部走 dsh 的 plugin / skill / command 三个原生面。
 
-> **当前 1.1.0**。接口已冻结 —— 哪些东西不会随便改、哪些明确不保证，
+> **接口已冻结** —— 哪些东西不会随便改、哪些明确不保证，
 > 以及**信任假设**（远端能改全团队 AI 的行为），见 [docs/STABILITY.md](docs/STABILITY.md)。
 > 需求与设计文档在 [docs/requirements/](docs/requirements/)。
 
@@ -37,7 +37,7 @@ dsh-team uninstall                   # 卸载
 
 | 面 | 实现 | 说明 |
 | --- | --- | --- |
-| 团队规范 | `ctx.systemPrompt.section`，order 600 | 读 `team/RULES.md`，每次会话注入 |
+| 团队规范 | `ctx.systemPrompt.section`，order 600 | 读 `team/RULES.md`，每次会话注入；首行带当前基线版本（读 `package.json`） |
 | 审计日志 | `ctx.on('session/event')` | 落 `<DSH_HOME>/storages/audit-log/<日期>.jsonl`，逐行 JSON，凭证脱敏 |
 | 上下文节流 | `session/event` 统计 + 配置 overlay | 压缩本体用 dsh 自带的 compaction / pruner，本包只统计和改阈值 |
 | rtk | 系统提示段（order 650）+ `tools/post-execute` | 引导模型走 `rtk`，顺手压 shell 输出（去 ANSI、截头尾） |
