@@ -8,6 +8,21 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [1.6.1]
+
+修复 1.6.0 插件加载失败（dsh 启动报 `unsupported JSON schema`）。
+
+### 为什么
+
+`ctx.tools.register()` 对 `output.schema` 跑 `assertSupportedJsonSchema`，只认标准
+JSON Schema；`screenshot` 的 output.schema 照抄了 dsh-tool-fs 内部方言（property 内
+`required: true`、`required` 不是数组）→ 校验拒绝 → 插件树加载失败 → dsh 启动失败。
+自检只扫了 7 个工具的 `parameters`、没扫 `output.schema`，所以没兜住。
+
+修：shotOut 改标准数组 `required`；`selftest-tool-schema` 补上「15 个工具的
+output.schema 全量真校验 + output 必须有 schema/render」，反向验证（方言塞回去）
+→ screenshot 红。
+
 ## [1.6.0]
 
 操控电脑（computer use）：AI 能看屏幕、动鼠标、敲键盘，操控期自动锁定鼠标。

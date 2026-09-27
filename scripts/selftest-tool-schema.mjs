@@ -196,14 +196,17 @@ function collector() {
 
 const { installBashLinux, BASH_DEFAULTS } = await import(new URL("lib/bash-linux.js", ROOT).href);
 const { installWorktree, WORKTREE_DEFAULTS } = await import(new URL("lib/worktree.js", ROOT).href);
+const { installComputer, COMPUTER_DEFAULTS } = await import(new URL("lib/computer.js", ROOT).href);
 
 {
 	const { ctx, tools } = collector();
 	installBashLinux(ctx, { config: { ...BASH_DEFAULTS } });
 	installWorktree(ctx, { config: { ...WORKTREE_DEFAULTS } });
+	// computer 默认关（1.6.x），这里显式打开才能把 7 个工具装进来被扫到。
+	const computer = installComputer(ctx, { config: { ...COMPUTER_DEFAULTS, enabled: true } });
 
-	check("真跑：至少装上了 8 个工具（这个自检本身要有效）", () => {
-		assert.ok(tools.size >= 8, `实际 ${tools.size} 个：${[...tools.keys()].join(", ")}`);
+	check("真跑：至少装上了 15 个工具（这个自检本身要有效）", () => {
+		assert.ok(tools.size >= 15, `实际 ${tools.size} 个：${[...tools.keys()].join(", ")}`);
 	});
 
 	for (const [name, definition] of tools) {
@@ -215,7 +218,18 @@ const { installWorktree, WORKTREE_DEFAULTS } = await import(new URL("lib/worktre
 			assert.equal(definition.parameters?.type, "object", "顶层必须 type:object");
 			assert.ok(definition.parameters?.properties !== undefined, "必须有 properties 包装");
 		});
+		// output.schema 是 register() 唯一真校验的东西（assertSupportedJsonSchema），
+		// 违规直接拒绝加载 —— 1.6.0 启动失败就是漏了这层（照 dsh 内部方言写 required）。
+		check(`真跑：${name} 的 output.schema 是合法 JSON Schema`, () => {
+			const bad = violations(definition.output?.schema);
+			assert.deepEqual(bad, [], `${name} 的 output.schema 非法（会直接拒绝加载插件）：\n      ${bad.join("\n      ")}`);
+		});
+		check(`真跑：${name} 的 output 有 schema + render`, () => {
+			assert.ok(definition.output?.schema !== undefined, "缺 output.schema");
+			assert.equal(typeof definition.output?.render, "function", "缺 output.render（模型看不到结果）");
+		});
 	}
+	computer.dispose();
 
 	check("真跑：bash 的 required 是数组、且 command 必填", () => {
 		const bash = tools.get("bash");
@@ -260,7 +274,7 @@ check("反例：required 指向不存在的属性必须被判非法（dsh 也这
 
 console.log(
 	failures === 0
-		? "\n✓ 自检通过：参数表编译 / 8 个工具的 parameters 合法（对齐 dsh 子集）/ 反例可被抓到"
+		? "\n✓ 自检通过：参数表+output.schema 全量真校验（15 个工具，对齐 dsh 子集）/ 反例可被抓到"
 		: `\n✗ ${failures} 项失败`,
 );
 process.exit(failures === 0 ? 0 : 1);
