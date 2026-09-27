@@ -1,7 +1,7 @@
 # REQ-002 · dsh 版「操控电脑」（computer use）
 
 > 状态：已完成
-> 对应版本：`1.5.0 → 1.6.0`（加能力 minor）
+> 对应版本：`1.5.0 → 1.7.0`（加能力 minor；1.7.0 起默认启用）
 > 提出：用户，2026-09-27。「帮我参考Codex的操控电脑的插件的实现方式，在dsh实现一下」+「并且在ai操控的时候自动锁定鼠标，以防不小心动」
 
 ---
@@ -37,7 +37,7 @@ AI 现在只能靠文件和命令间接干活，**碰到 GUI 就瞎了**：浏�
 - [ ] **真跑输入链路**：自检里真注入 `cursor_position → mouse_move → cursor_position`，坐标真变了且恢复原位（脚本失败则该段红）。
 - [ ] **钩子分类逻辑**：纯函数单测——带 magic 标记的事件放行、无标记拦截；反向验证（把分类条件反过来）必须红。
 - [ ] **审批语义**：mock approval——首次调用问、`allowed-once` 后本会话不再问、denied 后拒绝执行；三条各自可红。
-- [ ] **默认关**：不带 config 时工具一个都不注册（反向验证：去掉默认关 → 红）。
+- [x] **默认启用**（1.7.0 起，用户要求）：不带覆盖注册 7 个；`enabled:false` 一个不注册（反向验证：默认改回 false → 红）。
 - [ ] 锁生命周期：操控空闲 15 秒自动解锁；插件 dispose 时钩子进程必死（不留孤儿进程，用 `taskkill /T` 验证）。
 - [ ] `package.json` 版本 = `CHANGELOG.md` 首节标题；README 工具表/扩展表同步。
 
@@ -63,7 +63,7 @@ AI 现在只能靠文件和命令间接干活，**碰到 GUI 就瞎了**：浏�
 
 ### 新增文件
 - `lib/computer.js`（或拆 `lib/computer/` 下 tools+hook+ps 脚本内联）：注册 7 个工具 + 钩子进程管理 + 审批。
-- `team/extensions/computer.json`：`enabled: false` 默认关（**默认关是安全前提**，用户显式开启才注册工具）。
+- `team/extensions/computer.json`：`enabled: true`（**1.7.0 起默认启用**，用户 2026-09-27 要求；`enabled:false` 可关；非 Windows 恒不注册）。
 - `scripts/selftest-computer.mjs`：挂进 `npm test`。
 - 改：`lib/index.js`（挂载点 + 注册表）、README、CHANGELOG、`package.json`（1.6.0）。
 
@@ -89,11 +89,31 @@ AI 现在只能靠文件和命令间接干活，**碰到 GUI 就瞎了**：浏�
 - **多显示器 + 缩放未实测**：DPI aware 声明了，但跨屏坐标归一化要真机验证（§8 记录）；第一版目标主屏。
 - **模型看图定位精度依赖 tier 模型**（deepseek flash 看截图点准不准未验证——真机验收 §8）。
 - **锁不了键盘**（§3）；人仍可按 `Ctrl+Alt+L` 或拔键盘（预期行为）。
-- **钩子进程是外部 PowerShell**：启动有冷启动延迟（首次 arm 前 ~1s），期间人事件不拦。
+- **钩子进程是外部 PowerShell**：懒启动 —— 首次实操才冷启动（~1s，期间人事件不拦）；
+  之后常驻到 dispose。装完不操作 = 零进程、零开销。
+- **紧急解锁靠轮询探测**：改用 `ensureArmed()` 的 `status` 查询（`fs.watch` 会拴死
+  宿主事件循环，Windows 上 unref 无效）；即「下一次操控动作时才发现已解锁」。
 - **spool 目录可被 bash 直写**（第 3 层 P2）：模型若用 bash 往 `in/*.cmd` 写命令可绕过审批弹窗；但 dsh 的 bash 本就等价任意命令，这属既有信任边界、未新增能力 —— 不修，此处明记。
 - 不做窗口管理/录屏/OCR/坐标辅助。
 
 ## 8. 验收记录
+
+**1.7.0（默认启用 + 两个真 bug 修复）实测：**
+
+- [x] 默认启用：`COMPUTER_DEFAULTS.enabled = true`，无覆盖时 7 工具全注册。
+      反向验证：默认改回 `false` → 「默认启用」自检红 → 恢复绿。
+- [x] 显式关：`enabled:false` 一个工具都不注册（自检锚点）。
+- [x] **`fs.watch` 拴死事件循环**（默认启用暴露）：实测 `selftest.mjs` EXIT=124 卡死 →
+      注释掉 `fs.watch` 那行 → EXIT=0；改 `status` 轮询后 → EXIT=0 且连跑 2 次全量绿。
+      期间用 `process.getActiveResourcesInfo()` 定位到 ref 着的 `PipeWrap`（非 unref 的假象：
+      `_getActiveHandles()` 会把已 unref 的句柄也列出来，看它会被带偏）。
+- [x] **自检互相污染**：`selftest-mc`/`selftest-context7` 未 dispose 留下守护进程 →
+      computer 自检被别的实例钩子拦住（3 项红）→ 两处显式 `computer:{enabled:false}` → 全绿。
+- [x] 全量 16 段连跑 2 次 EXIT=0、`✗` 计数 0、无残留守护进程。
+- [x] 孤儿兜底：手动起守护进程后强杀宿主 → 守护进程随之消失（实测 pid 19716 GONE）。
+      诚实说明：普通 `spawn` 下无法区分「父死自退检查」与「stdio 管道关闭」哪个生效，
+      故不写自检断言（曾写一版「因错而对」的测试，反向验证不红，已删）。
+
 
 （2026-09-27 实测；全部真实运行，无一条推断。）
 

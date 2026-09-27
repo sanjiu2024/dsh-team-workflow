@@ -8,6 +8,35 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [1.7.0]
+
+操控电脑**默认启用**（`team/extensions/computer.json` 的 `enabled` 默认 `true`）。
+
+### 为什么
+
+用户 2026-09-27 要求「默认启用电脑操控」——不再需要手改配置重启。
+连带影响：
+- 7 个工具声明进入每次调用的地板（默认开的代价，`enabled:false` 可随时关）；
+- **不预热**：安装时不 spawn 常驻进程（懒启动，首次实操才冷启动 ~1s）。
+  安装期 spawn 是副作用，会污染任何 `apply()` 过的进程；
+- 非 Windows 恒不注册（platform 检查在 enabled 之前，行为不变）。
+
+### 顺带修掉的两个真 bug（默认启用把它们暴露出来）
+
+1. **`fs.watch` 拴死事件循环**：紧急解锁原先靠 `fs.watch` 监听守护进程写的事件文件，
+   而 Windows 上 `fs.watch` 的句柄 **`unref()` 无效** —— 结果任何 `apply()` 过的进程
+   （含 `npm test` 整条自检链）跑完都退不出去，卡到超时。
+   改用 `ensureArmed()` 每次实操前查一次 `status`（权威、已是 P2 的兜底路径）；
+   daemon 仍写 `out/event-emergency.txt` 作证据文件。
+   代价：每次操控多一次 spool 往返（~20ms）。
+2. **自检互相污染**：`selftest-mc` / `selftest-context7` 也 `apply()` 整包，
+   默认启用后会各留一个守护进程 → 后跑的 computer 自检被别的实例钩子拦掉。
+   这些自检不测 computer，显式 `computer: { enabled: false }`。
+
+自检同步翻转：「默认关零工具」→「默认启用 7 工具 + 显式关零工具」
+（反向验证：默认改回 false → 红）。审批/锁/门禁行为不变。
+全量 16 段连跑 2 次 EXIT=0、无残留守护进程。
+
 ## [1.6.1]
 
 修复 1.6.0 插件加载失败（dsh 启动报 `unsupported JSON schema`）。

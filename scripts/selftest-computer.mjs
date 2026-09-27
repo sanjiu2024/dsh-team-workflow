@@ -4,7 +4,7 @@
  *
  * 五段：
  *   1. 纯函数（组合键解析 / 钩子事件分类 / 命令编码 / 应答解析）。
- *   2. 默认关 + 工具面（不开启一个都不注册；开启恰好 7 个）。
+ *   2. 默认启用 + 工具面（不带覆盖恰好 7 个；显式 enabled:false 一个不注册）。
  *   3. 审批语义：首次问、本会话放行、新会话重新问、拒绝即拒绝（fail-safe）。
  *   4. 路由门禁：模型不支持 image 输入时截屏必须拒绝（反向可红）。
  *   5. **真跑守护进程**：坐标读写、AI 注入放行、fakehuman（不带标记）被拦、
@@ -149,28 +149,34 @@ const makeCtx = () => {
 
 const EXPECTED_TOOLS = ["screenshot", "cursor_position", "mouse_move", "mouse_click", "scroll", "type_text", "key_press"];
 
-check("默认关：enabled 不为 true 时一个工具都不注册", () => {
+check("默认启用（1.7.0 起）：不带覆盖恰好注册 7 个工具（REQ 动作集）", () => {
 	const ctx = makeCtx();
-	const off = installComputer(ctx, { config: { ...COMPUTER_DEFAULTS } });
-	assert.equal(off.enabled, false);
-	assert.equal(ctx._tools.size, 0, "默认关必须零工具（反向验证锚点）");
-	assert.match(off.describe(), /关/);
-	off.dispose();
+	const on = installComputer(ctx, { config: { ...COMPUTER_DEFAULTS } });
+	if (process.platform === "win32") {
+		assert.equal(on.enabled, true, "默认应启用");
+		assert.deepEqual([...ctx._tools.keys()].sort(), [...EXPECTED_TOOLS].sort());
+		assert.match(on.describe(), /开/);
+	} else {
+		assert.equal(on.enabled, false, "非 Windows 必须恒不注册");
+		assert.equal(ctx._tools.size, 0);
+	}
+	on.dispose();
 });
 
-check("开启后恰好注册 7 个工具（REQ 动作集）", () => {
+check("显式关闭：enabled:false 一个工具都不注册（反向验证锚点）", () => {
 	const ctx = makeCtx();
-	const on = installComputer(ctx, { config: { ...COMPUTER_DEFAULTS, enabled: true, idleUnlockMs: 500 } });
-	assert.deepEqual([...ctx._tools.keys()].sort(), [...EXPECTED_TOOLS].sort());
-	assert.match(on.describe(), /开/);
-	on.dispose();
+	const off = installComputer(ctx, { config: { ...COMPUTER_DEFAULTS, enabled: false } });
+	assert.equal(off.enabled, false);
+	assert.equal(ctx._tools.size, 0, "显式关必须零工具（反向验证锚点）");
+	assert.match(off.describe(), /关/);
+	off.dispose();
 });
 
 // ── 3+4+5：真守护进程（Windows） ─────────────────────────────────────────────
 
 const isWin = process.platform === "win32";
 if (!isWin) {
-	console.log("· 非 Windows：跳过守护进程真跑段（纯函数与默认关已测）");
+	console.log("· 非 Windows：跳过守护进程真跑段（纯函数与注册面已测）");
 }
 
 if (isWin) {
@@ -461,5 +467,5 @@ if (failures > 0) {
 	console.error(`✗ ${failures} 项失败`);
 	process.exitCode = 1;
 } else {
-	console.log("✓ 自检通过：纯函数 / 默认关 / 审批语义 / 路由门禁 / 真守护进程（拦截-AI放行-空闲解锁-紧急闩-fail-open-截屏-PNG-dispose）");
+	console.log("✓ 自检通过：纯函数 / 默认启用与显式关 / 审批语义 / 路由门禁 / 真守护进程（拦截-AI放行-空闲解锁-紧急闩-fail-open-截屏-PNG-dispose）");
 }

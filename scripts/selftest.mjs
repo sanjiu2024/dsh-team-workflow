@@ -36,6 +36,7 @@ function makeCtx(baseUrl) {
 	const commands = [];
 	const tools = [];
 	const effects = [];
+	const disposers = [];
 	const logs = [];
 	return {
 		baseUrl,
@@ -80,7 +81,9 @@ function makeCtx(baseUrl) {
 		effect(fn, label) {
 			effects.push(label ?? "effect");
 			const dispose = fn();
-			return () => dispose?.();
+			const run = () => dispose?.();
+			disposers.push(run);
+			return run;
 		},
 		// 可选依赖：真 cordis 里 `ctx.inject([服务], cb)` 等该服务就结后再跑。
 		// 这里模拟成“服务存在就立刻跑”，这样能真的测到 provider 注册。
@@ -97,6 +100,7 @@ function makeCtx(baseUrl) {
 		_commands: commands,
 		_tools: tools,
 		_effects: effects,
+		_disposers: disposers,
 		_logs: logs,
 		_web: {
 			providers: [],
@@ -623,6 +627,15 @@ assert.ok(bareCtx._sections.some((s) => s.name === "team:baseline"), "没 web �
 }
 
 // —— 13. 清理 ——
+
+// 跑掉所有 effect 的 disposer：1.7.0 起 computer 默认启用会真起守护进程/文件 watcher，
+// 不 dispose 就把事件循环拴住、进程不退出（自检链会永远卡在这里）。
+// 注意有两个 ctx：主 ctx + 异常隔离段的 bareCtx（它也 apply 过，同样装了 computer）。
+for (const c of [ctx, bareCtx]) {
+	for (const dispose of c._disposers) {
+		try { dispose(); } catch { /* 清理失败不影响断言结果 */ }
+	}
+}
 
 fs.rmSync(tempHome, { recursive: true, force: true });
 

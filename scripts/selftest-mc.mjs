@@ -46,7 +46,9 @@ const ctx = {
 };
 
 const { apply } = await import(pathToFileURL(path.join(root, "lib", "index.js")).href);
-apply(ctx, { mc: { storageDir: path.join(scratch, "memory") } });
+// computer 默认启用（1.7.0）：本自检不测它，显式关掉 —— 否则会留一个
+// 常驻守护进程（钩子）污染后续自检、并让进程退不出去。
+apply(ctx, { mc: { storageDir: path.join(scratch, "memory") }, computer: { enabled: false } });
 
 // mc 是 async 挂载的，等一会
 await new Promise((r) => setTimeout(r, 4000));

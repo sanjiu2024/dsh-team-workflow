@@ -183,7 +183,7 @@ async function loadRealEventStack() {
 		cmdCtx.systemPrompt = { section: () => () => {} };
 		cmdCtx.sessions = { list: () => [] };
 		const indexMod = await import(`file:///${ROOT.replace(/\\/g, "/")}/lib/index.js`);
-		await indexMod.apply(cmdCtx, {});
+		await indexMod.apply(cmdCtx, { computer: { enabled: false } });
 		const shown = (await cmds.get("team-baseline").handler()).text;
 		assert.match(shown, /context7：开/, "/team-baseline 要显示 context7 状态");
 		console.log("✓ /team-baseline 会显示 context7 状态");
