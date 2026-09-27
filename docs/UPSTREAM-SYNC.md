@@ -13,7 +13,7 @@
 
 - 上游仓库：`https://github.com/kurumi1ksllq/pi-workflow`
 - 分支：`main`
-- 已同步到：`d435961f0105337a9c59d12a5f6d28e3e661e279`（v1.13.5 + 1 个 chore，2026-09-26）
+- 已同步到：`e3273dbc3fcde4a15c6369e4ee62c8596c03fbcc`（v1.14.0 未打 tag，2026-09-26）
 
 下次比对范围就是 `<上面这个 SHA>..origin/main`。
 
@@ -77,3 +77,16 @@
 | `.gitignore`：本地交接文档不进公开仓库 | ❌ 不适用 | 本地相反：HANDOFF 文档是仓库的一部分且被 `UPSTREAM-SYNC.md` 引用 |
 
 结论：**一条能力落地**（审查边界纪律，适配后移植 + 自检断言），版本 1.1.1 → 1.2.0。
+
+### v1.13.5 → v1.14.0（2026-09-26）
+
+上游范围 2 个提交（`d435961` → `e3273db`），主题是 `/audit` 斜杠命令（pi 里一键生成审计报表落盘）：
+
+| 上游变更 | 判断 | 处理 |
+| --- | --- | --- |
+| `extensions/team-baseline.ts`：新增 `/audit` 命令（探测 python → 跑报表脚本 → 落盘用户目录，参数指纹命名） | ❌ 不搬 | pi 扩展代码（`pi.registerCommand` + `ctx.ui.notify`）；dsh 命令桥只回显不产模型消息，落地得另写一套 dsh 报表命令 —— 是新开发不是同步 |
+| `scripts/pi_audit_report.py`（+566 行）：「按模型」别名归并、子代理归因覆盖率、无数据提示透出 | ❌ 不搬 | 解析 pi 审计日志格式的 Python 管线；本地报表是另一条已过审查的 dsh 管线（`scripts/usage-report.mjs`，已自带归因断链分析），照搬等于重写已审查脚本 |
+| `scripts/test-audit-command.mjs` / `test-model-alias.py` / `probe-audit-command.mjs` / `simulate-member.sh`：/audit 的测试、探针与成员模拟 | ❌ 不适用 | 护的是 pi 扩展契约 |
+| `CHANGELOG.md` / `ONBOARDING.md` / `README.md` / `docs/audit-report.md` / `package.json`（→ 1.14.0） | ❌ 不适用 | 上游发版说明 |
+
+结论：**无可搬条目**，只更新基线（本仓库无能力变更，版本号与 CHANGELOG 不动）。
