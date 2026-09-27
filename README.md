@@ -48,6 +48,7 @@ dsh-team uninstall                   # 卸载
 | linux 命令 | `tools.register`（自己 spawn bash） | Windows 上也能跑 `sed`/`grep`/`find`/`awk` 等 linux 命令。`bash` 一次性、`bash_open`/`bash_send`/`bash_close` 持久会话（`cd`/变量/函数保留）。见「## linux 命令」 |
 | 自动更新 | 启动时后台跑 git（不阻塞） | 比对远端版本，落后就 `fetch` + `merge --ff-only`。有未提交改动/本地领先时跳过。见「## 自动更新」 |
 | 子代理 worktree | `tools.register`（4 个 `worktree_*` 工具） | 写代码的子代理各在独立 worktree 干活，写完合回主分支。dsh 原生没有工作区隔离，本工具包外补足。见 [docs/requirements/REQ-001-worktree隔离.md](docs/requirements/REQ-001-worktree隔离.md) |
+| 操控电脑 | `tools.register`（7 个工具）+ 常驻 PowerShell 守护进程 | 截屏看屏幕（图片直回模型）、鼠标点击/移动/滚动、打字/按键。操控期锁鼠标（WH_MOUSE_LL 钩子拦真实输入、放 AI 注入；Ctrl+Alt+L 紧急解锁）。**默认关**，审批为会话级（批准时弹窗会写明连带放行）；守护进程 spool 可被 bash 直写 = 与 bash 同属既有信任边界。见 [docs/requirements/REQ-002-computer操控电脑.md](docs/requirements/REQ-002-computer操控电脑.md) |
 | 三层审查 | `team/RULES.md`（注入系统提示） | 每完成一部分跑第 1 层（正确性，`tier-std`）；全部做完三层全跑（+ 整体性、安全/破坏性）。见 [team/RULES.md](team/RULES.md) 的「## 审查（三层）」 |
 | 技能 | `skills/*/SKILL.md` | 复用 dsh 原生 skill 系统，含 `/review`（用户可调用）、`/workflow`（需求→调研→实现→审查→提交的全流程） |
 
@@ -281,11 +282,12 @@ ls ~/.dsh/storages/handoffs/
 npm test
 ```
 
-13 个自检，每个都用假 ctx 跑真实逻辑：系统提示段顺序、三个命令、审计落盘与脱敏、节流统计、
+16 个自检，每个都用假 ctx 跑真实逻辑：系统提示段顺序、三个命令、审计落盘与脱敏、节流统计、
 异常隔离、magic-context 折叠、thrift 阈值换算与预设生成、context7、lens 工具集、会话交接、
-会话消息形状、linux 命令工具、启动自动更新。
+会话消息形状、linux 命令工具、启动自动更新、worktree 沙箱、工具参数 schema、操控电脑守护进程。
 
-后两个会**真跑外部程序**（真 bash、真 git 沙箱），不以「桩返回了新值」为凭据。
+后几个会**真跑外部程序**（真 bash、真 git 沙箱、真 PowerShell 守护进程与鼠标钩子），
+不以「桩返回了新值」为凭据。
 
 `scripts/selftest-handoff.mjs` 盯的是「错了会怎样」最狠的四条：
 

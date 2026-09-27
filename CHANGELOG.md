@@ -8,6 +8,33 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [1.6.0]
+
+操控电脑（computer use）：AI 能看屏幕、动鼠标、敲键盘，操控期自动锁定鼠标。
+新增 7 个工具（`screenshot` / `cursor_position` / `mouse_move` / `mouse_click` /
+`scroll` / `type_text` / `key_press`），**默认关**，`team/extensions/computer.json`
+的 `enabled` 设 `true` 才注册（仅 Windows）。
+
+### 为什么这么设计
+
+- **参考对象是 Anthropic computer use**：调研确认 Codex 根本没有操控电脑插件
+  （降级调研：无联网，基于内部知识，见 REQ-002 §5），最接近的两家里 Anthropic
+  的动作集与安全设计最完整：模型只发指令、宿主执行、截图回传。
+- **锁鼠标用注入标记钩子**：常驻 PowerShell 守护进程装 WH_MOUSE_LL，armed 时
+  放行带 `dwExtraInfo=0x44534843` 标记的 AI 注入、拦截人的真实输入 —— 人完全锁死、
+  AI 零延迟，不需要管理员权限。Ctrl+Alt+L 紧急解锁，空闲 15s 自动还鼠标；
+  钩子进程死 = 自动解锁（外部进程天然 fail-open），检测父进程退出自退不留孤儿。
+- **审批**：dsh approval 首次 `allowed-once` 后本会话放行；无审批服务 / 拒绝 /
+  取消一律拒绝（fail-safe）。截屏同样要审批（看见全屏与操作同级）。
+- **图片直回模型**：截图 → `attachments.saveImage` → `render` 出 `[text, image]`
+  ContentBlock；模型路由不支持 image 输入时拒绝执行（照 dsh-tool-fs 门禁）。
+- **文件 spool 通信**：宿主与守护进程之间用 in/*.cmd → out/*.out 文件往返，
+  没有线程、没有行协议，超时弃单重启即可，不存在流错位。
+
+验收：16 段自检全绿（含真跑守护进程：armed 拦 fakehuman、放行 AI 注入、真截 PNG、
+dispose 杀进程）；REQ-002 §8 逐条记录。坑：Windows PowerShell 5.1 读无 BOM 的
+UTF-8 中文脚本按 GBK 解码会假报解析错 → 脚本必须带 UTF-8 BOM 写入。
+
 ## [1.5.0]
 
 系统提示注入开头带一行当前基线版本。

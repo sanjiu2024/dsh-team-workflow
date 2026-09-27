@@ -22,6 +22,13 @@
 | `worktree_list` | `description` | 列出 worktree 及各棵的脏/净 |
 | `worktree_merge` | `name` `message` `description` | 合回主分支（冲突自动回退） |
 | `worktree_drop` | `name` `force` `keepBranch` `description` | 删 worktree（默认不 `--force`） |
+| `screenshot` | — | 整屏截图，图片直回模型（需审批） |
+| `cursor_position` | — | 读鼠标坐标（需审批） |
+| `mouse_move` | `x` `y` | 移动鼠标（需审批；操控期锁鼠标） |
+| `mouse_click` | `x` `y` `button` `count` | 点击（`x`/`y` 可选，`button` 默认 left，`count` 2 = 双击） |
+| `scroll` | `lines` | 滚轮（正上负下，在当前光标位置） |
+| `type_text` | `text` | 焦点窗口逐字符打字（含中文） |
+| `key_press` | `key` | 按键/组合键（如 `ctrl+s`） |
 
 **改工具名或删参数 = major。** 模型侧的历史会话会引用它们，改名等于让旧会话失效。
 **加可选参数 = minor。** 加必填参数 = major（旧调用会失败）。
@@ -32,7 +39,7 @@
 
 ### 配置键
 
-`team/extensions/*.json` 里的键（共 11 个文件：`audit-log` `auto-update` `bash-linux`
+`team/extensions/*.json` 里的键（共 12 个文件：`audit-log` `auto-update` `bash-linux` `computer`
 `context-thrift` `context7` `handoff` `lens-tools` `magic-context` `rtk` `web-search`
 `worktree`）。
 
@@ -120,5 +127,5 @@ lib/*.js           （仓库里的代码）→ 在 dsh 进程里**执行**
 - 上面「承诺稳定」那几类**已经收敛**，后续按语义化版本管理。
 - **不代表功能不再增加。** 1.0.0 是「接口冻结」，不是「功能冻结」：新模块、新工具、
   新配置键都会继续加（minor），只是不会偷偷改掉你已经在用的东西。
-- **不代表经过完整验证。** 测试是 15 个自检（其中几个真跑外部程序），
+- **不代表经过完整验证。** 测试是 16 个自检（其中几个真跑外部程序），
   覆盖的是已知场景与已踩过的坑；没有覆盖的不代表没问题。
