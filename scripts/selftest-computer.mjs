@@ -20,6 +20,7 @@
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { spawnSync } from "node:child_process";
 
 const ROOT = new URL("../", import.meta.url);
 const {
@@ -184,6 +185,17 @@ check("默认启用（1.7.0 起）：不带覆盖恰好注册 7 个工具（REQ 
 	on.dispose();
 });
 
+check("锁定窗口必须盖得住模型思考时间（≥60s）—— 15s 会让锁形同虚设", () => {
+	// 用户反馈「锁不住，顶多让鼠标慢一点」（2026-09-28）。实测拦截机制本身有效
+	// （外部高频注入 400/400 拦住、光标不移），真因是**锁的窗口太窄**：
+	// 锁只在工具调用瞬间生效，而模型两次操作之间会思考几秒到几十秒；
+	// 15 秒空闲窗口意味着「模型一想事锁就松了」，用户去碰鼠标时几乎总是松的。
+	// 这条断言防止后人把它改回去。
+	assert.ok(
+		COMPUTER_DEFAULTS.idleUnlockMs >= 60000,
+		"idleUnlockMs 默认 " + COMPUTER_DEFAULTS.idleUnlockMs + "ms 太短：模型思考间隔常超过它，锁会一直松开",
+	);
+});
 check("显式关闭：enabled:false 一个工具都不注册（反向验证锚点）", () => {
 	const ctx = makeCtx();
 	const off = installComputer(ctx, { config: { ...COMPUTER_DEFAULTS, enabled: false } });
@@ -309,6 +321,12 @@ if (isWin) {
 		assert.ok(m, "status 必须报 injected 计数，实际：" + st);
 		return Number(m[1]);
 	};
+	const readPassed = async () => {
+		const st = await rawSend(buildCommand("status"));
+		const m = /passed (\d+)/.exec(st);
+		assert.ok(m, "status 必须报 passed 计数，实际：" + st);
+		return Number(m[1]);
+	};
 
 	await checkAsyncRetry("锁：armed 拦人放 AI、disarm 放人（用钩子自报的 blocked 计数，不依赖光标落点）", async () => {
 		const target = { x: 700, y: 500 };
@@ -331,12 +349,16 @@ if (isWin) {
 		assert.ok(inj1 > inj0, `armed 下 AI 注入必须被放行并计数：injected ${inj0} → ${inj1}`);
 		const b2 = await readBlocked();
 
-		// disarm：同样的人输入不再被拦
+		// disarm：同样的人输入**不再**被拦。
+		// 断言「passed 计数上升」而不是「blocked 不变」：这台机器实测有 ~34 个合成
+		// 鼠标事件/秒（不动光标、只发输入），「不变」类断言必假红。反向也成立 ——
+		// 若代码忽略 Armed 而始终拦截，passed 永远不会涨，这条会正确地红。
 		await rawSend(buildCommand("disarm"));
+		const p0 = await readPassed();
 		await rawSend(`fakehuman ${target.x + 40} ${target.y + 40}`);
 		await new Promise((r) => setTimeout(r, 200));
-		const b3 = await readBlocked();
-		assert.equal(b3, b2, `disarm 后真实输入不得再被拦：blocked ${b2} → ${b3}`);
+		const p1 = await readPassed();
+		assert.ok(p1 > p0, `disarm 后真实输入必须被放行（passed ${p0} → ${p1}）；blocked ${b1} → ${b2}（未变）`);
 	});
 
 	await checkAsyncRetry("AI 注入真的移动了光标（SendInput 生效，容 ±8px）", async () => {
@@ -350,6 +372,37 @@ if (isWin) {
 			Math.abs(got.x - target.x) <= 8 && Math.abs(got.y - target.y) <= 8,
 			`AI 移动应接近 ${JSON.stringify(target)}，实际 ${JSON.stringify(got)}（若屡次偏很多，说明桌面有别的程序在抢光标）`,
 		);
+	});
+
+	await checkAsyncRetry("钩子真的拦得住：高频外部注入全部被拦、光标不移", async () => {
+		// 为什么需要这条：之前所有「拦截」测试都由守护进程自己注入、且频率很低，
+		// 照不到「外部进程高频注入时会不会漏」。
+		//
+		// 不用时间/比值断言：实测把钩子的消息循环加上 Sleep(15) 后比值仍是 0.85 ——
+		// LL 钩子的回调由系统**直接**调用，不受消息循环 sleep 影响。所以耗时类断言
+		// 区分不出好坏，硬写阈值只会变成 flaky。这里只留确定性的计数断言。
+		const N = 200;
+		const injector = `
+Add-Type -Namespace Ext -Name Mx -MemberDefinition '
+[DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e);
+[DllImport("user32.dll")] public static extern int GetSystemMetrics(int n);'
+$vw=[Ext.Mx]::GetSystemMetrics(78); $vh=[Ext.Mx]::GetSystemMetrics(79)
+$nx=[uint32][Math]::Round(1000*65535.0/[Math]::Max(1,$vw-1))
+$ny=[uint32][Math]::Round(800*65535.0/[Math]::Max(1,$vh-1))
+for ($i=0; $i -lt ${N}; $i++) { [Ext.Mx]::mouse_event(0xC001, $nx, $ny, 0, [UIntPtr]::Zero) }
+`;
+		await rawSend(buildCommand("move", { x: 600, y: 400 }));
+		await rawSend(buildCommand("arm"));
+		const before = parsePos(await rawSend(buildCommand("pos")));
+		const b0 = await readBlocked();
+		const r = spawnSync("powershell", ["-NoProfile", "-Command", injector], { encoding: "utf8", timeout: 120000 });
+		assert.ok(!r.error, `注入进程出错：${r.error?.message}`);
+		await new Promise((r2) => setTimeout(r2, 400));
+		const b1 = await readBlocked();
+		const after = parsePos(await rawSend(buildCommand("pos")));
+		await rawSend(buildCommand("disarm"));
+		assert.ok(b1 - b0 >= N, `上锁后 ${N} 个外部事件必须全被拦：blocked ${b0} → ${b1}（漏拦 = 真实输入会漏过去）`);
+		assert.deepEqual(after, before, `上锁期间光标不得移动：${JSON.stringify(before)} → ${JSON.stringify(after)}`);
 	});
 
 	// —— 截图真跑 + 工具全链路 ——
@@ -433,6 +486,12 @@ if (isWin) {
 		assert.ok(m, "status 必须报 blocked 计数，实际：" + st);
 		return Number(m[1]);
 	};
+	const readPassed2 = async () => {
+		const st = await readStatus2();
+		const m = /passed (\d+)/.exec(st);
+		assert.ok(m, "status 必须报 passed 计数，实际：" + st);
+		return Number(m[1]);
+	};
 
 	await checkAsync("生命周期第二实例：守护进程真起来", async () => {
 		await daemon2.start();
@@ -461,11 +520,12 @@ if (isWin) {
 		}
 		assert.equal(disarmed, true, `空闲后守护进程必须收到 disarm，实际状态：${await readStatus2()}`);
 
-		// 解锁后人恢复（blocked 不再增长）
-		const b1 = await readBlocked2();
+		// 解锁后人恢复：passed 必须上升（理由同 lock 测试）
+		const pa = await readPassed2();
 		await raw2(`fakehuman ${CENTER.x + 120} ${CENTER.y + 120}`);
 		await new Promise((r) => setTimeout(r, 200));
-		assert.equal(await readBlocked2(), b1, `空闲解锁后人不得再被拦：blocked ${b1} → ${await readBlocked2()}`);
+		const pb = await readPassed2();
+		assert.ok(pb > pa, `空闲解锁后人必须被放行：passed ${pa} → ${pb}`);
 	});
 
 	await checkAsyncRetry("fail-open：钩子进程死 → 人立即能动（外部进程天然解锁）", async () => {
@@ -480,10 +540,11 @@ if (isWin) {
 
 		// 重启（send 自动重启）后是新进程、默认 disarmed → 人的输入不得被拦
 		await raw2(buildCommand("move", { x: CENTER.x, y: CENTER.y }), 15000);
-		const b1 = await readBlocked2();
+		const fa = await readPassed2();
 		await raw2(`fakehuman ${CENTER.x + 90} ${CENTER.y + 90}`);
 		await new Promise((r) => setTimeout(r, 250));
-		assert.equal(await readBlocked2(), b1, `钩子进程死（重启后未上锁）人必须能动：blocked ${b1} → ${await readBlocked2()}`);
+		const fb = await readPassed2();
+		assert.ok(fb > fa, `钩子进程死（重启后未上锁）人必须能动：passed ${fa} → ${fb}`);
 	});
 
 	await checkAsync("第二实例 dispose：进程死 + 目录清", async () => {
