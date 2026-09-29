@@ -37,11 +37,20 @@
 
 `/team-baseline`、`/thrift`、`/audit-log`。改名字或去掉 `/thrift` 的子动作 = major。
 
+CLI 子命令：`dsh-team install|uninstall|status|skills|preset install|thrift apply|`
+`lens install|lens check|mc install|mc check|mc show|mc apply|patch`。改名字或去掉子命令 = major。
+
 ### 配置键
 
 `team/extensions/*.json` 里的键（共 12 个文件：`audit-log` `auto-update` `bash-linux` `computer`
 `context-thrift` `context7` `handoff` `lens-tools` `magic-context` `rtk` `web-search`
 `worktree`）。
+
+另有一层**跨配置的不变式**（不是某个键，而是两个值之间的关系）：
+`team/mc-config.template.jsonc` 的 `execute_threshold_percentage` 必须**严格小于**
+`team/agent-settings.json` 的 `compaction.compactThresholdRatio × 100`，且余量 ≥ 2 个百分点。
+`scripts/selftest-mc-config.mjs` 在 `npm test` 里断言这一点 —— 只改一边会直接红。
+理由见 [REQ-003](requirements/REQ-003-mc与dsh压缩阈值冲突.md)。
 
 - **改键名或删键 = major**（任何人写过的覆盖文件会静默失效）
 - **加键 = minor**（必须给默认值，不给默认值就是 major）
@@ -127,5 +136,5 @@ lib/*.js           （仓库里的代码）→ 在 dsh 进程里**执行**
 - 上面「承诺稳定」那几类**已经收敛**，后续按语义化版本管理。
 - **不代表功能不再增加。** 1.0.0 是「接口冻结」，不是「功能冻结」：新模块、新工具、
   新配置键都会继续加（minor），只是不会偷偷改掉你已经在用的东西。
-- **不代表经过完整验证。** 测试是 16 个自检（其中几个真跑外部程序），
+- **不代表经过完整验证。** 测试是 17 个自检（其中几个真跑外部程序），
   覆盖的是已知场景与已踩过的坑；没有覆盖的不代表没问题。

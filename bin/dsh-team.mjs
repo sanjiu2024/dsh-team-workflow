@@ -8,6 +8,8 @@
  *   dsh-team preset install [--profile tauri]  生成 team 预设（compaction/subagent 配置）
  *   dsh-team patch   [--dry-run|--restore|--status]  让思考链/工具行默认展开（改安装树）
  *   dsh-team thrift apply   [--profile tauri]  把 ~/.dsh/team-workflow/thrift.json 写进 team 预设
+ *   dsh-team mc show                         看 mc 与 dsh 两边的压缩阈值是否拉开了
+ *   dsh-team mc apply  [--dry-run]           把 mc 执行阈值写进 ~/.config/cortexkit/magic-context.jsonc
  *   dsh-team skills                         列出本包带的 skills
  *
  * 只做这三件事：调 dsh / pnpm、写 profile 下的 JSON/YAML、打印现状。
@@ -20,7 +22,17 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { applyPatch, patchStatus, restorePatch } from "../lib/chat-expand.js";
-import { generateTeamPreset, readEffectiveThrift } from "../lib/preset-gen.js";
+import {
+	checkThresholdInvariant,
+	MC_MANAGED_KEYS,
+	MC_PROACTIVE_OFFSET,
+	mcConfigPath,
+	planMcApply,
+	readTemplateSettings,
+	readThreshold,
+	upsertSettings,
+} from "../lib/mc-config.js";
+import { generateTeamPreset, readEffectiveThrift, resolveThriftConfig } from "../lib/preset-gen.js";
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PKG_NAME = "dsh-team-workflow";
@@ -323,6 +335,31 @@ function readTeamSettings() {
 	return readJson(path.join(PKG_ROOT, "team", "agent-settings.json"), {});
 }
 
+/**
+ * dsh **真正生效**的压缩阈值，换算成窗口百分比。
+ *
+ * 必须与 preset-gen 同源同优先序：用户 `/thrift compact` 写的 overlay **优先于**
+ * 团队默认（`lib/preset-gen.js` 的 `resolveThriftConfig`：overlay > settings > 按 reserve 推导）。
+ * 只看团队默认值会造成「mc show 显示 25%、mc apply 按 25% 校验，但实际跑的是别的数」——
+ * 那正是 REQ-003 要修的 mc 空转，会被静默复现（第 2 层审查指出）。
+ *
+ * @returns {number | null} 百分比；读不到关键值返回 null（不拿 null 比大小）
+ */
+function dshCompactionPct() {
+	let effective;
+	try {
+		// 复用与 preset install / thrift apply 完全同一条解析路径，不另写一套优先序。
+		effective = resolveThriftConfig(readTeamSettings(), readThriftOverlay());
+	} catch {
+		// 配置非法（ratio 超出 (0,1]）：这里不该抛 —— mc show/apply 只是要拿个数比较，
+		// 配置有问题该由 preset install 报错。
+		return null;
+	}
+	const ratio = effective?.thresholdRatio;
+	if (!Number.isFinite(ratio) || ratio <= 0) return null;
+	return ratio * 100;
+}
+
 /** 读 thrift overlay（`/thrift` 写的那个文件）；坏 JSON 当成空，别把预设生成拖下水 */
 function readThriftOverlay() {
 	const file = path.join(dshHome, "team-workflow", "thrift.json");
@@ -457,6 +494,8 @@ function cmdHelp() {
   dsh-team thrift apply   [--profile tauri] [--dry-run]  写入 team 预设（需先 preset install）
   dsh-team lens install                把 pi-lens 连依赖一起拷进 vendor/，让本包自包含
   dsh-team lens check [文件] [--lsp]   真跑一次 analyze-cli，验 vendor 可不可用
+  dsh-team mc show                     看 magic-context 与 dsh 两边的压缩阈值是否拉开了
+  dsh-team mc apply [--dry-run]        把 mc 执行阈值写进 ~/.config/cortexkit/magic-context.jsonc
   dsh-team patch [--status|--restore] [--dry-run]
                                       让思考链/工具行默认展开（改 dsh 安装树，可还原）
 
@@ -659,6 +698,145 @@ function cmdMcCheck() {
 	process.exit(result.status ?? 1);
 }
 
+/**
+ * `dsh-team mc show` —— 把 mc 与 dsh 两边的压缩阈值摆在一起，并判不变式。
+ *
+ * 为什么要专门看：两边都「能」压上下文，但只有一个该先动手。mc 的执行阈值
+ * 必须低于 dsh 的压缩阈值 —— 否则 dsh 先把地板压回低位，mc 的主动线永远
+ * 够不到，它排队的操作（drop）就永远不执行（REQ-003 修的 bug）。
+ */
+function cmdMcShow() {
+	const file = mcConfigPath();
+	const exists = fs.existsSync(file);
+	let mcPct = null;
+	let historyPct = null;
+	if (exists) {
+		try {
+			const text = fs.readFileSync(file, "utf8");
+			mcPct = readThreshold(text);
+			historyPct = readThreshold(text, "history_budget_percentage");
+		} catch (error) {
+			fail(`读 mc 配置失败（${file}）：${error.message}`);
+		}
+	}
+	const dshPct = dshCompactionPct();
+	const template = readTemplateSettings(PKG_ROOT);
+	const templatePct = template[MC_MANAGED_KEYS[0]];
+	const templateHistory = template["history_budget_percentage"];
+
+	console.log(`mc 配置文件：${file}${exists ? "" : "（不存在 → 未设置过）"}`);
+	if (mcPct === null) {
+		console.log("mc 执行阈值：未设置（mc 默认 65%，主动线 63%）");
+	} else {
+		console.log(`mc 执行阈值：${mcPct}%（主动线 ${Math.max(0, mcPct - MC_PROACTIVE_OFFSET)}%）`);
+	}
+	console.log(`dsh 压缩阈值：${dshPct === null ? "读不到（team/agent-settings.json？）" : `${dshPct}%`}`);
+
+	// history block 预算：它不是阈值，是阈值一降就跟着缩水的**副作用**，
+	// 所以要一起看绝对值，否则「阈值降了、mc 能注入的历史也少了」会被忽略。
+	// 窗口从团队设置里读（不硬编码）：它与 dsh 阈值同源，免得改窗口时这里静默失准。
+	const shownHistory = historyPct ?? templateHistory;
+	const window = Number(readTeamSettings().compaction?.contextWindow) || 512000;
+	if (shownHistory !== undefined && mcPct !== null) {
+		const now = Math.round(window * (mcPct / 100) * shownHistory);
+		const before = Math.round(window * 0.65 * 0.15);
+		console.log(`history block 预算：${shownHistory}${historyPct === null ? "（未设置，按模板值算）" : ""} → 约 ${now} tokens（改前 65%×0.15 ≈ ${before}）`);
+	}
+	if (templatePct !== undefined) {
+		console.log(`本包模板值：${templatePct}%${templateHistory === undefined ? "" : ` / history ${templateHistory}`}`);
+	}
+
+	if (mcPct === null) {
+		console.log("\n现在 dsh 会先动手（mc 默认 65% 高于 dsh），mc 排队的操作不会执行。");
+		console.log("修：dsh-team mc apply");
+		return;
+	}
+	const verdict = checkThresholdInvariant(mcPct, dshPct);
+	if (verdict.ok) {
+		ok(`阈值已拉开（mc ${mcPct}% < dsh ${dshPct}%，余量 ${(dshPct - mcPct).toFixed(0)} 个百分点）`);
+	} else {
+		console.log(`\n✗ ${verdict.reason}`);
+		console.log("修：dsh-team mc apply");
+		process.exitCode = 1;
+	}
+}
+
+function cmdMcApply() {
+	const settings = readTemplateSettings(PKG_ROOT);
+	const templatePct = settings[MC_MANAGED_KEYS[0]];
+	if (!Number.isFinite(templatePct)) {
+		fail(`模板里读不到 ${MC_MANAGED_KEYS[0]}（${path.join("team", "mc-config.template.jsonc")}）`);
+	}
+
+	const dshPct = dshCompactionPct();
+	const verdict = checkThresholdInvariant(templatePct, dshPct);
+	if (!verdict.ok) {
+		// 写进去也不会生效（dsh 仍先动手），且会把矛盾带进用户环境 —— 直接死。
+		fail(`拒绝写入：${verdict.reason}`);
+	}
+	if (Object.keys(settings).length === 0) fail("模板里一个可管理的键都没有");
+
+	const file = mcConfigPath();
+	const existed = fs.existsSync(file);
+	let before;
+	try {
+		// 不存在就按模板建一份：模板带解释注释，成员能看懂为什么是 20 而不是 65。
+		before = existed ? fs.readFileSync(file, "utf8") : fs.readFileSync(path.join(PKG_ROOT, "team", "mc-config.template.jsonc"), "utf8");
+	} catch (error) {
+		fail(`读 mc 配置失败（${file}）：${error.message}`);
+	}
+
+	// 哪些键真的会变 —— 用 lib 里的纯函数算，CLI 与自检共用同一份逻辑
+	const plan = planMcApply({ existed, before, settings });
+	const changes = plan.map(({ key, from, to }) => `${key}：${from ?? "未设置（默认）"} → ${to}`);
+
+	if (dryRun) {
+		console.log(`[dry-run] ${existed ? "改" : "建"} ${file}`);
+		for (const line of changes.length > 0 ? changes : [`全部 ${Object.keys(settings).length} 个键已是目标值，无需修改`]) {
+			console.log(`[dry-run] ${line}`);
+		}
+		console.log("[dry-run] 其余键与注释保持原样");
+		return;
+	}
+
+	if (changes.length === 0) {
+		ok(`已经是目标值，无需修改（${file}）`);
+		return;
+	}
+
+	let after;
+	try {
+		after = upsertSettings(before, settings);
+	} catch (error) {
+		fail(`拒绝写入：${error.message}`);
+	}
+
+	// 首次真写前留一份原件：这个命令改的是用户自己的配置文件（还有注释），
+	// 写坏了得有办法拿回来。只在 .bak 不存在时创建 —— 保留**最初**那一版。
+	const backup = `${file}.bak`;
+	if (existed && !fs.existsSync(backup)) {
+		try {
+			fs.copyFileSync(file, backup);
+		} catch (error) {
+			fail(`备份原配置失败（${backup}）：${error.message}`);
+		}
+	}
+
+	try {
+		fs.mkdirSync(path.dirname(file), { recursive: true });
+		fs.writeFileSync(file, after, "utf8");
+	} catch (error) {
+		// 磁盘满 / 无权限：明确报错，不静默半写。
+		fail(`写入失败（${file}）：${error.message}${fs.existsSync(backup) ? `（原件在 ${backup}）` : ""}`);
+	}
+	ok(`${existed ? "已写入" : "已创建"} ${file}`);
+	if (existed && fs.existsSync(backup)) console.log(`  原件已备份到 ${backup}`);
+	for (const line of changes) console.log(`  ${line}`);
+	console.log(`  mc 主动线：${Math.max(0, templatePct - MC_PROACTIVE_OFFSET)}%    dsh 压缩阈值：${dshPct}%`);
+	console.log("  重启 dsh 后生效（这些键不在 mc 的实时重载名单里）。");
+	console.log("  验证：dsh-team mc show");
+}
+
 const [command, sub] = positional;
 switch (command) {
 	case "install":
@@ -681,7 +859,9 @@ switch (command) {
 	case "mc":
 		if (sub === "install") cmdMcInstall();
 		else if (sub === "check") cmdMcCheck();
-		else fail("用法：dsh-team mc install [--version 0.43.0] | mc check");
+		else if (sub === "show") cmdMcShow();
+		else if (sub === "apply") cmdMcApply();
+		else fail("用法：dsh-team mc install [--version 0.43.0] | mc check | mc show | mc apply [--dry-run]");
 		break;
 	case "patch":
 		// patch 没有子词；`patch status`（漏敲 `--`）不能静默落到真改安装树

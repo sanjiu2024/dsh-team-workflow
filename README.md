@@ -74,6 +74,46 @@ dsh-team uninstall                   # 卸载
   而本包是纯 host 包（`package.json` 没有 `dsh.client`）。所以做的是
   「建新会话 + 注入任务 + 旧会话里写明去哪」，不假装跳转。
 
+## 压缩分工：magic-context 先动手，dsh 自带压缩兜底
+
+上下文里有两套压缩机制，它们的分工是**一条不变式**：
+
+> **magic-context 的执行阈值 < dsh 自带压缩的阈值**
+
+| | 阈值 | 换算成 token | 干什么 |
+| --- | --- | --- | --- |
+| magic-context | 20%（主动线 18%） | 102K | 按 tag 细粒度删除旧内容、必要时生成分级折叠摘要 |
+| dsh 自带 | 25%（`compactThresholdRatio` 0.25） | 128K | 应急兜底：把一整段旧对话交给 LLM 摘要后整体替换 |
+
+**为什么必须拉开**（2026-09-29 实测）：mc 的默认执行阈值是 65%（主动线 63%），
+而 dsh 在 25% 就压 —— dsh 先把地板压回低位，mc 的 63% 结构性不可达。
+实测后果：mc **一次都没出手**（`shouldFire=true` 出现 0 次）、它排队的
+**26 个 drop 操作永远不执行**，而 dsh 一天压 **83 次**。
+
+而且 dsh 压得并不便宜：压缩后地板只从 128K 掉到 **~70K** —— 系统提示 + 工具声明 + 摘要本身
+就有 ~70K 不可压缩底座，每个周期只有 ~58K 可用空间，约 5–10 轮就又撞线，
+所以“发一条指令就触发一次压缩”是必然的，不是概率。
+
+```bash
+dsh-team mc show            # 并排看两边阈值，并判不变式
+dsh-team mc apply           # 写入（先校验不变式，不合法就拒绝写）
+dsh-team mc apply --dry-run # 只看会改什么
+```
+
+`mc apply` 只动 `~/.config/cortexkit/magic-context.jsonc` 里的
+**两个受管键**（`execute_threshold_percentage` 与配套补偿的 `history_budget_percentage`），其余字节（你自己写的 historian 配置、注释）原样保留 ——
+因为 mc 的配置是深合并 + 逐键回落默认值，没写的键走 mc 自己的默认。
+**改完要重启 dsh**（这些键不在 mc 的实时重载名单里）。
+
+
+> 为什么要连 history 预算一起调：它按 `窗口 × (执行阈值/100) × history_budget_percentage` 算，
+> 阈值一降、绝对预算会跟着缩水（默认 0.15 时约 50K → 15K）。所以配套设 0.45，
+> 把绝对预算拉回同量级（约 46K）——降阈值是为了让 mc 先动手，不是砍它的历史预算。
+
+`scripts/selftest-mc-config.mjs` 把这条不变式锁进 `npm test`：
+改了任一边的值而两边不再拉开，自检直接红。详见
+[docs/requirements/REQ-003-mc与dsh压缩阈值冲突.md](docs/requirements/REQ-003-mc与dsh压缩阈值冲突.md)。
+
 ## 自动更新
 
 每次启动 dsh 比对 git 远端与本地的版本，不一致就拉。状态在 `/team-baseline` 里一行。
@@ -282,9 +322,10 @@ ls ~/.dsh/storages/handoffs/
 npm test
 ```
 
-16 个自检，每个都用假 ctx 跑真实逻辑：系统提示段顺序、三个命令、审计落盘与脱敏、节流统计、
+17 个自检，每个都用假 ctx 跑真实逻辑：系统提示段顺序、三个命令、审计落盘与脱敏、节流统计、
 异常隔离、magic-context 折叠、thrift 阈值换算与预设生成、context7、lens 工具集、会话交接、
-会话消息形状、linux 命令工具、启动自动更新、worktree 沙箱、工具参数 schema、操控电脑守护进程。
+会话消息形状、linux 命令工具、启动自动更新、worktree 沙箱、工具参数 schema、操控电脑守护进程、
+mc 与 dsh 的压缩阈值不变式。
 
 后几个会**真跑外部程序**（真 bash、真 git 沙箱、真 PowerShell 守护进程与鼠标钩子），
 不以「桩返回了新值」为凭据。
