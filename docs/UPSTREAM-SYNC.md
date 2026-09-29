@@ -13,7 +13,7 @@
 
 - 上游仓库：`https://github.com/kurumi1ksllq/pi-workflow`
 - 分支：`main`
-- 已同步到：`e3273dbc3fcde4a15c6369e4ee62c8596c03fbcc`（v1.14.0 未打 tag，2026-09-26）
+- 已同步到：`fe323b0ee136c563a66593e9d5d355372fe8ef03`（v1.14.1，2026-09-29）
 
 下次比对范围就是 `<上面这个 SHA>..origin/main`。
 
@@ -88,5 +88,17 @@
 | `scripts/pi_audit_report.py`（+566 行）：「按模型」别名归并、子代理归因覆盖率、无数据提示透出 | ❌ 不搬 | 解析 pi 审计日志格式的 Python 管线；本地报表是另一条已过审查的 dsh 管线（`scripts/usage-report.mjs`，已自带归因断链分析），照搬等于重写已审查脚本 |
 | `scripts/test-audit-command.mjs` / `test-model-alias.py` / `probe-audit-command.mjs` / `simulate-member.sh`：/audit 的测试、探针与成员模拟 | ❌ 不适用 | 护的是 pi 扩展契约 |
 | `CHANGELOG.md` / `ONBOARDING.md` / `README.md` / `docs/audit-report.md` / `package.json`（→ 1.14.0） | ❌ 不适用 | 上游发版说明 |
+
+结论：**无可搬条目**，只更新基线（本仓库无能力变更，版本号与 CHANGELOG 不动）。
+
+### v1.14.0 → v1.14.1（2026-09-29）
+
+上游范围 1 个提交（`e3273db` → `fe323b0`），主题是把 reviewer 的触发时机从「每次实现完成后」改成「整个任务收尾时」：
+
+| 上游变更 | 判断 | 处理 |
+| --- | --- | --- |
+| `team/RULES.md`：「review 只跑一次」扩成「只跑一次，且只在收尾时跑」（多步任务不每步 review，中途自查） | ❌ 不搬 | 与本地三层审查「**每完成一部分** → 跑第 1 层」（`team/RULES.md:307`）的有意设计**同一方向**的冲突 —— 本地分层的意义就是增量低门槛审查，v1.13.5 那轮已对「review 只跑一次」做过同样的不搬判定；是否改审查策略属团队决策，不由同步任务代做 |
+| `scripts/test-extension.mjs`：+6 行断言护住上面的新措辞 | ❌ 不适用 | 护的是 pi 注入段里不搬的纪律，纪律不搬断言随之不搬 |
+| `CHANGELOG.md` / `ONBOARDING.md` / `README.md` / `package.json`（→ 1.14.1） | ❌ 不适用 | 上游发版说明与安装文档 |
 
 结论：**无可搬条目**，只更新基线（本仓库无能力变更，版本号与 CHANGELOG 不动）。
