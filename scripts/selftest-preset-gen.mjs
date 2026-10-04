@@ -168,6 +168,12 @@ function findStandardPreset() {
 		"                  thresholdChars: 8192",
 		"                  headChars: 4096",
 		"                  tailChars: 1024",
+		"          - id: delegation",
+		"            name: cordis:group",
+		"            config:",
+		"              - id: tool-subagent",
+		"                name: '@deepseek-ai/dsh-tool-subagent'",
+		"              - id: tool-subagent-fork",
 		"",
 	].join("\n");
 	const rc2Settings = {
@@ -212,6 +218,31 @@ function findStandardPreset() {
 	assert.match(withPrune.text, /thresholdChars: 40000/, "overlay 的裁剪值没进预设");
 	assert.equal(withPrune.changed, 5, "带裁剪覆盖时应该是 5 处改动");
 	assert.equal(g.text.includes("40000"), false, "没有 overlay 时不该动 pruner");
+
+	// 档位工具行：settings 给了 subagents.tierTools 才加，且必须插在 fork 行之前
+	//（dsh 没给「角色 → 模型」，档位只能钉在工具上 —— 见 team/RULES.md 的选档那节）
+	const withTiers = generateRc2TeamPreset(RC2_FIXTURE, {
+		settings: {
+			...rc2Settings,
+			subagents: {
+				provider: "new-api",
+				tierTools: { std: "tier-std", power: "tier-power" },
+			},
+		},
+		overlay: {},
+	});
+	assert.match(withTiers.text, /^              - id: tool-subagent-std$/m, "档位工具行没插进去");
+	assert.match(withTiers.text, /^              - id: tool-subagent-power$/m, "第二条档位工具行没插进去");
+	assert.match(withTiers.text, /^                  toolName: subagent_power$/m, "工具名没按档位拼");
+	assert.match(withTiers.text, /^                  agentOptions:$/m, "缺 agentOptions");
+	assert.match(withTiers.text, /^                    model: tier-power$/m, "档位模型没写进去");
+	assert.ok(
+		withTiers.text.indexOf("tool-subagent-std") < withTiers.text.indexOf("tool-subagent-fork"),
+		"档位工具行应插在 tool-subagent-fork 之前",
+	);
+	assert.equal(withTiers.changed, g.changed + 1, "整块档位工具行算 1 处改动");
+	// 没配 tierTools 就不加：老成员的 agent-settings 里没有这一段，不能因此生成失败
+	assert.equal(g.text.includes("tool-subagent-std"), false, "没配 tierTools 时不该加行");
 
 	// 锚点找不到必须报错，而不是悄悄生成一份没改阈值的预设
 	assert.throws(

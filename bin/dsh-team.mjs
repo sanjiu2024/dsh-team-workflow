@@ -443,10 +443,17 @@ function installTeamPresetBundle() {
  * 而它的回落值就是这一行 config.default —— 所以写这里等价于在界面上设默认，
  * 但不需要人点。
  */
+/** profile patch 里的 `agent-preset-registry.config.default` 是不是团队预设 */
+function isDefaultPreset() {
+	const file = path.join(profileDir, "cordis.patch.yml");
+	const text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+	return new RegExp(`default:\\s*${PRESET_ID}\\b`).test(text);
+}
+
 function setDefaultPreset() {
 	const file = path.join(profileDir, "cordis.patch.yml");
 	const text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
-	if (new RegExp(`default:\\s*${PRESET_ID}\\b`).test(text)) {
+	if (isDefaultPreset()) {
 		ok(`默认预设已经是 ${PRESET_ID}`);
 		return;
 	}
@@ -485,6 +492,7 @@ function cmdPresetInstall() {
 		ok(`团队预设已就位：${teamBundleDir()} → profile "${profile}"`);
 		if (generated.changed > 0) console.log(`  已应用 ${generated.changed} 处团队设置。`);
 		if (has("default")) setDefaultPreset();
+		else if (isDefaultPreset()) ok(`默认预设已经是 ${PRESET_ID}`);
 		else console.log("  想让它成为新会话的默认：dsh-team preset install --default");
 		console.log("  重启 dsh 后生效（预设是加载期挂载的）；重启后用 plugin_manager list_plugins 能看到 preset-team。");
 		return;

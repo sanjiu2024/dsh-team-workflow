@@ -166,36 +166,40 @@ worktree_drop(...)       → 清掉
 
 ### 选档（子代理用哪个模型）
 
-`subagent` 工具支持 `provider` / `model` 参数，**你必须显式传** —— 不传就继承主 agent 的档位，等于白开这个能力。
+档位钉在**工具名**上：团队预设给每一档挂了一条独立的 `subagent` 工具行
+（`agentOptions` 里写死 provider + model）。**调用哪个工具 = 选了哪一档。**
 
-| 档位 | 定位 | 用在哪 |
-| --- | --- | --- |
-| `tier-std` | 标准 | 默认档；侦察、读代码、常规实现 |
-| `tier-power` | 强于标准 | 审查、调研、多文件改动 |
-| `tier-max` | 最强（上下文也最大） | 质疑方案、架构决策、难 bug |
-| `tier-free` | 最弱 | **只用于探测连通性**；每账户每天 100 次请求 |
+| 档位 | 工具名 | 定位 | 用在哪 |
+| --- | --- | --- | --- |
+| `tier-std` | `subagent_std` | 标准 | 默认档；侦察、读代码、常规实现 |
+| `tier-power` | `subagent_power` | 强于标准 | 审查、调研、多文件改动 |
+| `tier-max` | `subagent_max` | 最强（上下文也最大） | 质疑方案、架构决策、难 bug |
+| 继承主 agent | `subagent` | —— | 上面三个都不合适的临时调用 |
 
 按角色对应：
 
-| 角色 | 档位 |
+| 角色 | 用哪个工具 |
 | --- | --- |
-| 侦察型 | `tier-std` |
-| 审查型 | `tier-power`（普通审查都是这一档；**只有三层审查的第 1 层**例外用 `tier-std`，见「## 审查（三层）」） |
-| 调研型 | `tier-power` |
-| 质疑型 | `tier-max` |
-| 探活 | `tier-free` |
+| 侦察型 | `subagent_std` |
+| 审查型 | `subagent_power`（普通审查都是这一档；**只有三层审查的第 1 层**例外用 `subagent_std`，见「## 审查（三层）」） |
+| 调研型 | `subagent_power` |
+| 质疑型 | `subagent_max` |
+| 探活 | `subagent`；要 `tier-free` 得先在界面上开子代理模型选择，再显式传 |
 
-注：`~/.pi/agent/settings.json` 里的 `subagents.agentOverrides.reviewer.model` 写的是
-`tier-power`，但**显式传的 `model` 会盖过它**（2026-09-25 实测：传 `tier-std` 时
-`message_start` 里确实是 `tier-std`）。所以第 1 层不需要为了绕过覆盖而改全局设置。
+为什么是工具行、而不是「角色名 → 模型」的映射：dsh 里子代理**没有角色概念**，
+角色是靠 prompt 第一行声明的；而 dsh 0.2.0-rc.x 也**不读** pi 那套
+`~/.pi/agent/settings.json` 的 `subagents.agentOverrides`（2026-10-05 实测：
+全树零命中，那个配置在 dsh 下是死的）。所以档位只能钉在工具上 ——
+它由 `team/agent-settings.json` 的 `subagents.tierTools` 驱动，
+`dsh-team preset install` 生成。
 
-调用形状（`provider` 与 `model` 必须成对传）：
+调用形状 —— **不要传 `provider` / `model`**：这几条工具行关掉了
+`modelSelectionSettings`，传了会直接报
+`child model selection is disabled for this tool instance`。
 
 ```json
 {
-  "task": "角色：审查型。只审查，不改代码。\n……",
-  "provider": "new-api",
-  "model": "tier-power"
+  "task": "角色：审查型。只审查，不改代码。\n……"
 }
 ```
 
@@ -310,9 +314,9 @@ dsh 0.2.0-rc.x 起，键的归属和我们这份 JSON 不是一回事，务必�
 
 | 层 | 视角 | 档位 | 专抓 |
 | --- | --- | --- | --- |
-| 1 | 正确性 | `tier-std` | 逻辑错、边界、空值、并发、异常被吞、判据写反 |
-| 2 | 整体性 | `tier-power` | 跨部分接口不一致、根因没修透、与既有约定冲突、漏掉的调用方 |
-| 3 | 安全 / 破坏性 | `tier-power` | 丢数据、越权、注入、破坏性操作、密钥进仓库、不可逆副作用 |
+| 1 | 正确性 | `tier-std`（`subagent_std`） | 逻辑错、边界、空值、并发、异常被吞、判据写反 |
+| 2 | 整体性 | `tier-power`（`subagent_power`） | 跨部分接口不一致、根因没修透、与既有约定冲突、漏掉的调用方 |
+| 3 | 安全 / 破坏性 | `tier-power`（`subagent_power`） | 丢数据、越权、注入、破坏性操作、密钥进仓库、不可逆副作用 |
 
 第 3 层**不是「更严的第 2 层」**，它问的是完全不同的问题：「这段代码最坏能把什么
 弄没？」所以不能拿第 2 层的结果代替。

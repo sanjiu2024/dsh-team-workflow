@@ -8,6 +8,53 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [1.10.0]
+
+子代理的档位改成**钉在工具行上** —— 这是 dsh 0.2.0-rc.2 上唯一还成立的做法。
+
+### 为什么
+
+团队规范一直说「按角色选档」（reviewer→tier-power、oracle→tier-max），
+但那套是 pi 的机制：`~/.pi/agent/settings.json` 的 `subagents.agentOverrides`。
+dsh 0.2.0-rc.2 **完全不读它** —— 2026-10-05 全树 grep `agentOverrides` /
+`disableThinking` 零命中，本包也只有 `preset-gen.js` 读这个文件、且只读
+`compaction`。也就是说这份档位映射**一直是死的**，只是没人发现：
+规范里写着「你必须显式传 provider/model」，而实测传了直接报
+`child model selection is disabled for this tool instance`。
+
+rc.2 的模型选择是 Host 运行时设置（`subagent-model-selection`，默认关；
+profile patch 里那行 `enabled: true` 只是部署基线）。它能用，但依赖界面开关。
+
+### 改法
+
+团队预设里给每一档挂一条独立的 `subagent` 工具行，`agentOptions` 写死
+provider + model —— **调用哪个工具 = 选了哪一档**，不依赖任何界面开关：
+
+| 档位 | 工具名 | 用在哪 |
+| --- | --- | --- |
+| `tier-std` | `subagent_std` | 侦察、读代码、常规实现、三层审查的第 1 层 |
+| `tier-power` | `subagent_power` | 审查、调研、多文件改动 |
+| `tier-max` | `subagent_max` | 质疑方案、架构决策、难 bug |
+
+驱动它的是 `team/agent-settings.json` 的 `subagents.tierTools`
+（`{std, power, max}` → 团队网关的模型别名）+ `subagents.provider`。
+原来的 `agentOverrides` 已删除（死键）；没配 `tierTools` 的成员不会因此生成失败。
+
+`modelSelectionSettings` **故意不写**（等于关）：往这几条工具行传
+`provider`/`model` 会明确报错，而不是被静默盖过 —— 报错比「以为选上了」好。
+
+规范里的选档表、三层审查表、调用形状示例全部跟着改（`team/RULES.md`）。
+
+### 验证
+
+- `selftest-preset-gen` 新增断言：档位行按 settings 生成、插在 `tool-subagent-fork`
+  之前、`toolName`/`model` 拼写正确、没配就不加行；生成器自带的「逐条撤回去必须
+  逐字节等于出厂文件」自检覆盖了这一块。
+- 真机 `dsh-team preset install` 后，`--dump-config` 里能看到三条
+  `tool-subagent-std` / `-power` / `-max`。
+- 顺手修一个小别扭：默认预设已经是 team 时，`preset install` 不再提示
+  「想让它成为默认」。
+
 ## [1.9.2]
 
 第二轮 rc.2 适配：修掉 3 个真 bug、1 个功能级坏掉、1 个静默失效，并让自检在这台机器上真的能跑。
