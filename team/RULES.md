@@ -275,16 +275,28 @@ cacheRead 占总量 **98%** —— 每次工具调用都要把整个上下文重
 
 ### 压缩阈值（配置侧）
 
-`team/agent-settings.json` 的 `compaction` 控制 dsh 自带压缩何时触发，
-**两个键必须写对**：
+改 `team/agent-settings.json` 的 `compaction`，然后 `dsh-team thrift apply`（或
+`dsh-team preset install`）重新生成团队预设。**别直接改预设文件**：它是
+`preset install` 从出厂 standard 现改出来的产物，下次重生成就覆盖了。
 
-- `contextWindow` 要写**模型真实窗口**（tier-std/power = 512000）。写小了或漏写会退回
-  128000，把 ratio 算成 0.9 → 阈值 460,800，而实测最大地板只有 343,453：
-  **压缩一次都不触发，且不报任何错**（2026-09-26 实测，两天白烧 2.73 亿 token）
-- `compactThresholdRatio` 是**相对窗口**的比例。改完必须
-  `dsh-team preset install` 才生效，且**只在空会话**里切换
+dsh 0.2.0-rc.x 起，键的归属和我们这份 JSON 不是一回事，务必分清：
 
-自查一条命令：`dsh-team thrift show` —— 打出生效值与待应用的 overlay。
+- 我们这份 JSON 里的 `contextWindow` / `reserveTokens` / `keepRecentTokens` **不是
+  dsh 的配置键**，只是本包用来推算两个比例的材料（`preset-gen.js`）。
+  rc.x 里上下文窗口由**模型配置 owned**，压缩侧对应的是 `headroomTokens`
+  （默认 65536）—— 所以我们名义上「留 12800」，实际生效的是 dsh 的默认余量。
+- 真正写进预设、被 dsh 读的是 `thresholdRatio`（由 `compactThresholdRatio` 映射）、
+  `retainRatio`（由 `keepRecentTokens`/`contextWindow` 算出）和 `auto`（由 `enabled` 映射）。
+- **别往预设里手写别的键**：rc.x 的 `compaction-basic` 对未知键**直接抛错**，
+  整个 dsh 起不来。它认的键只有 `thresholdRatio` / `headroomTokens` / `retainRatio` /
+  `retainTokens` / `summarizationProvider` / `summarizationModel` / `maxTokens` /
+  `compactionRetries` / `maxOverflowRetries` / `modelPolicies` / `auto`。
+
+阈值为什么取 0.25、和 magic-context 的 20% 怎么分工，写在 `team/agent-settings.json`
+的 `_compaction 为什么要动` 里；不变式由 `scripts/selftest-mc-config.mjs` 断言。
+
+自查两条：`/thrift show`（会话内，显示**生效中**的值与待应用的 overlay，
+两者分开列）和 `dsh-team status`（显示预设落点与默认预设）。
 
 ## 审查（三层）
 
