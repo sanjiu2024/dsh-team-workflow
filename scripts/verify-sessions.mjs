@@ -19,13 +19,14 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
+import { findDshModules } from "./dsh-modules.mjs";
 
-const DSH = process.env.DSH_MODULES ?? "C:/Users/Administrator/AppData/Roaming/dsh-tauri/dependencies/dsh/node_modules/@deepseek-ai/";
+const DSH = findDshModules();
 const root = process.env.DSH_SESSIONS_DIR ?? path.join(os.homedir(), ".dsh", "sessions");
 
 for (const rel of ["cordis/lib/index.js", "dsh-session-persistence-jsonl/lib/index.js", "dsh-session-query/lib/index.js"]) {
-	if (!fs.existsSync(path.join(DSH, rel))) {
-		console.log(`⚠ 跳过：找不到 dsh 安装树（${path.join(DSH, rel)}）。设 DSH_MODULES 指向 @deepseek-ai/ 再跑。`);
+	if (DSH === null || !fs.existsSync(path.join(DSH, rel))) {
+		console.log(`⚠ 跳过：找不到 dsh 安装树（${DSH ?? "?"}/${rel}）。设 DSH_MODULES 指向 @deepseek-ai/ 再跑。`);
 		process.exit(0);
 	}
 }

@@ -15,8 +15,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { findDshModules, skipWithoutDshModules } from "./dsh-modules.mjs";
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const DSH = process.env.DSH_MODULES ?? "C:/Users/Administrator/AppData/Roaming/dsh-tauri/dependencies/dsh/node_modules/@deepseek-ai/";
+const DSH = findDshModules();
+if (DSH === null) skipWithoutDshModules("e2e-fold.mjs", "端到端折叠（需要 dsh-session 真实现）");
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-fold-"));
 // 独立库：绝不能碰 pi/opencode 的共享 DB（schema v85 vs 90 会卡迁移守卫）
@@ -47,6 +50,8 @@ const log = (m) => process.env.VERBOSE && console.log(m);
 const session = Session.create("e2e-fold");
 const src = { kind: "plugin", plugin: "probe" };
 const block = (t) => ({ type: "text", text: t });
+// 首节点必须是 system/message（受保护头）—— 否则 landOnSurface 会正确地拒绝落地（见 REQ-006）
+session.append("system/message", { message: { id: "sys", role: "system", content: [block("你是 dsh 的编码代理。")], source: src } }, { surfaceOp: "append" });
 const sessionRef = { session };
 
 // 真上线 pi 伪 CLI —— historian 靠它在 PATH 上找到 "pi"

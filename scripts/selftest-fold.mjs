@@ -27,9 +27,10 @@ const { alignSurface } = await import(pathToFileURL(path.join(root, "lib", "mc-a
 const src = { kind: "plugin", plugin: "probe" };
 const block = (text) => ({ type: "text", text });
 
-/** 建一个含两组工具配对的 7 条历史会话。 */
+/** 建一个含两组工具配对的 7 条历史会话（首节点是 system/message，和真实会话一致）。 */
 function buildSession(name) {
 	const s = Session.create(name);
+	s.append("system/message", { message: { id: "sys", role: "system", content: [block("你是 dsh 的编码代理。")], source: src } }, { surfaceOp: "append" });
 	s.append("user/message", { id: "u0", role: "user", content: [block("记忆一：一律用中文回答")], source: src }, { surfaceOp: "append" });
 	s.append("assistant/message", {
 		turn: 0, step: 0, stream: [],
@@ -191,6 +192,45 @@ let failed = 0;
 	console.log(`落地 ${JSON.stringify(r)}`);
 	console.log(`未泄漏 §N§: ${leaked ? "✗" : "✓"} | 缩短 ${before.length}→${final.length}`);
 	if (leaked) console.log(`  泄漏内容: ${allText.replace(/\n/g, " | ").slice(0, 200)}`);
+	console.log(`结果: ${ok ? "✓ PASS" : "✗ FAIL"}\n`);
+	if (!ok) failed += 1;
+}
+
+// —— 场景 E：受保护头没就位时不许落地（REQ-006 的事故根因）——
+{
+	const log = (m) => console.log(m);
+	console.log("=== 场景 E：空 surface 不许落地 ===");
+	const session = Session.create("fold-e");
+	const after = [
+		{ role: "user", content: [block("<session-history></session-history>")] },
+		{ role: "user", content: [block("<session-history-since>(no new content since last materialization)</session-history-since>")] },
+	];
+	// 1) 首轮 pre-step：surface 还是空的，system/message 要等 pre-step 返回后才由 agent-loop 追加
+	const first = landOnSurface({ session, before: [], after, log });
+	const skipped = first.headMissing === 1 && first.reason === "no-protected-head" && session.surface.nodes.length === 0;
+	console.log(`首轮不落地: ${JSON.stringify(first)} surface=${session.surface.nodes.length} 条`);
+
+	// 2) 反证：老写法（直接 append 到空 surface）**不报错**，坏了要等重启重载才发现 ——
+	//    这正是「带了 19 个会话都打不开」的原因，所以要在这里钉住，不能只靠注释
+	let silent = false;
+	try {
+		const bad = Session.create("fold-e-old");
+		bad.append("user/message", { id: "inj", role: "user", content: [block("<session-history></session-history>")], source: src }, { surfaceOp: "append" });
+		bad.append("system/message", { message: { id: "sys", role: "system", content: [block("系统提示")], source: src } }, { surfaceOp: "append" });
+		silent = bad.eventAt(bad.surface.nodes[0])?.type !== "system/message"; // 首节点被顶掉，append 期间毫无征兆
+	} catch { silent = false; }
+	console.log(`老写法的坏形状是静默的: ${silent ? "✓" : "✗"}`);
+
+	// 3) 头就位后照常落地，且首节点仍是受保护头
+	session.append("step/start", { turn: 0, step: 0 });
+	session.append("system/message", { message: { id: "sys", role: "system", content: [block("系统提示")], source: src } }, { surfaceOp: "append" });
+	const second = landOnSurface({ session, before: [], after, log });
+	// 写死数量：两个注入块都要落地，surface 恰好 [system, 注入, 注入]
+	// （这个场景没有可折的历史，所以 folds 本来就该是 0 —— reason 是 no-shrink）
+	const landed = second.appended === 2 && second.folds === 0 && second.skipped === 0 && session.surface.nodes.length === 3;
+	const headKept = session.eventAt(session.surface.nodes[0])?.type === "system/message";
+	console.log(`落地 ${JSON.stringify(second)} | 首节点仍是 system/message: ${headKept ? "✓" : "✗"}`);
+	const ok = skipped && silent && landed && headKept;
 	console.log(`结果: ${ok ? "✓ PASS" : "✗ FAIL"}\n`);
 	if (!ok) failed += 1;
 }

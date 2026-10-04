@@ -25,18 +25,24 @@ import * as fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
-import { readSessionLog, writeSessionLog } from "../lib/session-log.js";
+import { heldOpen, readSessionLog, writeSessionLog } from "../lib/session-log.js";
 
 const ROLES = { "system/message": "system", "user/message": "user", "assistant/message": "assistant", "tool/result": "user" };
 const FIX = process.argv.includes("--fix");
-const root = process.env.DSH_SESSIONS_DIR ?? path.join(os.homedir(), ".dsh", "sessions");
+const FORCE_LIVE = process.argv.includes("--force-live");
+/** 去掉尾斜杠：`dirname(root)` 是备份要落的目录，带尾斜杠会落回会话目录里。 */
+const root = path.resolve(process.env.DSH_SESSIONS_DIR ?? path.join(os.homedir(), ".dsh", "sessions"));
+/** 最近改过的文件默认跳过（dsh 的空闲会话也可能还开着 fd）。 */
+const liveMsRaw = Number(process.env.DSH_LIVE_MS ?? 120_000);
+// NaN 会让 `Date.now() - mtime < LIVE_MS` 恒 false —— 主判据静默失效，所以必须回落
+const LIVE_MS = Number.isFinite(liveMsRaw) ? liveMsRaw : 120_000;
 
 function walk(dir, out = []) {
 	if (!fs.existsSync(dir)) return out;
 	for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
 		const p = path.join(dir, e.name);
 		if (e.isDirectory()) walk(p, out);
-		else if (e.name.startsWith("session.") && e.name.includes("jsonl")) out.push(p);
+		else if (e.name.startsWith("session.") && e.name.includes("jsonl") && !e.name.endsWith(".tmp")) out.push(p);
 	}
 	return out;
 }
@@ -55,6 +61,8 @@ function inspect(event) {
 
 const files = walk(root);
 let damagedFiles = 0;
+let fixedFiles = 0;
+let skippedLive = 0;
 let fixedEvents = 0;
 // 整批共一个备份目录（含毫秒的目录名会让每个文件各开一个，白造噪音）
 const backupDir = FIX ? path.join(path.dirname(root), `sessions-backup-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`) : undefined;
@@ -62,14 +70,23 @@ const backupDir = FIX ? path.join(path.dirname(root), `sessions-backup-${new Dat
 for (const file of files) {
 	let events;
 	let torn;
+	let at0;
 	try {
+		at0 = fs.statSync(file); // 读之前的样子，写之前要复核（按住下面那道并发判据）
 		({ events, torn } = readSessionLog(file));
 	} catch (error) {
 		console.log(`\n✗ ${file}\n    读不出来：${error?.message ?? error}`);
 		damagedFiles++;
 		continue;
 	}
-	if (torn) console.log(`⚠ ${file} 尾部有截断的帧（dsh 会自己修复；本脚本原样保留）`);
+	if (torn) {
+		// 尾部有残帧时不能整文件重写：那半帧会被永久丢掉。等 dsh 自己把它收干净再修。
+		console.log(`⚠ ${file} 尾部有截断的帧 —— 只报告不改（等 dsh 自己收干净，或先把文件修完整）`);
+		if (FIX) {
+			damagedFiles++;
+			continue;
+		}
+	}
 
 	const bad = [];
 	for (const event of events) {
@@ -89,19 +106,57 @@ for (const file of files) {
 	console.log(`    共 ${bad.length} 处`);
 
 	if (FIX) {
+		// 正在被 dsh 追加的会话不能重写：writeSessionLog 是 rename 替换 inode，
+		// dsh 那批事件会写进已 unlink 的旧 inode —— 静默丢事件。宁可这轮不修。
+		if (!FORCE_LIVE && (heldOpen(file) === "yes" || Date.now() - at0.mtimeMs < LIVE_MS)) {
+			skippedLive++;
+			console.log(`    ⚠ 这个会话可能正被 dsh 写着 —— 本轮跳过，确认停掉再加 --force-live`);
+			continue;
+		}
+		const at1 = fs.statSync(file);
+		if (at1.mtimeMs !== at0.mtimeMs || at1.size !== at0.size) {
+			skippedLive++;
+			console.log(`    ⚠ 读完之后文件又被写了 —— 放弃本次改写，重跑即可`);
+			continue;
+		}
 		// 备份放到会话目录**外**：文件名仍以 `session.` 开头，留在原目录会被 dsh 的
 		// 会话枚举当成第二个会话扫出来（也可能被下次 fixer 重跑再改一遍）。
-		fs.mkdirSync(backupDir, { recursive: true });
-		const backup = path.join(backupDir, `${path.basename(path.dirname(file))}__${path.basename(file)}`);
-		fs.copyFileSync(file, backup);
-		writeSessionLog(file, events);
+		fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+		try {
+			// 备份目录里是完整会话正文，别让 umask 或别的进程把它放宽成全局可读
+			if ((fs.statSync(backupDir).mode & 0o077) !== 0) fs.chmodSync(backupDir, 0o700);
+		} catch {
+			// Windows / 特殊挂载上不支持，忽略
+		}
+		// 用相对路径做备份名：不同项目目录下同名会话不会互相覆盖
+		const backup = path.join(backupDir, path.relative(root, file).replace(/[\\/]/g, "__"));
+		if (fs.existsSync(backup) && !fs.readFileSync(backup).equals(fs.readFileSync(file))) {
+			skippedLive++;
+			console.log(`    ⚠ 已存在同名备份且与当前文件不一致（上次可能写了一半）—— 跳过：${backup}`);
+			continue;
+		}
+		if (!fs.existsSync(backup)) fs.copyFileSync(file, backup);
+		try {
+			fs.chmodSync(backup, 0o600);
+		} catch {
+			// 同上，忽略
+		}
+		// expect：CAS 复核落在 rename 上一行，防「读完之后又被写」
+		writeSessionLog(file, events, { expect: { mtimeMs: at0.mtimeMs, size: at0.size, ino: at0.ino } });
+		// 写后复验：不然「已修」只是一句话（校验和坏帧会被 readSessionLog 报出来）
+		const back = readSessionLog(file);
+		if (back.events.some((event) => inspect(event))) throw new Error(`写盘后仍有损坏：${file}（备份在 ${backup}，可直接覆盖回去）`);
+		fixedFiles++;
 		console.log(`    已修，备份：${backup}`);
 	}
 }
 
 console.log(`\n=== 汇总 ===`);
-console.log(`受损会话：${damagedFiles} / ${files.length}`);
+console.log(`会话文件：${files.length}　受损会话：${damagedFiles}　已修：${fixedFiles}　因并发跳过：${skippedLive}`);
 console.log(`受损事件：${fixedEvents}`);
-console.log(FIX ? `\n已就地修复。备份：${backupDir}\n用 node scripts/verify-sessions.mjs 复验（它直接走 dsh 的加载路径）。` : "\n只扫描。加 --fix 就地修（备份写到会话目录外）。");
-
-process.exit(damagedFiles > 0 && !FIX ? 1 : 0);
+if (!FIX && damagedFiles > 0) console.log(`\n只扫描。加 --fix 就地修（备份写到会话目录外）。`);
+else if (FIX) console.log(`备份：${backupDir}\n用 node scripts/verify-sessions.mjs 复验（它直接走 dsh 的加载路径）。`);
+// 没修完就退非 0：跳过的会话也是「还没修」，不能报成干净
+let exitCode = 0;
+if (FIX ? damagedFiles - fixedFiles > 0 : damagedFiles > 0) exitCode = 1;
+process.exit(exitCode);

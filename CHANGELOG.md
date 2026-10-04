@@ -8,6 +8,49 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [1.10.1]
+
+修 magic-context 把会话写坏、**重启后整段历史打不开**的 bug
+（`SessionFormatError: system/message requires a protected first surface head`）。
+
+### 为什么
+
+dsh 规定 surface 的首节点必须是 `system/message`（受保护头）。但 `agent/pre-step`
+跑在 `step()` **之前**，新会话那一刻 surface 还是空的 —— `system/message` 要等
+pre-step 返回后才由 agent-loop 落。magic-context 却在这一刻把两个
+`<session-history>` 注入块直接 append 到了空 surface 上，于是它们抢到了第 0、1 个
+节点位置，本该受保护的系统提示成了「后面才来的」，重载时被校验直接拒掉。
+
+真正的杀伤力在**时机**：`session.append` 完全不校验这类关系，校验只在**重载**时跑。
+所以坏形状安静地写了好几天，直到用户重启（或续聊）才爆 —— 而那一刻正是他最需要
+那段历史的时候。本机 25 个会话里 19 个中招，凡是装过 magic-context 又续聊过的全部报废，
+而且**每次续聊都在新写一个坏形状**。
+
+### 修了什么
+
+- `lib/mc.js`：`landOnSurface` 在 surface 还没有受保护头时**本轮不落地**
+  （`reason: "no-protected-head"`）。注入块本来就是每轮从 DB 重算的，推迟一轮不丢内容，
+  下一轮自然补上 —— 这是最便宜的一刀，不用去碰 agent-loop 的回合结束判定。
+- `scripts/fix-surface-head.mjs`（新增）：修已经坏掉的日志。把那两个空占位块原地降级成
+  `plugin:magic-context/session-history-injection` + `ignorable: true`（dsh 对未知
+  ignorable 类型直接跳过 —— 保留 seq、时间与 payload，不重排序、不重新编号），
+  并重算被波及的 compaction span 与 replace 范围。写盘前用 dsh 自己的加载期校验复验，
+  不通过就不写；备份写到会话目录外。只认那两个空占位块，别的一律拒修。
+- `scripts/selftest-fold.mjs`：新增场景 E，用真的 `Session` 钉住这个不变式
+  （空 surface 不许落地；老写法「静默写坏」这件事本身也被断言）。
+- `scripts/verify-sessions.mjs`：原来硬编码 Windows 安装树路径，改成共享的
+  `findDshModules()` 自动定位；`scripts/e2e-fold.mjs` 同样的问题一并改掉
+  （它此前在本机根本跑不起来，测试链里也够不到）。
+- `lib/session-log.js`：`writeSessionLog` 改成**同目录临时文件 + `rename` 原子替换**
+  （再 fsync 文件与目录；`rename` 的上一行做一次 CAS 核对）。以前是原地截断重写，
+  中途被杀/写满会留下半截会话日志 —— 那才是真正没救的那种坏法。两个修复脚本都走这个函数。
+- `lib/session-log.js`：新增共享的 `heldOpen()`（Linux 扫 `/proc/<pid>/fd`，按 dev/ino 比）。
+  `scripts/fix-mc-corruption.mjs` 用同一个 `writeSessionLog`（rename 换 inode），
+  所以也补上同一道并发判据 —— 否则它会把 dsh 正在追加的那批事件写进已被换掉的旧 inode，
+  静默丢事件；顺带把它的口径对齐 `fix-surface-head.mjs`（尾部截断的会话不再整文件重写、
+  跳过的会话计入退出码、写后复验、备份目录权限复核）。`fix-surface-head.mjs` 的拒修条件
+  也收紧到「首节点正好是那两个占位块」，且拒修只打类型与块数、不打正文。
+
 ## [1.10.0]
 
 子代理的档位改成**钉在工具行上** —— 这是 dsh 0.2.0-rc.2 上唯一还成立的做法。

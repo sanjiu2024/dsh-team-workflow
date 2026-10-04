@@ -35,6 +35,10 @@ const src = { kind: "plugin", plugin: "probe" };
 let n = 0;
 const um = (t) => ({ id: `m${n++}`, role: "user", content: [{ type: "text", text: t }], source: src });
 
+// 首节点必须是 system/message（受保护头）—— 真实会话就是这样；
+// 空 surface 上落地的节点会顶掉它，重载时整个会话打不开（见 REQ-006）
+session.append("system/message", { message: { id: "sys", role: "system", content: [{ type: "text", text: "你是 dsh 的编码代理。" }], source: src } }, { surfaceOp: "append" });
+
 // 三条历史
 session.append("user/message", um("记忆一：一律用中文回答"), { surfaceOp: "append" });
 session.append("user/message", um("记忆二：不要按进程名杀 node"), { surfaceOp: "append" });
