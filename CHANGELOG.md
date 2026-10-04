@@ -8,6 +8,39 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [1.9.2]
+
+第二轮 rc.2 适配：修掉 3 个真 bug、1 个功能级坏掉、1 个静默失效，并让自检在这台机器上真的能跑。
+
+### 修了什么
+
+| 现象 | 位置 | 根因 |
+| --- | --- | --- |
+| 自动交接后新会话空着不动 | `lib/handoff.js:297` | rc.2 的 `SessionController.prompt(request, signal)` 第一句就是 `signal.throwIfAborted()`，我们只传了 request → 必抛 TypeError 被 catch 吞成「注入失败」。新会话建了、文档写了，任务进不去 |
+| `/thrift show` 恒报「读不到生效值」 | `lib/thrift.js:98` | 还在读 0.1.x 的 `.agent-presets/team/agent.cordis.yml`；rc.x 的落点是 `<DSH_HOME>/team-workflow/preset-team/cordis.patch.yml` |
+| 多实例启动时误报「检查失败」 | `lib/auto-update.js` | 不只是少认一句文案：`runGit` 只取 stderr **第一行**当 message，而并发 fetch 失败时第一行是正常的 `From <url>` 摘要，真正的 `error: … incorrect old value provided` 在后面 → 重试判定不认，给用户看的原因也是错的 |
+| 删除带改动的 worktree 时安全提示丢了 | `lib/worktree.js:549` | 脏工作区判定只认英文；zh_CN 下 git 报「包含修改或未跟踪的文件，使用 --force 删除」。删除仍被拒（没丢数据），但「有未提交改动」这个提示没了 |
+| 「预算」不是硬上限 | `lib/bash-linux.js:227` | 丢整块的循环对「单块自己就超预算」不生效（实测残留 62KB vs 预算 32KB）。改成入口先按尾部切到 budget（复用 `clipTail`） |
+
+### 自检
+
+`npm test` 是 `&&` 链，**断在 `selftest-surface` 就停了** —— 17 个自检只跑到 3 个。根因是几个脚本把打包版桌面端的历史路径写死当默认值。
+
+- 新增 `scripts/dsh-modules.mjs`：定位安装树的探测顺序与 CLI 一致（`DSH_MODULES` → PATH 上的 `dsh` → profiles 共享层），拿不到时**明说跳过了哪几节**。
+- `tool-schema` 的工具条数按平台算（computer 是 Windows-only，非 win32 是 8 个）。
+- `bash-linux` 的 cwd 用例按平台分开：Windows 验「MSYS 路径要变原生」，非 Windows 用 realpath 比对。
+- `selftest-handoff` 的假 `sessionController` 改成照抄 rc.2 契约（`prompt(request, signal)` + `throwIfAborted`）—— 之前它只收一个参数，所以上面那个必现 bug 一次都没被抓到。反向验证过：拆掉 signal 这一行，自检立刻红。
+
+本机 17 个自检全绿，`npm test` 一条链跑到尾。
+
+### 文档
+
+`team/RULES.md` 与 `team/agent-settings.json` 里还在教人写 `contextWindow` /
+`compactThresholdRatio` 当 dsh 的压缩键 —— rc.x 的 `compaction-basic` 没有这两个键，
+且**对未知键直接抛错**（整个 dsh 起不来）。我们的文件没炸只是因为有 `preset-gen` 映射。
+同时更正了「缺 contextWindow 会退回 128000」那段 pi 时代的语义，并把不存在的
+`dsh-team thrift show` 改成 `/thrift show`。
+
 ## [1.9.1]
 
 `dsh-team patch` 在 dsh 0.2.0-rc.x 上修好了：思考链和工具行又能默认展开了。
