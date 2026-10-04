@@ -239,8 +239,12 @@ const SAMPLE_EVENTS = [
 	const notice = session._appended[0];
 	assert.equal(notice.type, "user/message", "只能用 user/message（system/message 需要 open step，此时 turn 已闭合）");
 	assert.equal(notice.opts?.surfaceOp, "append", "必须带 surfaceOp: append（surface-eligible 事件不带标记会抛）");
-	assert.equal(notice.data.source?.kind, "plugin", "source.kind 必须是 plugin —— 否则 UI 会当成用户发言");
+	// format v4：`kind` 是生产者自己的名字（`plugin:<名字>`），退休了 `{kind:"plugin", plugin}`。
+	// 断言的意思不变 —— 不能是 "user"，否则 UI 会当成用户发言、还会改「最后活动时间」。
+	assert.equal(notice.data.source?.kind, "plugin:dsh-team-workflow-handoff", "source.kind 必须是生产者自己的名字（plugin:<插件名>）—— 逐字 \"plugin\" 在 v4 里非法");
+	assert.ok(notice.data.source?.kind?.startsWith("plugin:"), "插件来源必须以 plugin: 开头");
 	assert.notEqual(notice.data.source?.kind, "user", "source.kind=user 会被 UI 渲染成用户发言，且会改「最后活动时间」");
+	assert.equal(notice.data.source?.plugin, undefined, "v4 不再用独立的 plugin 字段");
 	assert.deepEqual(notice.data.content[0].type, "text");
 	assert.ok(notice.data.content[0].text.includes("session-new-1"), "旧会话提示没说去哪");
 	assert.ok(notice.data.content[0].text.includes(docPath), "旧会话提示没给文档路径");
