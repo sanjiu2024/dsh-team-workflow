@@ -198,6 +198,11 @@ const { installBashLinux, BASH_DEFAULTS } = await import(new URL("lib/bash-linux
 const { installWorktree, WORKTREE_DEFAULTS } = await import(new URL("lib/worktree.js", ROOT).href);
 const { installComputer, COMPUTER_DEFAULTS } = await import(new URL("lib/computer.js", ROOT).href);
 
+// 条数按平台算：computer 是 Windows-only（lib/computer.js 非 win32 直接 disabled），
+// 写死 15 在 Linux 上必红 —— 那是断言过时，不是「工具没装上」。
+// 非 win32：bash×4 + worktree×4；win32 再加上 computer 的 7 个。
+const expectedTools = process.platform === "win32" ? 15 : 8;
+
 {
 	const { ctx, tools } = collector();
 	installBashLinux(ctx, { config: { ...BASH_DEFAULTS } });
@@ -205,8 +210,8 @@ const { installComputer, COMPUTER_DEFAULTS } = await import(new URL("lib/compute
 	// computer 默认关（1.6.x），这里显式打开才能把 7 个工具装进来被扫到。
 	const computer = installComputer(ctx, { config: { ...COMPUTER_DEFAULTS, enabled: true } });
 
-	check("真跑：至少装上了 15 个工具（这个自检本身要有效）", () => {
-		assert.ok(tools.size >= 15, `实际 ${tools.size} 个：${[...tools.keys()].join(", ")}`);
+	check(`真跑：至少装上了 ${expectedTools} 个工具（这个自检本身要有效）`, () => {
+		assert.ok(tools.size >= expectedTools, `实际 ${tools.size} 个：${[...tools.keys()].join(", ")}`);
 	});
 
 	for (const [name, definition] of tools) {
@@ -274,7 +279,7 @@ check("反例：required 指向不存在的属性必须被判非法（dsh 也这
 
 console.log(
 	failures === 0
-		? "\n✓ 自检通过：参数表+output.schema 全量真校验（15 个工具，对齐 dsh 子集）/ 反例可被抓到"
+		? `\n✓ 自检通过：参数表+output.schema 全量真校验（${expectedTools} 个工具，对齐 dsh 子集）/ 反例可被抓到`
 		: `\n✗ ${failures} 项失败`,
 );
 process.exit(failures === 0 ? 0 : 1);

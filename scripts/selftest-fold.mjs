@@ -15,8 +15,11 @@
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { findDshModules, skipWithoutDshModules } from "./dsh-modules.mjs";
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const DSH = process.env.DSH_MODULES ?? "C:/Users/Administrator/AppData/Roaming/dsh-tauri/dependencies/dsh/node_modules/@deepseek-ai/";
+const DSH = findDshModules();
+if (DSH === null) skipWithoutDshModules("本脚本", "折叠/落盘行为（需要 dsh-session 真实现）");
 const { Session } = await import(pathToFileURL(path.join(DSH, "dsh-session/lib/index.js")).href);
 const { landOnSurface } = await import(pathToFileURL(path.join(root, "lib", "mc.js")).href);
 const { alignSurface } = await import(pathToFileURL(path.join(root, "lib", "mc-adapter.js")).href);

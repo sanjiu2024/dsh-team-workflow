@@ -247,17 +247,29 @@ const cwd = process.cwd();
 // 持久会话：超时判死后能恢复到上次的 cwd（审查建议的改良）
 {
 	const s = new BashSession({ mode: "auto", cwd });
-	// 用一个普通目录（不要用 `/`：Git Bash 的 MSYS 层会把根目录映射成 `/c`，
-	// 重建时看到的路径与记下的不同，那是 MSYS 的怪癖不是本模块的问题）
-	await s.send("cd /c/Users", 15000);
-		await s.send("cd /c/Users", 15000);
-		// 必须是**原生路径**（`C:/Users`）而不是 MSYS 路径（`/c/Users`）：
-		// Node 在 Windows 上 `spawn({cwd})` 拿 MSYS 路径会 ENOENT。
-		// 这就是为什么拿 `pwd -W` 而不是 `$PWD`。
-		check("会话记住的原生路径 cwd（重建时用它当起始目录）", () => {
-			assert.equal(s.cwd, "C:/Users", `应是原生路径，实际 ${JSON.stringify(s.cwd)}`);
+	// 两条路径写法要分开看，别把 MSYS 的怪癖当成产品行为：
+	//   · Windows/Git Bash：`cd /c/Users`，模块必须用 `pwd -W` 把它记成**原生**
+	//     `C:/Users` —— Node 在 Windows 上 `spawn({cwd})` 拿 MSYS 路径会 ENOENT。
+	//   · Linux/macOS：没有 MSYS 这回事，原生路径就是它本身，用一个临时目录即可。
+	// 两边都不要用 `/`：Git Bash 的 MSYS 层会把根目录映射成 `/c`，那是 MSYS 的怪癖。
+	const isWindows = process.platform === "win32";
+	const probeDir = isWindows ? "/c/Users" : fs.mkdtempSync(path.join(os.tmpdir(), "dsh-team-cwd-"));
+	const expectedCwd = isWindows ? "C:/Users" : probeDir;
+	await s.send(`cd ${shellQuote(probeDir)}`, 15000);
+	check("会话记住的原生路径 cwd（重建时用它当起始目录）", () => {
+		if (isWindows) {
+			assert.equal(s.cwd, expectedCwd, `应是原生路径，实际 ${JSON.stringify(s.cwd)}`);
 			assert.ok(!s.cwd.startsWith("/c/"), "不能是 MSYS 路径 —— 拿它起新 shell 会 ENOENT");
-		});
+			return;
+		}
+		// Linux/macOS：真正要的性质是「这个路径能拿回去当起始目录」，
+		// 所以比 realpath（/tmp 在某些系统上是软链，字面值不必相等）
+		assert.equal(
+			fs.realpathSync(s.cwd),
+			fs.realpathSync(expectedCwd),
+			`记下的 cwd 应指向同一个目录，实际 ${JSON.stringify(s.cwd)}`,
+		);
+	});
 		// 超时会把会话判死（命令可能还挂着，状态不可信）
 		const killed = await s.send("sleep 30", 900);
 		check("超时判死", () => assert.equal(killed.timedOut, true));
@@ -291,7 +303,12 @@ console.log("done");
 	// 重建时用记下的 cwd：变量/函数丢了，但目录还在（最痛的那半补上了）
 	const revived = new BashSession({ mode: "auto", cwd: s.cwd });
 	const back = await revived.send("pwd", 15000);
-	check("重建后回到上次的目录", () => assert.equal(back.text.trim(), "/c/Users", `实际 ${JSON.stringify(back.text.trim())}`));
+	check("重建后回到上次的目录", () => {
+		const got = back.text.trim();
+		if (isWindows) return assert.equal(got, expectedCwd, `实际 ${JSON.stringify(got)}`);
+		// Linux/macOS：`pwd` 打的是逻辑路径，同样比 realpath
+		assert.equal(fs.realpathSync(got), fs.realpathSync(expectedCwd), `实际 ${JSON.stringify(got)}`);
+	});
 	revived.kill();
 }
 
