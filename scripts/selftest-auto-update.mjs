@@ -270,7 +270,7 @@ try {
 		]);
 		check("真 git：并发检查不会互相踩（真 bug 回归）", () => {
 			const failed = results.filter((r) => r.status === "更新失败" || r.status === "检查失败");
-			assert.equal(failed.length, 0, `并发下不该有失败（fetch 锁重试 + merge --ff-only）：${JSON.stringify(results.map((r) => `${r.status}/${r.reason}`))}`);
+			assert.equal(failed.length, 0, `并发下不该有失败（fetch 锁重试 + merge --ff-only）：${JSON.stringify(results.map((r) => `${r.status}/${r.reason}/${r.detail ?? ""}`))}`);
 			// 至少有一个把新版本拉下来了
 			assert.ok(
 				results.some((r) => r.status === "已更新"),
