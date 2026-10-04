@@ -25,6 +25,7 @@ import * as path from "node:path";
 import {
 	PRUNE_MARKER,
 	THRIFT_KEYS,
+	generateRc2TeamPreset,
 	generateTeamPreset,
 	readEffectiveThrift,
 	resolveThriftConfig,
@@ -130,12 +131,131 @@ function findStandardPreset() {
 	console.log("✓ overlay 键名映射到插件真键名");
 }
 
+// ── 2b. dsh 0.2.0-rc.x：声明行 + **bundle 承载**的生成器（纯函数，不依赖安装树）────
+//
+// 这一层守的是「别再退回 profile patch」：预设声明必须由 bundle 承载，否则
+// 不会被注册，`default: <那个 id>` 会让会话退化成「无预设」（实测：persona /
+// plan-mode 文本全丢，只由预设提供的 tool-fs（read/write/edit）一起消失）。
+// 生成器本身是纯文本变换，所以一个小样本（只保留它依赖的那几处锚点）
+// 就能把「改哪几处、别处逐字保留」钉死。
+{
+	/** rc.x 出厂 standard 的最小样本 */
+	const RC2_FIXTURE = [
+		"# Agent preset standard: one declaration inserted after the web patch.",
+		"- insert:",
+		"    - id: preset-standard",
+		"      name: '@deepseek-ai/dsh-agent-preset'",
+		"      config:",
+		"        id: standard",
+		"        order: 1",
+		"        plugins:",
+		"          - id: persona",
+		"            name: '@deepseek-ai/dsh-persona'",
+		"            config:",
+		"              suffix: Your working directory is {{cwd}}.",
+		"              prefix: You are a coding agent powered by the {{model}} model.",
+		"          - id: compaction",
+		"            name: cordis:group",
+		"            group: true",
+		"            config:",
+		"              - id: compaction-basic",
+		"                name: '@deepseek-ai/dsh-compaction-basic'",
+		"              - id: command-compact",
+		"                name: '@deepseek-ai/dsh-command-compact'",
+		"              - id: tool-result-pruner",
+		"                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'",
+		"                config:",
+		"                  thresholdChars: 8192",
+		"                  headChars: 4096",
+		"                  tailChars: 1024",
+		"",
+	].join("\n");
+	const rc2Settings = {
+		compaction: {
+			contextWindow: 512000,
+			reserveTokens: 12800,
+			keepRecentTokens: 25600,
+			compactThresholdRatio: 0.25,
+		},
+	};
+
+	const g = generateRc2TeamPreset(RC2_FIXTURE, { settings: rc2Settings, overlay: {} });
+	assert.equal(g.changed, 4, "rc.x 生成器应该正好 4 处改动（头注释/声明/模式标识/阈值）");
+	assert.match(g.text, /^    - id: preset-team$/m, "声明行没换成 preset-team");
+	assert.match(g.text, /^        id: team$/m, "config.id 没换成 team");
+	assert.match(g.text, /^        name: 团队模式$/m, "缺显示名（自定义 id 没有后端 locale，必须自带）");
+	assert.match(g.text, /^        order: 0$/m, "order 没改成 0");
+	assert.doesNotMatch(g.text, /preset-standard/, "还留着 standard 的声明行");
+	assert.match(g.text, /当前模式：团队模式。/, "persona 少了模式标识");
+	assert.match(g.text, /thresholdRatio: 0\.25/, "阈值没写进去");
+	assert.match(g.text, /retainRatio: 0\.05/, "保留比例没写进去");
+
+	// 生效值必须能回读（/thrift show 靠它）：5 个键一个都不能少
+	assert.deepEqual(
+		readEffectiveThrift(g.text),
+		{ thresholdRatio: 0.25, retainRatio: 0.05, thresholdChars: 8192, headChars: 4096, tailChars: 1024 },
+		"rc.x 生成的预设回读不出生效值",
+	);
+
+	// 幂等：同一输入两次生成必须逐字节一致
+	assert.equal(
+		generateRc2TeamPreset(RC2_FIXTURE, { settings: rc2Settings, overlay: {} }).text,
+		g.text,
+		"生成不幂等",
+	);
+
+	// pruner 只在 overlay 真给了裁剪键时才动
+	const withPrune = generateRc2TeamPreset(RC2_FIXTURE, {
+		settings: rc2Settings,
+		overlay: { pruneThresholdChars: 40000, pruneHeadChars: 100, pruneTailChars: 50 },
+	});
+	assert.match(withPrune.text, /thresholdChars: 40000/, "overlay 的裁剪值没进预设");
+	assert.equal(withPrune.changed, 5, "带裁剪覆盖时应该是 5 处改动");
+	assert.equal(g.text.includes("40000"), false, "没有 overlay 时不该动 pruner");
+
+	// 锚点找不到必须报错，而不是悄悄生成一份没改阈值的预设
+	assert.throws(
+		() => generateRc2TeamPreset("- insert:\n    - id: preset-standard\n", { settings: rc2Settings, overlay: {} }),
+		/没找到/,
+		"锚点缺失时应报错",
+	);
+
+	// 非法阈值必须在写出之前拦住（插件加载期解析，坏配置直接起不来）
+	assert.throws(
+		() =>
+			generateRc2TeamPreset(RC2_FIXTURE, {
+				settings: { compaction: { compactThresholdRatio: 0.01 } },
+				overlay: {},
+			}),
+		/retainRatio.*必须小于|必须是 \(0, 1\]/,
+		"非法阈值没被拦住",
+	);
+	console.log("✓ rc.x 预设生成：只改该改的、阈值可回读、非法值拦住");
+
+	// 有安装树时，再拿【出厂原文件】跑一遍 —— 锚点被 dsh 改掉要在这里红，
+	// 而不是等用户敲 install 时才报「找不到」。
+	const realPatch = process.env.DSH_MODULES
+		? path.join(process.env.DSH_MODULES, "dsh-web-app", "presets", "standard.patch.yml")
+		: undefined;
+	if (realPatch && fs.existsSync(realPatch)) {
+		const real = generateRc2TeamPreset(fs.readFileSync(realPatch, "utf8"), {
+			settings: rc2Settings,
+			overlay: {},
+		});
+		assert.match(real.text, /^    - id: preset-team$/m, "对出厂原文件生成失败");
+		assert.equal(typeof readEffectiveThrift(real.text), "object", "对出厂原文件生成后回读不出生效值");
+		console.log("✓ rc.x 生成器对出厂原文件也成立");
+	} else {
+		console.log("… 跳过「对出厂原文件」那一步：把 DSH_MODULES 指到 .../node_modules/@deepseek-ai 可开启");
+	}
+}
+
 // ── 3. 拿真 standard 预设生成（生成逻辑必须动到真在跑的那两行）─────────────
 
 const presetPath = findStandardPreset();
 if (!presetPath) {
 	console.log("… 跳过预设生成检查：找不到 dsh 自带的 standard 预设（设 DSH_MODULES 可指定）");
-	console.log("\n仅通过第 1~2 节（纯函数）✓");
+	console.log("\n仅通过纯函数那几节（阈值/键名 + rc.x 生成器）✓");
 	console.log("⚠️ 未验证：生成出来的预设是否真改到 compaction-basic / tool-result-pruner 两行、");
 	console.log("   是否与 standard 逐字可还原、回读是否读得准 —— 需要 dsh 安装树。");
 	process.exit(0);

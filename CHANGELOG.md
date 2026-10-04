@@ -8,6 +8,54 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [1.9.0]
+
+`dsh-team preset install` 在 dsh 0.2.0-rc.x 上真正可用，并修一个「装了但没生效」的坑。
+
+### 现象（2026-10-04 实测）
+
+按老实现（把预设写成 `$DSH_HOME/.agent-presets/team/` 目录）装完，预设列表里根本
+看不到「团队模式」：连「standard 预设目录」都找不到 —— rc.x 里那个目录已经没了。
+
+### 根因：预设的承载方式变了
+
+dsh 0.2.0-rc.x 起，预设不再是目录，而是 profile 树里的一行
+`@deepseek-ai/dsh-agent-preset` 声明；**并且这行必须由 bundle patch 承载**。
+dsh 自带 skill `editing-cordis-compositions` 的原话：旧目录 "Nothing reads that directory any more"。
+
+把同一条声明塞进 profile 的 `cordis.patch.yml`（这条弯路走过，别再走）：
+
+- 行会出现在组合树里，`--dump-config` 也看得到；
+- 但**预设不会被注册**（`plugin_manager list_plugins` 里没有 `preset-<id>` 那一行）；
+- `default: <那个 id>` 于是指向不存在的预设，会话退化成「无预设」：
+  persona / plan-mode 等预设文本全丢（系统提示 20911 → 18070 字），且 host 层被
+  `dsh-web-app` 设成 disabled、只由预设提供的 `tool-fs`（read / write / edit）、
+  `present`、`ask_user_question` 一起消失。
+
+换成 bundle 承载后同一份内容：roster 里 `fiberPhase: active`，一切正常。
+
+### 实现
+
+- `lib/preset-gen.js` 新增 `generateRc2TeamPreset`：**照着当前出厂的
+  `@deepseek-ai/dsh-web-app/presets/standard.patch.yml` 现改**，只动四处
+  （文件头注释 / 声明块 / persona 模式标识 / compaction 阈值），其余逐字照抄，
+  并做「逐条撤回去必须逐字节等于出厂文件」的自检 —— dsh 升级不会让它失真。
+- `preset install` 自动识别布局：rc.x 走 bundle（落在
+  `<DSH_HOME>/team-workflow/preset-team/`，再挂进 profile 的 dependencies + bundles），
+  0.1.x 仍走旧目录。
+- 新增 `--default`：把 `agent-preset-registry` 的 `default` 切到 `team`
+  （带备份、幂等）。默认预设本来就是**设置字段**，写这里等价于在界面里设默认，只是不用人点。
+- `thrift apply` 在 rc.x 下改为重生成整份 bundle；校验仍走 `resolveThriftConfig`，
+  非法值在写出之前拦住。
+- persona 末尾多一行「当前模式：团队模式。」—— 让模式在系统提示里可见。
+
+### 验证
+
+- `selftest-preset-gen.mjs` 新增一节：小样本 + **出厂原文件**两条路都跑，断言只改该改的、
+  阈值可回读、非法值被拦住、生成幂等。
+- 本机真跑：`dsh-team preset install --profile web --default` → bundle 落盘、
+  `--dump-config` 五个预设含 `team`、roster 里 `preset-team` = enabled/active。
+
 ## [1.8.1]
 
 修一个「装上就每轮都失败」的 bug：dsh 0.2.0-rc.2 的 format v4 不再接受 `source.kind: "plugin"`。

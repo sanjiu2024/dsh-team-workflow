@@ -25,13 +25,37 @@ dsh-team install --profile tauri     # 等价于 dsh plugin --profile tauri add 
 ```bash
 dsh-team status                      # 当前状态：装没装、skills 几个、rtk/lens 在不在
 dsh-team skills                      # 列出本包带的技能
-dsh-team thrift apply                # 把 ~/.dsh/team-workflow/thrift.json 写进 team 预设（真生效的那两行）
-dsh-team preset install              # 生成 team 预设（团队压缩阈值 + persona）
+dsh-team thrift apply                # 把 ~/.dsh/team-workflow/thrift.json 写进团队预设（真生效的那两行）
+dsh-team preset install              # 生成「团队模式」预设（rc.x 下是个 bundle，见下）
+dsh-team preset install --default    # 顺带把它设成新会话的默认预设
 dsh-team patch                       # 思考链/工具行默认展开（改安装树，--restore 可还原）
 dsh-team uninstall                   # 卸载
 ```
 
 `--dry-run` 可以加在任何会写盘或调 dsh 的命令上。
+
+## 团队预设：rc.x 起由 bundle 承载
+
+dsh 0.2.0-rc.x 换了预设的承载方式：不再是 `$DSH_HOME/.agent-presets/<id>/` 目录，
+而是 profile 树里的一行 `@deepseek-ai/dsh-agent-preset` 声明，**且必须由 bundle patch 承载**。
+`dsh-team preset install` 会照着当前出厂的
+`@deepseek-ai/dsh-web-app/presets/standard.patch.yml` 现改出一份团队预设，
+写进 `<DSH_HOME>/team-workflow/preset-team/`，再挂进 profile。
+
+```bash
+dsh-team preset install [--default]   # 生成 + 挂载；--default 顺带设成新会话默认
+```
+
+> **别把这条声明放进 profile 的 `cordis.patch.yml`**（2026-10-04 实测踩过）：
+> 那样行会出现在组合树里、`--dump-config` 也看得到，但**预设不会被注册**；
+> `default: team` 于是指向不存在的预设，会话退化成「无预设」——
+> persona / plan-mode 等预设文本全丢，且 host 层被 `dsh-web-app` 设成 disabled、
+> 只由预设提供的 `tool-fs`（read / write / edit）、`present`、`ask_user_question`
+> 会一起消失。判据：`plugin_manager` 的 `list_plugins` 里有没有 `preset-team`
+> 且 `fiberPhase: active`。
+
+与 standard 的差别只有两处：`compaction-basic` 的阈值（团队值），以及 persona 末尾的
+「当前模式：团队模式。」。其余逐字照抄，所以 dsh 升级后重跑一次 install 就同步了。
 
 ## 装进来的东西
 

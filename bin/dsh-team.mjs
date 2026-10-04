@@ -32,13 +32,20 @@ import {
 	readThreshold,
 	upsertSettings,
 } from "../lib/mc-config.js";
-import { generateTeamPreset, readEffectiveThrift, resolveThriftConfig } from "../lib/preset-gen.js";
+import {
+	generateRc2TeamPreset,
+	generateTeamPreset,
+	readEffectiveThrift,
+	resolveThriftConfig,
+} from "../lib/preset-gen.js";
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PKG_NAME = "dsh-team-workflow";
 const ROW_ID = "dsh-team-workflow";
 const SKILLS_ROW_ID = "dsh-team-workflow-skills";
 const PRESET_ID = "team";
+/** 团队预设 bundle 的包名（rc.x 布局：预设声明必须由 bundle 承载） */
+const PRESET_BUNDLE_NAME = "dsh-team-presets";
 /** 上游 magic-context 版本。升级前先跑 mc check 确认注册面没变。 */
 const MC_VERSION = "0.43.0";
 
@@ -245,8 +252,15 @@ function cmdStatus() {
 	console.log(`  skills      ${skills.length} 个：${skills.join(", ")}`);
 	console.log(`  rtk         ${fs.existsSync(path.join(PKG_ROOT, "tools", "rtk.exe")) ? "已随包" : "未随包（回退 PATH）"}`);
 	console.log(`  pi-lens     ${findLens() ?? "未找到（lens 功能会自己关掉）"}`);
+	// 预设落点按布局分：rc.x 是 bundle 包，0.1.x 是目录
 	const presetDir = path.join(dshHome, ".agent-presets", PRESET_ID);
-	console.log(`  team 预设   ${fs.existsSync(path.join(presetDir, "preset.yml")) ? presetDir : "未生成"}`);
+	const bundlePatch = path.join(teamBundleDir(), "cordis.patch.yml");
+	let presetWhere = "未生成";
+	if (fs.existsSync(bundlePatch)) presetWhere = `${teamBundleDir()}（rc.x bundle）`;
+	else if (fs.existsSync(path.join(presetDir, "preset.yml"))) presetWhere = `${presetDir}（0.1.x 目录）`;
+	console.log(`  team 预设   ${presetWhere}`);
+	const patchText2 = fs.existsSync(patchFile) ? fs.readFileSync(patchFile, "utf8") : "";
+	if (new RegExp(`default:\\s*${PRESET_ID}\\b`).test(patchText2)) console.log(`  默认预设    ${PRESET_ID}`);
 	console.log();
 	console.log(`  bundle 补丁插入的行：${SKILLS_ROW_ID}（skills） + ${ROW_ID}（插件本体）`);
 }
@@ -279,10 +293,192 @@ function cmdSkills() {	const dir = path.join(PKG_ROOT, "skills");
 	}
 }
 
-/** team 预设 = standard 预设 + 团队 compaction 阀值 + 团队 persona */
+/**
+ * dsh 0.2.0-rc.x：预设不再是目录，而是 profile 树里的一行
+ * `@deepseek-ai/dsh-agent-preset` 声明，**由 bundle patch 承载**。
+ * 出厂 standard 就在 dsh-web-app 这个 bundle 里，是个 patch 文件。
+ *
+ * 为什么不能放进 profile 的 cordis.patch.yml（2026-10-04 实测，别再试）：
+ * 那样行会出现在组合树里、`--dump-config` 也看得到，但**预设不会被注册**；
+ * `default: <那个 id>` 指向不存在的预设，会话退化成「无预设」——
+ * persona/plan-mode 等预设文本全丢（系统提示 20911 → 18070 字），
+ * 且 host 层被 disabled、只由预设提供的 `tool-fs`（read/write/edit）等一起消失。
+ */
+function findRc2StandardPatch() {
+	const seeds = [];
+	const dshBin = whichDsh();
+	if (dshBin) seeds.push(path.dirname(dshBin));
+	seeds.push(path.join(profileDir, "node_modules", ".bin"));
+	for (const seed of seeds) {
+		let dir = path.resolve(seed);
+		for (let i = 0; i < 8; i++) {
+			const file = path.join(dir, "node_modules", "@deepseek-ai", "dsh-web-app", "presets", "standard.patch.yml");
+			if (fs.existsSync(file)) return file;
+			const parent = path.dirname(dir);
+			if (parent === dir) break;
+			dir = parent;
+		}
+	}
+	return null;
+}
+
+/** PATH 上找 dsh —— 拿它反推安装树（profile 的 node_modules 里没有 @deepseek-ai/*） */
+function whichDsh() {
+	const names = process.platform === "win32" ? ["dsh.cmd", "dsh.exe", "dsh"] : ["dsh"];
+	for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
+		if (dir.trim() === "") continue;
+		for (const name of names) {
+			const file = path.join(dir, name);
+			if (!fs.existsSync(file)) continue;
+			try {
+				return fs.realpathSync(file);
+			} catch {
+				return file;
+			}
+		}
+	}
+	return null;
+}
+
+/** 团队预设 bundle 的落点：放 DSH_HOME 下（无空格，且不往仓库里拉二进制/生成物） */
+function teamBundleDir() {
+	return path.join(dshHome, "team-workflow", "preset-team");
+}
+
+/** 生成并写下 bundle 包；返回生成结果（dry-run 时只打印） */
+function writeTeamPresetBundle(standardPatch) {
+	const pristine = fs.readFileSync(standardPatch, "utf8");
+	let generated;
+	try {
+		generated = generateRc2TeamPreset(pristine, {
+			settings: readTeamSettings(),
+			overlay: readThriftOverlay(),
+		});
+	} catch (error) {
+		// 不合法就在这里死：写进去 dsh 加载期会直接抛错，比现在报错严重得多
+		fail(`预设生成失败：${error.message}`);
+	}
+	if (generated.changed === 0) {
+		console.log("  警告：team/agent-settings.json 里没有 compaction，阈值保持 standard 默认");
+	}
+
+	const dir = teamBundleDir();
+	if (dryRun) {
+		console.log(`[dry-run] 写 ${dir}/{package.json, lib/index.js, cordis.patch.yml}`);
+		return generated;
+	}
+	fs.mkdirSync(path.join(dir, "lib"), { recursive: true });
+	fs.writeFileSync(
+		path.join(dir, "package.json"),
+		`${JSON.stringify(
+			{
+				name: PRESET_BUNDLE_NAME,
+				version: pkg.version,
+				private: true,
+				description: "团队模式 agent 预设（由 dsh-team preset install 生成，勿手改）",
+				type: "module",
+				main: "./lib/index.js",
+				exports: { ".": "./lib/index.js" },
+				dsh: { bundle: { patch: "./cordis.patch.yml" } },
+			},
+			null,
+			2,
+		)}\n`,
+	);
+	fs.writeFileSync(
+		path.join(dir, "lib", "index.js"),
+		`export const name = ${JSON.stringify(PRESET_BUNDLE_NAME)};\n`,
+	);
+	fs.writeFileSync(path.join(dir, "cordis.patch.yml"), generated.text, "utf8");
+	console.log(`$ 写 ${dir}`);
+	return generated;
+}
+
+/** 把 bundle 挂进 profile（dependencies + bundles + pnpm）；已装过就只更新内容 */
+function installTeamPresetBundle() {
+	const before = readProfilePkg();
+	const deps = before.dependencies ?? {};
+	const bundles = before.dsh?.profile?.bundles ?? [];
+	const next = {
+		...before,
+		dependencies: { ...deps, [PRESET_BUNDLE_NAME]: `link:${teamBundleDir()}` },
+		dsh: {
+			...before.dsh,
+			profile: {
+				...before.dsh?.profile,
+				bundles: bundles.includes(PRESET_BUNDLE_NAME) ? bundles : [...bundles, PRESET_BUNDLE_NAME],
+			},
+		},
+	};
+	if (dryRun) {
+		console.log(`[dry-run] 写 ${path.join(profileDir, "package.json")}（dependencies + bundles 加 ${PRESET_BUNDLE_NAME}）`);
+	} else if (JSON.stringify(next) !== JSON.stringify(before)) {
+		fs.writeFileSync(path.join(profileDir, "package.json"), `${JSON.stringify(next, null, 2)}\n`);
+		console.log(`$ 写 ${path.join(profileDir, "package.json")}`);
+	}
+	const result = run("dsh", ["plugin", "--profile", profile, "install"]);
+	if (result.status !== 0) fail(`pnpm install 失败（退出码 ${result.status}）`);
+	const linked = path.join(profileDir, "node_modules", PRESET_BUNDLE_NAME);
+	if (!dryRun && !fs.existsSync(linked)) fail(`装完了但 ${linked} 不存在；检查上面的 pnpm 输出`);
+}
+
+/**
+ * 把 registry 的 default 切到 team（写 profile patch，带备份、幂等）。
+ *
+ * 默认预设是**设置字段**（客户端读 `agent-preset-registry` 命名空间），
+ * 而它的回落值就是这一行 config.default —— 所以写这里等价于在界面上设默认，
+ * 但不需要人点。
+ */
+function setDefaultPreset() {
+	const file = path.join(profileDir, "cordis.patch.yml");
+	const text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+	if (new RegExp(`default:\\s*${PRESET_ID}\\b`).test(text)) {
+		ok(`默认预设已经是 ${PRESET_ID}`);
+		return;
+	}
+	if (/^\s*- id:\s*agent-preset-registry\s*$/m.test(text)) {
+		console.log(
+			`  注意：${file} 里已有一条 agent-preset-registry，没替你动 —— 请手动把 config.default 设为 ${PRESET_ID}`,
+		);
+		return;
+	}
+	const block = [
+		"",
+		"# —— 默认预设（由 dsh-team preset install --default 写入）——",
+		"- id: agent-preset-registry",
+		"  name: '@deepseek-ai/dsh-agent-preset-registry'",
+		"  config:",
+		`    default: ${PRESET_ID}`,
+		"",
+	].join("\n");
+	if (dryRun) {
+		console.log(`[dry-run] 往 ${file} 追加 default: ${PRESET_ID}`);
+		return;
+	}
+	// 只在第一次真写前留原件：保留「用户自己那一版」，别被我们覆盖掉
+	if (text !== "" && !fs.existsSync(`${file}.bak`)) fs.copyFileSync(file, `${file}.bak`);
+	fs.writeFileSync(file, `${text.replace(/\s*$/, "")}\n${block}`);
+	ok(`已把默认预设切成 ${PRESET_ID}${fs.existsSync(`${file}.bak`) ? `（原件 ${file}.bak）` : ""}`);
+}
+
+/** team 预设 = standard 预设 + 团队 compaction 阈值 + 模式标识 */
 function cmdPresetInstall() {
+	const rc2 = findRc2StandardPatch();
+	if (rc2) {
+		console.log(`预设布局：0.2.0-rc.x（声明行 + bundle 承载）\n  底稿：${rc2}`);
+		const generated = writeTeamPresetBundle(rc2);
+		installTeamPresetBundle();
+		ok(`团队预设已就位：${teamBundleDir()} → profile "${profile}"`);
+		if (generated.changed > 0) console.log(`  已应用 ${generated.changed} 处团队设置。`);
+		if (has("default")) setDefaultPreset();
+		else console.log("  想让它成为新会话的默认：dsh-team preset install --default");
+		console.log("  重启 dsh 后生效（预设是加载期挂载的）；重启后用 plugin_manager list_plugins 能看到 preset-team。");
+		return;
+	}
+
+	// 旧布局（0.1.x）：$DSH_HOME/.agent-presets/<id>/ 目录
 	const standard = findStandardPreset();
-	if (!standard) fail("找不到 standard 预设目录");
+	if (!standard) fail("找不到 standard 预设（新旧两种布局都没找到）");
 	const dest = path.join(dshHome, ".agent-presets", PRESET_ID);
 	const pristine = fs.readFileSync(path.join(standard, "agent.cordis.yml"), "utf8");
 
@@ -303,12 +499,7 @@ function cmdPresetInstall() {
 	fs.writeFileSync(path.join(dest, "agent.cordis.yml"), generated.text, "utf8");
 	fs.writeFileSync(
 		path.join(dest, "preset.yml"),
-		[
-			"name: 团队模式",
-			"description: 标准能力 + 团队基线插件、审计日志、magic-context 折叠；dsh 自带压缩抬到 0.9 只做兜底。",
-			"order: 0",
-			"",
-		].join("\n"),
+		["name: 团队模式", "description: 标准能力 + 团队压缩阈值。", "order: 0", ""].join("\n"),
 		"utf8",
 	);
 	ok(`team 预设已写到 ${dest}`);
@@ -381,13 +572,6 @@ function readThriftOverlay() {
  * 这里走和 `preset install` 完全同一条生成/校验路径，不另开一套。
  */
 function cmdThriftApply() {
-	const standard = findStandardPreset();
-	if (!standard) fail("找不到 standard 预设目录");
-	const presetFile = path.join(dshHome, ".agent-presets", PRESET_ID, "agent.cordis.yml");
-	if (!fs.existsSync(presetFile)) {
-		fail(`team 预设还没生成（${presetFile}）：先跑 dsh-team preset install`);
-	}
-
 	const overlay = readThriftOverlay();
 	const overlayFile = path.join(dshHome, "team-workflow", "thrift.json");
 	if (Object.keys(overlay).length === 0) {
@@ -395,10 +579,46 @@ function cmdThriftApply() {
 		return;
 	}
 
+	// rc.x：预设是 bundle patch，所以「应用阈值」= 照当前出厂底稿重生成整份
+	const rc2 = findRc2StandardPatch();
+	if (rc2) {
+		const bundlePatch = path.join(teamBundleDir(), "cordis.patch.yml");
+		if (!fs.existsSync(bundlePatch)) {
+			fail(`团队预设 bundle 还没生成（${bundlePatch}）：先跑 dsh-team preset install`);
+		}
+		const before = fs.readFileSync(bundlePatch, "utf8");
+		// writeTeamPresetBundle 内部照插件规则校验，不合法直接 fail —— 不写坏预设
+		const generated = writeTeamPresetBundle(rc2);
+		const after = readEffectiveThrift(generated.text);
+		if (dryRun) {
+			// 回读不到就别印 undefined —— 那和显示假生效值是同一个毛病
+			console.log(
+				after ? `[dry-run] 将会生效：${JSON.stringify(after)}` : "[dry-run] 回读不到生效值（预设形状变了？先跑 preset install）",
+			);
+			return;
+		}
+		if (before === generated.text) {
+			ok("预设已经是这个值，无需修改");
+			return;
+		}
+		if (after) console.log(`  生效值：${JSON.stringify(after)}`);
+		console.log("  重启 dsh 后生效（预设是加载期挂载的），或切一次预设。");
+		return;
+	}
+
+	// 旧布局（0.1.x）：$DSH_HOME/.agent-presets/<id>/ 目录
+	const overlayForLegacy = overlay;
+	const standard = findStandardPreset();
+	if (!standard) fail("找不到 standard 预设（新旧两种布局都没找到）");
+	const presetFile = path.join(dshHome, ".agent-presets", PRESET_ID, "agent.cordis.yml");
+	if (!fs.existsSync(presetFile)) {
+		fail(`team 预设还没生成（${presetFile}）：先跑 dsh-team preset install`);
+	}
+
 	const pristine = fs.readFileSync(path.join(standard, "agent.cordis.yml"), "utf8");
 	let generated;
 	try {
-		generated = generateTeamPreset(pristine, { settings: readTeamSettings(), overlay });
+		generated = generateTeamPreset(pristine, { settings: readTeamSettings(), overlay: overlayForLegacy });
 	} catch (error) {
 		// 不合法就在这里死：写进去 dsh 加载期会直接抛错，比现在报错严重得多
 		fail(`拒绝写入：${error.message}`);
@@ -408,7 +628,6 @@ function cmdThriftApply() {
 	const after = readEffectiveThrift(generated.text);
 	if (dryRun) {
 		console.log(`[dry-run] 写 ${presetFile}`);
-		// 回读不到就别印 undefined —— 那和显示假生效值是同一个毛病
 		console.log(
 			after ? `[dry-run] 将会生效：${JSON.stringify(after)}` : "[dry-run] 回读不到生效值（预设形状变了？先跑 preset install）",
 		);
@@ -490,8 +709,10 @@ function cmdHelp() {
   dsh-team uninstall [--profile tauri]
   dsh-team status    [--profile tauri]
   dsh-team skills
-  dsh-team preset install [--profile tauri]
-  dsh-team thrift apply   [--profile tauri] [--dry-run]  写入 team 预设（需先 preset install）
+  dsh-team preset install [--profile tauri] [--default] [--dry-run]
+                                    生成「团队模式」预设（rc.x 下是个 bundle）；
+                                    --default 顺带设成新会话的默认预设
+  dsh-team thrift apply   [--profile tauri] [--dry-run]  写入团队预设（需先 preset install）
   dsh-team lens install                把 pi-lens 连依赖一起拷进 vendor/，让本包自包含
   dsh-team lens check [文件] [--lsp]   真跑一次 analyze-cli，验 vendor 可不可用
   dsh-team mc show                     看 magic-context 与 dsh 两边的压缩阈值是否拉开了
