@@ -11,7 +11,15 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { applyPatch, patchBundle, patchStatus, restorePatch, TARGETS } from "../lib/chat-expand.js";
+import {
+	applyPatch,
+	disclosureHookStatus,
+	patchBundle,
+	patchDisclosureHook,
+	patchStatus,
+	restorePatch,
+	TARGETS,
+} from "../lib/chat-expand.js";
 
 const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-team-patch-"));
 process.on("exit", () => fs.rmSync(tempHome, { recursive: true, force: true }));
@@ -195,6 +203,70 @@ const original = fs.readFileSync(chatFile, "utf8");
 	const rows = restorePatch({ dshHome: tempHome });
 	assert.equal(rows.find((r) => r.file === chatFile).status, "backup-missing");
 	assert.match(fs.readFileSync(chatFile, "utf8"), /useState\)\(true\)/, "没备份就别乱动文件");
+}
+
+// ── rc.x 形态：memo 包装 + 共享 useDisclosure（上游 0.2.0-rc.x 的重构）──────
+//
+// 这一节钉的是「上游换了实现，补丁还认得出来」。rc.x 把三个组件改成
+// `const X = (0, react.memo)(function X(`，状态抽进共享 hook；BashRow 还退化成了
+// 分发器（名字还在、状态搬到了 StartedBashRow）。这些都只能是照真文件写的形状。
+{
+	const rc2 = [
+		"window.__ModuleLoader__.load({",
+		'\tid: "fixture",',
+		"\tfactory: (require) => {",
+		'\t\tvar react = require("react");',
+		"\t\tfunction useDisclosure(version = 0) {",
+		"\t\t\tconst [expandedVersion, setExpandedVersion] = (0, react.useState)(null);",
+		"\t\t\treturn { expanded: expandedVersion === version };",
+		"\t\t}",
+		"\t\tconst OtherRow = (0, react.memo)(function OtherRow({ t }) {",
+		"\t\t\tconst { expanded: open, setExpanded: setOpen } = useDisclosure();",
+		"\t\t});",
+		"\t\tconst ReasoningRow = (0, react.memo)(function ReasoningRow({ t }) {",
+		"\t\t\tconst { expanded, toggle } = useDisclosure();",
+		"\t\t});",
+		"\t\tfunction BashRow(props) {",
+		"\t\t\treturn (0, react_jsx_runtime.jsx)(StartedBashRow, { ...props });",
+		"\t\t}",
+		"\t\tconst StartedBashRow = (0, react.memo)(function StartedBashRow({ t, useDisclosure }) {",
+		"\t\t\tconst { expanded, toggle: toggleExpand } = useDisclosure();",
+		"\t\t});",
+		"\t},",
+		"});",
+		"",
+	].join("\n");
+
+	const reasoning = TARGETS.find((t) => t.name === "ReasoningRow");
+	const patched = patchBundle(rc2, reasoning);
+	assert.equal(patched.status, "patched", "rc.x 的 ReasoningRow 没被认出来");
+	assert.match(patched.text, /const \{ expanded, toggle \} = useDisclosure\(0, true\);/, "调用点没改");
+	assert.match(
+		patched.text,
+		/const \{ expanded: open, setExpanded: setOpen \} = useDisclosure\(\);/,
+		"改到了别的组件（OtherRow）",
+	);
+	assert.equal(patchBundle(patched.text, reasoning).status, "already", "再打一次该报 already");
+
+	// 共享 hook：加 defaultOpen 形参 + 初始值直接取 version
+	const hook = patchDisclosureHook(rc2);
+	assert.equal(hook.status, "patched", "共享 hook 没被认出来");
+	assert.match(hook.text, /function useDisclosure\(version = 0, defaultOpen = false\)/, "hook 形参没加");
+	assert.match(hook.text, /useState\)\(defaultOpen \? version : null\)/, "hook 初始值没改");
+	assert.equal(patchDisclosureHook(hook.text).status, "already", "hook 重复打该报 already");
+	assert.equal(disclosureHookStatus(rc2), "unpatched", "现状查询把没打的报成了已打");
+	assert.equal(disclosureHookStatus(hook.text), "patched", "现状查询没认出已打");
+
+	// BashRow 只剩分发，窗口里没有展开态 —— 必须挑中 StartedBashRow
+	const terminal = TARGETS.find((t) => t.label === "工具行（终端）");
+	const bash = patchBundle(rc2, terminal);
+	assert.equal(bash.status, "patched", "没挑中 StartedBashRow（BashRow 分发器把窗口抢走了？）");
+	assert.match(bash.text, /toggle: toggleExpand \} = useDisclosure\(0, true\);/, "终端行调用点没改");
+
+	// 两种形态并存：老形态不能被新逻辑吃掉
+	const old = bundleFor([["ReasoningRow", "expanded"]]);
+	assert.equal(patchBundle(old, reasoning).status, "patched", "老形态（组件内 useState）不认了");
+	console.log("✓ rc.x 形态：memo 包装 + 共享 useDisclosure（含分发器改名）");
 }
 
 console.log("✓ 思考链/工具行展开补丁自检通过");

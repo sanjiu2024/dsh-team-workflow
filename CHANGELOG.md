@@ -8,6 +8,59 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [1.9.1]
+
+`dsh-team patch` 在 dsh 0.2.0-rc.x 上修好了：思考链和工具行又能默认展开了。
+
+### 现象（2026-10-04 实测）
+
+两条叠在一起：
+
+1. `dsh-team patch --status` 直接报「找不到 dsh 客户端 bundle；dsh 装在哪？」——
+   连文件都摸不到；
+2. 就算摸到了，rc.x 里也打不上：上游把组件重构了。
+
+### 根因一：发现逻辑只看 profile
+
+`discoverBundles` 只在 `$DSH_HOME/profiles/*/node_modules` 里解析 `@deepseek-ai/*`。
+但 web profile 的客户端 bundle **不在 profile 里**（那份 node_modules 只有本插件），
+是从安装树（npx 目录）解析的。现在补上了 `installRoots`：从 PATH 上的 `dsh`
+反推安装树，跟 `preset install` 用的是同一条路子。
+
+### 根因二：rc.x 的组件换了实现
+
+| 插件原来认的 | rc.x 实际 |
+| --- | --- |
+| `function ReasoningRow(` 在行首 | `const ReasoningRow = (0, react.memo)(function ReasoningRow(` |
+| 组件体内 `const [expanded, setExpanded] = useState(false)` | 抽成共享 hook：`const { expanded, toggle } = useDisclosure();`，组件体内一个 `useState(false)` 都没有 |
+| 终端行是 `BashRow` | `BashRow` 只剩分发器，持状态的是 `StartedBashRow` |
+| — | `useDisclosure` 定义在 chat bundle，以 **prop** 传给 tool bundle 里的 ToolRow / BashRow |
+
+所以补丁改成认两种形态：
+
+- **老形态（0.1.x）**：改组件里的 `useState(false)` —— 行为不变。
+- **rc.x 形态**：给 `useDisclosure(version = 0)` 加一个 `defaultOpen` 形参，
+  初始 `expandedVersion` 取 `defaultOpen ? version : null`（于是
+  `expanded = expandedVersion === version` 为真，toggle 逻辑不用动）；
+  再改三个目标组件各自的调用点 `useDisclosure()` → `useDisclosure(0, true)`。
+  组件窗口按锚点切，所以 `ChatGroupSeat` / `QuestionToolRow` 这些同样调
+  `useDisclosure()` 的行不受影响。
+
+顺带修的两处：
+
+- 组件名支持 `altName`，并在两个都命中时**挑窗口里真有展开态的那个**
+  （rc.x 的 `BashRow` 名字还在，光看名字会挑到分发器）。
+- `--status` 之前拿 apply 函数的返回值当现状，会把没打的报成「已打补丁」；
+  拆出 `disclosureHookStatus` 单独判。
+
+### 验证
+
+- `selftest-patch.mjs` 新增 rc.x 一节：memo 包装 + 共享 hook + 分发器改名，
+  并断言「不碰别的组件」「重复打报 already」「老形态仍然认」。
+- 本机真跑 `dsh-team patch`：两个文件四处全绿（思考链 / 展开默认值 / 工具行通用 /
+  工具行终端），`--status` 复检一致，文件里能 grep 到
+  `useDisclosure(version = 0, defaultOpen = false)` 与两处 `useDisclosure(0, true)`。
+
 ## [1.9.0]
 
 `dsh-team preset install` 在 dsh 0.2.0-rc.x 上真正可用，并修一个「装了但没生效」的坑。

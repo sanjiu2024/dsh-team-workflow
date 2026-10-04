@@ -345,6 +345,20 @@ function teamBundleDir() {
 	return path.join(dshHome, "team-workflow", "preset-team");
 }
 
+/**
+ * dsh 安装树里能解析出 `@deepseek-ai/*` 的目录。
+ *
+ * 为什么需要：web profile 的客户端 bundle 不在 profile 的 node_modules 里
+ * （那是空的，只有本插件），而是从安装树解析的 —— 只扫 profile 的话，
+ * `dsh-team patch` 会报「找不到 dsh 客户端 bundle」，思考链/工具行就永远不会展开。
+ */
+function dshInstallRoots() {
+	const roots = [];
+	const bin = whichDsh();
+	if (bin) roots.push(path.dirname(bin));
+	return roots;
+}
+
 /** 生成并写下 bundle 包；返回生成结果（dry-run 时只打印） */
 function writeTeamPresetBundle(standardPatch) {
 	const pristine = fs.readFileSync(standardPatch, "utf8");
@@ -667,7 +681,7 @@ const PATCH_LABEL = {
  */
 function cmdPatch() {
 	if (has("status")) {
-		const rows = patchStatus({ dshHome });
+		const rows = patchStatus({ dshHome, installRoots: dshInstallRoots() });
 		if (rows.length === 0) return fail("找不到 dsh 客户端 bundle；dsh 装在哪？");
 		for (const row of rows) {
 			console.log(`${row.file}${row.profiles.length ? `  [${row.profiles.join(", ")}]` : ""}`);
@@ -688,7 +702,7 @@ function cmdPatch() {
 		return;
 	}
 
-	const rows = applyPatch({ dshHome, dryRun });
+	const rows = applyPatch({ dshHome, installRoots: dshInstallRoots(), dryRun });
 	for (const row of rows) {
 		if (row.status === "no-bundles") return fail(row.label);
 		console.log(`${row.file}${row.profiles.length ? `  [${row.profiles.join(", ")}]` : ""}`);

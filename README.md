@@ -29,10 +29,18 @@ dsh-team thrift apply                # 把 ~/.dsh/team-workflow/thrift.json 写�
 dsh-team preset install              # 生成「团队模式」预设（rc.x 下是个 bundle，见下）
 dsh-team preset install --default    # 顺带把它设成新会话的默认预设
 dsh-team patch                       # 思考链/工具行默认展开（改安装树，--restore 可还原）
+dsh-team patch --status              # 只看看打没打（认得出 dsh 新旧两种组件形态）
 dsh-team uninstall                   # 卸载
 ```
 
 `--dry-run` 可以加在任何会写盘或调 dsh 的命令上。
+
+> `dsh-team patch` 改的是**安装树**里 `@deepseek-ai/dsh-client-ui-{chat,tool}/lib/client.js`
+> 的组件状态（dsh 没给这两个展开态留任何配置入口）。dsh 0.2.0-rc.x 把组件重构成了
+> `const X = (0, react.memo)(function X(` + 共享的 `useDisclosure()`，所以它认**两种形态**：
+> 老形态改组件里的 `useState(false)`，rc.x 形态给 `useDisclosure` 加 `defaultOpen` 形参、
+> 再改三处调用点（终端行在 rc.x 里叫 `StartedBashRow`，`BashRow` 只剩分发）。
+> 上游再改就会报「找不到组件」—— 它拒绝猜。npx 缓存被清或 dsh 升级后要重跑一次。
 
 ## 团队预设：rc.x 起由 bundle 承载
 
