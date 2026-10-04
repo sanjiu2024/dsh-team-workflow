@@ -8,6 +8,40 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [1.8.1]
+
+修一个「装上就每轮都失败」的 bug：dsh 0.2.0-rc.2 的 format v4 不再接受 `source.kind: "plugin"`。
+
+### 现象（2026-10-04 实测）
+
+装进 profile 后 `dsh verify "Reply with exactly: OK"` 必挂，稳定复现：
+
+    dsh: format v4 message requires a producer-owned source kind
+
+同一个 profile 卸掉插件立刻通过，所以不在 dsh 自己身上。
+
+### 根因
+
+dsh 0.2.0-rc.2 起消息来源进入 format v4：`source.kind` 必须是**生产者自己的名字**，
+逐字写 `"plugin"`（旧式 `{kind:"plugin", plugin}` 包装）会被
+`assertV4MessageSources` 直接拒掉。插件有三处还在写旧形状：
+
+- `lib/mc.js` —— magic-context 注入块，**每一轮请求**都会走
+- `lib/lens.js` —— 编辑后的 pi-lens 报告，**每一次编辑**都会走
+- `lib/handoff.js` —— 交接时往旧会话留的提示
+
+### 修法
+
+三处统一改成 `plugin:<名字>`，与 dsh 自带 v3→v4 迁移
+（`dsh-session-format-v3-to-v4` 的 `producerKind`）对旧值产出的 kind 逐字一致。
+`scripts/selftest-handoff.mjs` 原来断言的正是旧形状，一并改成断言 v4 契约
+（断言意图不变：不能是 `"user"`）。
+
+### 验证
+
+headless 真跑：注入块落盘为 `plugin:magic-context`、编辑钩子落盘为
+`plugin:team:lens`，两轮均 exit 0；审计日志里能查到这两条 `source`。
+
 ## [1.8.0]
 
 修一个「两个配置各自都合法、合起来才错」的 bug：magic-context 与 dsh 自带压缩的阈值互斥。
