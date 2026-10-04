@@ -184,7 +184,7 @@ worktree_drop(...)       → 清掉
 | 审查型 | `subagent_power`（普通审查都是这一档；**只有三层审查的第 1 层**例外用 `subagent_std`，见「## 审查（三层）」） |
 | 调研型 | `subagent_power` |
 | 质疑型 | `subagent_max` |
-| 探活 | `subagent`；要 `tier-free` 得先在界面上开子代理模型选择，再显式传 |
+| 探活 | `subagent` + 显式传 `tier-free`（见下面第 2 种用法） |
 
 为什么是工具行、而不是「角色名 → 模型」的映射：dsh 里子代理**没有角色概念**，
 角色是靠 prompt 第一行声明的；而 dsh 0.2.0-rc.x 也**不读** pi 那套
@@ -193,13 +193,32 @@ worktree_drop(...)       → 清掉
 它由 `team/agent-settings.json` 的 `subagents.tierTools` 驱动，
 `dsh-team preset install` 生成。
 
-调用形状 —— **不要传 `provider` / `model`**：这几条工具行关掉了
-`modelSelectionSettings`，传了会直接报
+两种用法，按需要挑：
+
+**1）默认用钉死的工具行**（推荐）。档位写死在工具上，不受任何开关影响，
+也不会因为「忘了传参」而掉档。这几条**不要传** `provider` / `model` ——
+它们的 `modelSelectionSettings` 是关的，传了会直接报
 `child model selection is disabled for this tool instance`。
 
 ```json
 {
   "task": "角色：审查型。只审查，不改代码。\n……"
+}
+```
+
+**2）需要用允许列表里的其它档位时**（例如探活要 `tier-free`）：用普通的 `subagent`，
+显式传 `provider` + `model`（**必须成对**，且要在 dsh 的允许列表里）。
+前提是界面上开着「子代理模型选择」（命名空间 `subagent-model-selection-settings`，
+允许哪些模型在 profile patch 里配）。
+
+它**按顶层会话采样**：老会话沿用创建时的判定，改了设置要**开新会话**才生效 ——
+看到 `child model selection is disabled` 就是这个原因，不是配置写错了。
+
+```json
+{
+  "task": "……",
+  "provider": "new-api",
+  "model": "tier-free"
 }
 ```
 

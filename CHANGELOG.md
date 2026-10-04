@@ -22,8 +22,12 @@ dsh 0.2.0-rc.2 **完全不读它** —— 2026-10-05 全树 grep `agentOverrides
 规范里写着「你必须显式传 provider/model」，而实测传了直接报
 `child model selection is disabled for this tool instance`。
 
-rc.2 的模型选择是 Host 运行时设置（`subagent-model-selection`，默认关；
-profile patch 里那行 `enabled: true` 只是部署基线）。它能用，但依赖界面开关。
+rc.2 的模型选择是 Host 运行时设置（`subagent-model-selection-settings`）：界面上
+勾开关 + 填允许模型列表，主 agent 就能显式传 `provider`/`model`。注意它**按顶层会话采样**
+（`modelSelectionSettings` 的语义是「每个新顶层会话采样一次、子会话继承」），
+所以老会话会一直沿用创建时的判定 —— 实测撞到的 `child model selection is disabled`
+就是这个原因，不是配置写错。两条路都留着：钉死的工具行不受开关影响，开关开着时
+普通的 `subagent` 也能显式选档（见 team/RULES.md 的选档那节）。
 
 ### 改法
 
