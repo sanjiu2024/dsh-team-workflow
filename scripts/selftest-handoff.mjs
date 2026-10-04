@@ -166,7 +166,12 @@ function makeCtx({ withController = true } = {}) {
 				created.push(request);
 				return { sessionId: `session-new-${created.length}` };
 			},
-			async prompt(request) {
+			// 照抄 rc.2 的契约：`prompt(request, signal)` 第一句就是
+			// `signal.throwIfAborted()`（dsh-api-session-controller/lib/index.js:3096）。
+			// 早先这里只收一个参数，于是「忘了传 signal」这个必现 bug 一次都没被抓到——
+			// 假实现必须跟真的一样严，否则自检就是个安慰。
+			async prompt(request, signal) {
+				signal.throwIfAborted();
 				prompted.push(request);
 				return { accepted: true };
 			},
