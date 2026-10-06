@@ -1869,6 +1869,12 @@ check("工具：render 对成功/失败都给得出文案", () => {
 			const warnText = tool.output.render({}, { ok: true, taskId: "t", updated: true, runError: "立即运行失败：该任务正在运行" });
 			assert.match(warnText[0].text, /⚠️/);
 			assert.match(warnText[0].text, /不用重试/);
+			// 没改动的那个分支不能说「改动已生效」——自相矛盾，而这句话是调用方判断
+			// 「要不要重试」的依据
+			const nothingChanged = tool.output.render({}, { ok: true, taskId: "t", updated: false, runError: "立即运行失败：该任务正在运行" });
+			assert.doesNotMatch(nothingChanged[0].text, /改动已生效/, "什么都没改，不能说改动已生效");
+			assert.match(nothingChanged[0].text, /什么都没改/);
+			assert.match(nothingChanged[0].text, /不用重试|什么都没改/);
 		}
 	}
 });
