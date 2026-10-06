@@ -322,6 +322,12 @@ check("SCHEDULER_FIELDS：enabled 只认真布尔", () => {
 	for (const key of Object.keys(SCHEDULER_DEFAULTS)) {
 		assert.equal(typeof SCHEDULER_FIELDS[key], "function", `SCHEDULER_DEFAULTS.${key} 没有对应的 FIELDS 校验`);
 	}
+	// 而且每个默认值都必须**过得了自己的校验**。装配时整份 cfg 会过一遍 FIELDS
+	// （见下面那个块），默认值要是被自己的校验判非法，就会被悄悄换掉 —— 一个
+	// 「默认值不合法」的字段从此只能靠这条断言发现。
+	for (const [key, value] of Object.entries(SCHEDULER_DEFAULTS)) {
+		assert.equal(SCHEDULER_FIELDS[key](value), value, `SCHEDULER_DEFAULTS.${key} 过不了自己的校验`);
+	}
 	// 数值字段都得上界。只卡下限的字段意味着「配多大都行」，而这些值全都会**持有资源**：
 	// 并发的是真会话、超时的是占着的名额、historyLimit 的是 runs.json 的体积。
 	assert.equal(SCHEDULER_FIELDS.tickMs(60 * 60 * 1000 + 1), undefined);
