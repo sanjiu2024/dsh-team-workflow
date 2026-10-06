@@ -922,6 +922,7 @@ await checkAsync("engine：成功但收尾不完整的一轮，运行记录里�
 	assert.equal(neRuns.length, 1);
 	assert.equal(neRuns[0].incomplete, true);
 	assert.equal(neRuns[0].summary, "（这一轮没有观测到任何事件）", "零事件必须留下能区分的一句话");
+	assert.equal(neRuns[0].noEvents, true, "零事件必须落成字段：只写进 summary 的话，scheduler_list 那一路分不出这两种");
 });
 
 
@@ -1917,6 +1918,41 @@ await checkAsync("工具：scheduler_list 要说得出「上次跑成什么样�
 	const blockOf = (name) => report.split("\n- ").find((block) => block.includes(name)) ?? "";
 	assert.match(blockOf("有运行记录"), /（失败）/, "有记录的那个任务要报出结果");
 	assert.doesNotMatch(blockOf("没跑过"), /（/, "从没跑过的任务不该多出一个括号");
+
+	// 「进程被杀留下的那条」—— 状态是 recoverInterruptedRuns 写的 interrupted。
+	// 状态表里漏了它的话，这里会直接吐英文原文（interrupted）给 agent 看。
+	await scheduler.store.mutateRuns((runs) => {
+		runs.push({ id: "r4", taskId: made.taskId, taskName: "有运行记录", trigger: "scheduled", status: "interrupted", startedAt: 4 });
+	});
+	report = (await list.execute({}, {})).report;
+	assert.match(blockOf("有运行记录"), /（被中断）/, "被中断要说中文，不能吐原始状态名");
+
+	// 零事件和「跑了但没收尾」是两种东西，都报「收尾不完整」等于没说
+	await scheduler.store.mutateRuns((runs) => {
+		runs.push({ id: "r5", taskId: made.taskId, taskName: "有运行记录", trigger: "scheduled", status: "succeeded", startedAt: 5, incomplete: true, noEvents: true });
+	});
+	report = (await list.execute({}, {})).report;
+	assert.match(blockOf("有运行记录"), /（成功，没观测到事件）/, "零事件要单独说，不能混进「收尾不完整」");
+	assert.doesNotMatch(blockOf("有运行记录"), /收尾不完整/, "更具体的那一种只说一遍");
+
+	// 记录被裁掉（historyLimit）或被人删掉之后：不许只剩一个时间戳装作干净成功。
+	// 时间戳来自任务、结论来自 runs，两者不同源 —— 缺一边就得明说。
+	await scheduler.store.mutateTasks((tasks) => {
+		const t = tasks.find((x) => x.id === made.taskId);
+		t.lastRunAt = Date.now() - 60_000;
+	});
+	await scheduler.store.mutateRuns((runs) => {
+		for (let i = runs.length - 1; i >= 0; i -= 1) if (runs[i].taskId === made.taskId) runs.splice(i, 1);
+	});
+	report = (await list.execute({}, {})).report;
+	assert.match(blockOf("有运行记录"), /记录已滚出保留窗口/, "没有记录但有时间戳时必须说出来");
+
+	// runs.json 是会被手改的输入：混进 null / 字符串不该让整个工具抛
+	await scheduler.store.mutateRuns((runs) => {
+		runs.push(null, "坏元素", { id: "r6", taskId: never.taskId, taskName: "没跑过", trigger: "scheduled", status: "failed", startedAt: 6 });
+	});
+	report = (await list.execute({}, {})).report;
+	assert.match(blockOf("没跑过"), /（失败）/, "坏元素要跳过，正常记录照旧要读出来");
 	scheduler.dispose();
 	assert.equal(typeof never.taskId, "string");
 });
