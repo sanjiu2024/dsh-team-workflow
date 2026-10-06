@@ -1563,8 +1563,19 @@ await checkAsync("工具：scheduler_create 真写进存储，scheduler_list 读
 	const both = await update.execute({ task_id: created.taskId, prompt: "改成写周报", run_now: true }, {});
 	assert.equal(both.ok, true);
 	assert.equal(both.ran, true);
+	assert.equal(both.nextRunAt ?? null, null, "同上：正在变的值不回");
 	assert.equal(both.updated, true, "同一批带了补丁，要报出「也改了」");
 	assert.equal(readPrompt(created.taskId), "改成写周报", "run_now 不能把同一批的补丁丢掉");
+
+	// trigger 失败时（同一个任务还在 running，必然被并发闸拦下）：补丁**已经落盘了**，
+	// 这里报 `ok:false` 等于说「这次调用没生效」—— 调用方要么重试补丁（重复改），
+	// 要么以为改动没落地。所以必须 `ok:true` + 单独的 `runError`。
+	const busy = await update.execute({ task_id: created.taskId, prompt: "第三版", run_now: true }, {});
+	assert.equal(busy.ok, true, "补丁已保存，不能报成「更新失败」");
+	assert.equal(busy.updated, true);
+	assert.equal(busy.ran, undefined, "没跑起来就不能说跑了");
+	assert.match(busy.runError, /正在运行/, "要说清楚是「没跑起来」，不是「没保存」");
+	assert.equal(readPrompt(created.taskId), "第三版", "报 runError 时补丁也必须真的落地");
 
 	// 只传 run_now 仍然合法（「立刻跑一次，别的都不改」），不能报「没有要改的字段」。
 	// 另起一个任务：上面那个已经进 running 了，同一个任务会被并发闸拦成「该任务正在运行」，
@@ -1574,6 +1585,13 @@ await checkAsync("工具：scheduler_create 真写进存储，scheduler_list 读
 	assert.equal(soloRun.ok, true, "只传 run_now 不该被拒");
 	assert.equal(soloRun.updated, false, "只传 run_now 没有补丁");
 	assert.equal(readPrompt(solo.taskId), "原始指令", "只传 run_now 不该动任何字段");
+
+	// `run_now` 路径**不报** `nextRunAt`：触发只是 `fireAndForget`，后台那一轮会走
+	// advance 把它重算掉，返回时存里那个值是马上要变的。报它就是报一个不成立的数字
+	// （重读也一样 —— execute 的第一个 await 在 advance 之前，同步读必然还是旧值）。
+	assert.equal(soloRun.nextRunAt ?? null, null, "run_now 路径不该回一个正在变的 nextRunAt");
+	// 不报数字，就必须把「去哪看真值」说清楚，否则调用方以为没有下一次
+	assert.match(update.output.render({}, soloRun)[0].text, /scheduler_list/);
 	await remove.execute({ task_id: solo.taskId }, {});
 
 	const deleted = await remove.execute({ task_id: created.taskId }, {});
@@ -1594,6 +1612,12 @@ check("工具：render 对成功/失败都给得出文案", () => {
 		const errText = tool.output.render({}, { ok: false, error: "炸了", report: "r" });
 		assert.ok(Array.isArray(okText) && typeof okText[0].text === "string", `${tool.name} render 成功路径不对`);
 		assert.ok(Array.isArray(errText) && typeof errText[0].text === "string", `${tool.name} render 失败路径不对`);
+		// 「存了但没跑起来」既不是 ❌ 也不是纯 ✅ —— 只有 update 有这条路径
+		if (tool.name === "scheduler_update") {
+			const warnText = tool.output.render({}, { ok: true, taskId: "t", updated: true, runError: "立即运行失败：该任务正在运行" });
+			assert.match(warnText[0].text, /⚠️/);
+			assert.match(warnText[0].text, /不用重试/);
+		}
 	}
 });
 
