@@ -13,6 +13,10 @@
 - 一次提交只做一件事，顺手改的另开一个提交
 - 标题 ≤50 字符，类型只用 `feat` / `fix` / `refactor` / `perf` / `docs` / `test` / `chore` / `build`
 - 正文写「为什么」，不写「怎么做的」——怎么做的看 diff
+- **修 bug / 加能力必须同时动版本号**：同一次提交里改 `package.json` 的 `version`
+  并在 `CHANGELOG.md` 加一节（只修 bug → patch，加能力或改默认行为 → minor，
+  不兼容的配置格式变更 → major）。自检核对这两处，对不上直接红。
+  纯文档、纯测试、纯重构不动版本号。
 - 详细格式见 skill `commit-convention`
 
 ## 代码
