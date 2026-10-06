@@ -489,24 +489,66 @@ await checkAsync("engine.tick：补算 nextRunAt 必须真落盘，且不会每�
 	store.mutateTasks = realMutate;
 });
 
-await checkAsync("engine.tick：算不出下次（过期 once）就停用，不是每秒重试", async () => {
+await checkAsync("engine.tick：算不出下次（过期 once）不静默停用，告警一次且不空写", async () => {
 	const store = freshStore("tick-terminal");
 	const executor = { run: async () => ({ status: "succeeded" }) };
-	const engine = createEngine({ store, executor, config: { ...SCHEDULER_DEFAULTS } });
+	const logs = [];
+	const engine = createEngine({ store, executor, config: { ...SCHEDULER_DEFAULTS }, log: (m) => logs.push(m) });
 	await store.mutateTasks((tasks) => {
 		tasks.push({ id: "t2", name: "过期一次性", enabled: true, prompt: "p", schedule: { kind: "once", at: new Date(Date.now() - 86400000).toISOString() }, nextRunAt: null });
 	});
 	await engine.tick();
 	const after = store.readTasks().find((t) => t.id === "t2");
-	assert.equal(after.enabled, false, "过期的一次性任务必须停用");
+	// 算不出下一次 ≠ 这条任务该消失。停用是拿一次内部计算改用户数据，而且不说一声 ——
+	// 用户下次开面板只看到「已停用」，不知道是谁关的。跟源头 tick 一致：什么都不做。
+	assert.equal(after.enabled, true, "算不出下一次不该替用户停用");
 	assert.equal(after.nextRunAt, null);
-	// 停用之后不再进补算分支
+	assert.equal(logs.filter((m) => m.includes("算不出下一次运行时间")).length, 1, "要告警一次");
+
 	let writes = 0;
 	const realMutate = store.mutateTasks;
 	store.mutateTasks = (fn) => { writes += 1; return realMutate(fn); };
 	await engine.tick();
-	assert.equal(writes, 0, "停用后不该再写盘");
+	assert.equal(writes, 0, "算不出就该跳过，不能每秒空写一次盘");
+	assert.equal(logs.filter((m) => m.includes("算不出下一次运行时间")).length, 1, "每秒一次 tick 不能刷屏");
 	store.mutateTasks = realMutate;
+
+	// 计划改好之后要能恢复，而且恢复过程本身不重复告警
+	await store.mutateTasks((tasks) => {
+		const task = tasks.find((t) => t.id === "t2");
+		task.schedule = { kind: "daily", time: "09:00" };
+	});
+	await engine.tick();
+	const fixed = store.readTasks().find((t) => t.id === "t2");
+	assert.equal(typeof fixed.nextRunAt, "number", "计划改好后应补算出下一次");
+	assert.equal(fixed.enabled, true);
+	assert.equal(logs.filter((m) => m.includes("算不出下一次运行时间")).length, 1, "恢复后不该再告警");
+});
+
+await checkAsync("engine.tick：一次性任务跑完仍然自动停用（与补算分支的区分）", async () => {
+	const store = freshStore("tick-once-done");
+	const executor = { run: async () => ({ status: "succeeded" }) };
+	const engine = createEngine({ store, executor, config: { ...SCHEDULER_DEFAULTS } });
+	const at = new Date(Date.now() + 3600000).toISOString();
+	await store.mutateTasks((tasks) => {
+		tasks.push({ id: "t3", name: "未来一次性", enabled: true, prompt: "p", schedule: { kind: "once", at }, nextRunAt: null });
+	});
+	await engine.tick();
+	assert.equal(typeof store.readTasks().find((t) => t.id === "t3").nextRunAt, "number");
+	// 让它到期
+	await store.mutateTasks((tasks) => {
+		tasks.find((t) => t.id === "t3").nextRunAt = Date.now() - 1000;
+	});
+	await engine.tick();
+	// 触发是 fireAndForget 的，有界轮询到它落盘为止
+	for (let i = 0; i < 200 && store.readTasks().find((t) => t.id === "t3").enabled !== false; i += 1) {
+		await new Promise((r) => setTimeout(r, 10));
+	}
+	const done = store.readTasks().find((t) => t.id === "t3");
+	// 这条和补算分支是两回事：用户要的就是「跑一次就完」，跑完了关掉它是它本来的生命周期，
+	// 而且不关的话它下一秒就会落进补算分支，报一句「算不出下一次」——那是纯噪声。
+	assert.equal(done.enabled, false, "一次性任务跑完要停用");
+	assert.equal(done.nextRunAt, null);
 });
 
 // ── 4. 事件摘要与结论 ────────────────────────────────────────────────────────
