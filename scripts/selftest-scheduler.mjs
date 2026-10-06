@@ -808,7 +808,7 @@ check("decideRunOutcome：缺 turn/end 算成功，但「没观察到启动」�
 	assert.equal(decideRunOutcome({ text: "x", hasTurnEnd: true, reason: "error" }).status, "failed");
 });
 
-check("engine：成功但收尾不完整的一轮，运行记录里必须分得出来", async () => {
+await checkAsync("engine：成功但收尾不完整的一轮，运行记录里必须分得出来", async () => {
 	// 「缺 turn/end 判成功」是为了不制造假失败，但它和干净收尾是同一个形状 ——
 	// 记录里不留标记，用户就永远看不出这一轮其实没有正常收尾。
 	const store = freshStore("run-incomplete");

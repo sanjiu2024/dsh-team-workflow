@@ -30,6 +30,16 @@ const check = (name, fn) => {
 		console.log(`✗ ${name}\n    ${error?.message ?? error}`);
 	}
 };
+// 异步断言必须走这个：`check` 不 await，promise 没人接 —— 那个块里第一个 await
+// 之后的断言等于没写，而自检会显示全绿（同步的 process.exit 先发生）。
+const checkAsync = async (name, fn) => {
+	try {
+		await fn();
+	} catch (error) {
+		failures++;
+		console.log(`✗ ${name}\n    ${error?.message ?? error}`);
+	}
+};
 
 // ── 1. 纯函数 ───────────────────────────────────────────────────────────────
 
@@ -121,7 +131,7 @@ check("shellQuote 正确转义单引号（真往返）", () => {
 });
 
 // resolveWorkdir
-check("resolveWorkdir 相对路径按 fallback 解析、空值回落", async () => {
+await checkAsync("resolveWorkdir 相对路径按 fallback 解析、空值回落", async () => {
 	const path = await import("node:path");
 	assert.equal(resolveWorkdir("", "/base", path), "/base");
 	assert.equal(resolveWorkdir(undefined, "/base", path), "/base");

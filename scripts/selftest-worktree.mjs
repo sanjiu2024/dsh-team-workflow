@@ -589,7 +589,7 @@ check("降级：配置关掉时不注册工具，状态说「关」", () => {
 	assert.match(result.describe(), /关/);
 });
 
-check("工具 execute 对空 name 友好拒绝（不抛）", async () => {
+await checkAsync("工具 execute 对空 name 友好拒绝（不抛）", async () => {
 	const registered = [];
 	const ctx = { logger: { info: () => {} }, tools: { register: (t) => (registered.push(t), () => {}) } };
 	installWorktree(ctx, { config: { ...WORKTREE_DEFAULTS } });
