@@ -1748,6 +1748,42 @@ await checkAsync("工具：scheduler_create 真写进存储，scheduler_list 读
 	scheduler.dispose();
 });
 
+await checkAsync("工具：scheduler_list 要说得出「上次跑成什么样」（agent 侧唯一的读路径）", async () => {
+	process.env.DSH_HOME = path.join(tmpRoot, "home-list-runs");
+	const { ctx, record } = fakeCtx(REQUIRED);
+	const scheduler = installScheduler(ctx, { config: { ...SCHEDULER_DEFAULTS, enabled: true } });
+	const list = record.tools.find((t) => t.name === "scheduler_list");
+	const create = record.tools.find((t) => t.name === "scheduler_create");
+
+	const made = await create.execute({ name: "有运行记录", prompt: "p", schedule: { kind: "daily", time: "09:00" } }, {});
+	await scheduler.store.mutateRuns((runs) => {
+		runs.push({ id: "r1", taskId: made.taskId, taskName: "有运行记录", trigger: "scheduled", status: "failed", startedAt: 1, error: "炸了" });
+		runs.push({ id: "r2", taskId: made.taskId, taskName: "有运行记录", trigger: "scheduled", status: "succeeded", startedAt: 2, incomplete: true, summary: "半截" });
+	});
+	// runs 是追加写的，最后一条就是最近一次 → 报「成功，收尾不完整」
+	let report = (await list.execute({}, {})).report;
+	assert.match(report, /上次: .*（成功，收尾不完整）/, "收尾不完整必须看得出来，光看时间戳看不出");
+
+	// 换成一条真失败：也要看得出来
+	await scheduler.store.mutateRuns((runs) => {
+		runs.push({ id: "r3", taskId: made.taskId, taskName: "有运行记录", trigger: "scheduled", status: "failed", startedAt: 3, error: "炸了" });
+	});
+	report = (await list.execute({}, {})).report;
+	assert.match(report, /（失败）/, "失败必须说出来");
+
+	// 从来没跑过的任务不许多出一个括号。
+	// 注意：这里两份记录都是直接塞进 runs 的，`lastRunAt` 其实都是「从未」——
+	// 所以必须按**任务块**取，不能拿「上次: 从未」这一行去找（那样会找到上面那个
+	// 有记录的任务，前提就错了，负向验证也就成了摆设）。
+	const never = await create.execute({ name: "没跑过", prompt: "p", schedule: { kind: "daily", time: "09:00" } }, {});
+	report = (await list.execute({}, {})).report;
+	const blockOf = (name) => report.split("\n- ").find((block) => block.includes(name)) ?? "";
+	assert.match(blockOf("有运行记录"), /（失败）/, "有记录的那个任务要报出结果");
+	assert.doesNotMatch(blockOf("没跑过"), /（/, "从没跑过的任务不该多出一个括号");
+	scheduler.dispose();
+	assert.equal(typeof never.taskId, "string");
+});
+
 await checkAsync("engine.trigger：超天花板的存量任务要在触发时就拒，不能回 ✅", async () => {
 	const store = freshStore("trigger-ceiling");
 	const ran = [];
