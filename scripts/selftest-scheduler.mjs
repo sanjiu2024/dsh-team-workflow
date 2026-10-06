@@ -770,7 +770,7 @@ check("engine：成功但收尾不完整的一轮，运行记录里必须分得�
 });
 
 
-check("waitForTurnStart：seq 不增长就不放行，观测不到 seq 时不判死", async () => {
+await checkAsync("waitForTurnStart：seq 不增长就不放行，观测不到 seq 时不判死", async () => {
 	// 启动窗口跟源头同一个值（30s）
 	assert.equal(TURN_START_TIMEOUT_MS, 30_000);
 	// 已经启动：立刻返回 true
