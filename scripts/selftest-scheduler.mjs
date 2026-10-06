@@ -32,7 +32,10 @@ const {
 	buildTask,
 	createStore,
 	decideRunOutcome,
+	TURN_START_TIMEOUT_MAX_MS,
+	TURN_START_TIMEOUT_MIN_MS,
 	TURN_START_TIMEOUT_MS,
+	normalizeTurnStartTimeout,
 	waitForTurnStart,
 	describeSchedule,
 	installScheduler,
@@ -307,6 +310,9 @@ check("SCHEDULER_FIELDS：enabled 只认真布尔", () => {
 	assert.equal(SCHEDULER_DEFAULTS.turnStartTimeoutMs, 30000);
 	assert.equal(SCHEDULER_FIELDS.turnStartTimeoutMs(10), undefined, "太小等于每轮都判「等不到启动」");
 	assert.equal(SCHEDULER_FIELDS.turnStartTimeoutMs(200), 200);
+	// 上限：这个等待在 runTimeout 的 race 之前，配成一个大数就是永不返回
+	assert.equal(SCHEDULER_FIELDS.turnStartTimeoutMs(TURN_START_TIMEOUT_MAX_MS), TURN_START_TIMEOUT_MAX_MS);
+	assert.equal(SCHEDULER_FIELDS.turnStartTimeoutMs(TURN_START_TIMEOUT_MAX_MS + 1), undefined);
 	// 每个 DEFAULTS 的键都得有校验函数，否则写进 config 会被静默丢掉
 	for (const key of Object.keys(SCHEDULER_DEFAULTS)) {
 		assert.equal(typeof SCHEDULER_FIELDS[key], "function", `SCHEDULER_DEFAULTS.${key} 没有对应的 FIELDS 校验`);
@@ -752,6 +758,27 @@ check("summarizeEvents：hasAnyEvent 分得开「零事件」和「有事件没�
 	assert.equal(summarizeEvents([{ type: "turn/end", data: { reason: "completed" } }]).hasAnyEvent, true);
 });
 
+check("normalizeTurnStartTimeout：坏窗口一律收敛成有限正数", () => {
+	// 插件配置那一路不过 FIELDS，结构上拿不到「值一定合法」这个保证 —— 所以兜底必须
+	// 在**用的时候**做一次。窗口读不出来时的后果不是报错，是**这一轮永不返回**：
+	// `Date.now() + NaN = NaN`，`Date.now() >= NaN` 恒假，那个 10ms 轮询转不完，
+	// 任务永远占着 running 和 maxConcurrent 名额，而 runTimeout 的 race 还没进去。
+	for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, "abc", "30000", null, undefined, {}, [], -1, 0]) {
+		assert.equal(normalizeTurnStartTimeout(bad), TURN_START_TIMEOUT_MS, `${String(bad)} 应该退回默认窗口`);
+	}
+	assert.equal(normalizeTurnStartTimeout(1), TURN_START_TIMEOUT_MIN_MS, "小到不可用的值夹到下限");
+	assert.equal(normalizeTurnStartTimeout(200), 200);
+	assert.equal(normalizeTurnStartTimeout(5000.7), 5000);
+	assert.equal(normalizeTurnStartTimeout(Number.MAX_SAFE_INTEGER), TURN_START_TIMEOUT_MAX_MS, "超大值夹到上限");
+	assert.equal(normalizeTurnStartTimeout(6 * 3600 * 1000), TURN_START_TIMEOUT_MAX_MS);
+	// 收敛后的结果必须是「能算出 deadline」的数 —— 这正是死循环的根因
+	for (const value of [Number.NaN, Number.POSITIVE_INFINITY, 1e12, "abc", 0]) {
+		const budget = normalizeTurnStartTimeout(value);
+		assert.ok(Number.isFinite(budget) && budget > 0, `${String(value)} 收敛后必须能算出 deadline`);
+		assert.ok(Date.now() + budget > Date.now(), "deadline 必须在将来");
+	}
+});
+
 check("decideRunOutcome：缺 turn/end 算成功，但「没观察到启动」算失败", () => {
 	// 缺 turn/end 判成功是跟源头 decideRunOutcome 对齐的：核心在异常收尾
 	// （取消 / 中断 / 崩溃修复）时可能不补写这条事件。这里读的是**全量快照**，
@@ -849,6 +876,13 @@ await checkAsync("waitForTurnStart：seq 不增长就不放行，观测不到 se
 	const t0 = Date.now();
 	assert.equal(await waitForTurnStart({ seq: 1 }, 1, 30), false);
 	assert.ok(Date.now() - t0 >= 25, "应该真的等满了窗口");
+	// 这一条测的是**接线**：窗口值真的过了 normalizeTurnStartTimeout。传一个低于下限的
+	// 值，只有被夹到 50ms 才会等 40ms 以上；直接把配置值加进 deadline 的话，1ms 的窗口
+	// 在第一次判断时就到点了、几乎立刻返回。
+	const belowFloor = Date.now();
+	assert.equal(await waitForTurnStart({ seq: 1 }, 1, 1), false);
+	assert.ok(Date.now() - belowFloor >= 40, "低于下限的窗口要被夹到 50ms 才能算出 deadline");
+
 	// seq 中途增长：等到之后放行
 	const growing = { seq: 0 };
 	setTimeout(() => {
