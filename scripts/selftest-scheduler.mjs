@@ -32,6 +32,8 @@ const {
 	buildTask,
 	createStore,
 	decideRunOutcome,
+	TURN_START_TIMEOUT_MS,
+	waitForTurnStart,
 	describeSchedule,
 	installScheduler,
 	localTimeZone,
@@ -544,11 +546,44 @@ check("summarizeEvents：空输入不抛", () => {
 	assert.equal(summary.hasTurnEnd, false);
 });
 
-check("decideRunOutcome：没有 turn/end 一律算失败", () => {
-	// 这正是源头 docs/sync-log.md 记的那条：否则「跑一半断了」会被记成成功。
+check("decideRunOutcome：缺 turn/end 算成功，但「没观察到启动」算失败", () => {
+	// 缺 turn/end 判成功是跟源头 decideRunOutcome 对齐的：核心在异常收尾
+	// （取消 / 中断 / 崩溃修复）时可能不补写这条事件。这里读的是**全量快照**，
+	// 所以不存在源头那条「增量丢了收尾原因要回退快照」的顾虑 —— 拿它判失败是制造假失败。
 	const outcome = decideRunOutcome({ text: "看起来写完了", hasTurnEnd: false });
-	assert.equal(outcome.status, "failed");
-	assert.match(outcome.error, /turn\/end/);
+	assert.equal(outcome.status, "succeeded");
+	assert.equal(outcome.summary, "看起来写完了");
+
+	// 「跑没跑起来」是另一个问题，由 started 表达，不能靠 turn/end 缺席来推。
+	const notStarted = decideRunOutcome({ text: "", hasTurnEnd: false }, { started: false });
+	assert.equal(notStarted.status, "failed");
+	assert.match(notStarted.error, /等不到这一轮启动/);
+
+	// 明确失败的信号不能被吞成成功 —— 这才是原来那条规则要防的
+	assert.equal(decideRunOutcome({ text: "x", hasTurnEnd: true, reason: "error" }).status, "failed");
+});
+
+check("waitForTurnStart：seq 不增长就不放行，观测不到 seq 时不判死", async () => {
+	// 启动窗口跟源头同一个值（30s）
+	assert.equal(TURN_START_TIMEOUT_MS, 30_000);
+	// 已经启动：立刻返回 true
+	assert.equal(await waitForTurnStart({ seq: 5 }, 3), true);
+	// seq 一直不动且窗口很短：返回 false（「没观察到启动」）
+	const t0 = Date.now();
+	assert.equal(await waitForTurnStart({ seq: 1 }, 1, 30), false);
+	assert.ok(Date.now() - t0 >= 25, "应该真的等满了窗口");
+	// seq 中途增长：等到之后放行
+	const growing = { seq: 0 };
+	setTimeout(() => {
+		growing.seq = 4;
+	}, 20);
+	assert.equal(await waitForTurnStart(growing, 0, 2000), true);
+
+	// 读不到 seq（宿主结构漂移）时返回 true 并退让一会：观测不到不等于没发生，
+	// 凭观测不到的信号判死正是在制造假失败。
+	const blind = {};
+	assert.equal(await waitForTurnStart(blind, 0), true);
+	assert.equal(await waitForTurnStart(undefined, 0), true);
 });
 
 check("decideRunOutcome：四种结束原因 + 超时 + 取消", () => {
@@ -836,18 +871,30 @@ function fakeExecutorScope({ break: broken = {}, onFollowup } = {}) {
 	const events = [];
 	const session = {
 		id: "s",
-		snapshotEvents: () => [
-			...events,
-			{ type: "assistant/message", data: { message: { content: [{ type: "text", text: "干完了" }] } } },
-			{ type: "turn/end", data: { reason: "completed" } },
-		],
+		snapshotEvents: () => {
+			// `noTurnEvents`：pin 事件（sandbox/mode、approval/policy）还在，只是这一轮
+			// 还没写出 assistant/turn 事件 —— 这才是「起来但还没落任何东西」的真实形态。
+			// 不能把整个日志抹空：那会连沙箱回读一起打断，测到的是另一回事。
+			if (broken.noTurnEvents === true) return [...events];
+			return [
+				...events,
+				{ type: "assistant/message", data: { message: { content: [{ type: "text", text: "干完了" }] } } },
+				{ type: "turn/end", data: { reason: "completed" } },
+			];
+		},
 	};
+	// `seq` 只在明确要测「等这一轮启动」时才给。默认不给：执行器会走
+	// `waitForTurnStart` 的「观测不到」分支（退让 50ms 后放行），
+	// 否则每个执行器测试都要白等一整个启动窗口。
+	if (broken.seqGrows === true || broken.seqFrozen === true) session.seq = 0;
 	const agent = {
 		session,
 		whenIdle: async () => {},
 		cancel: () => {},
 		followup: (msg) => {
 			calls.followup.push(msg);
+			// driver 立刻把排队的 followup 取走 —— `seq` 增长就是「这一轮起来了」
+			if (broken.seqGrows === true) session.seq += 1;
 			onFollowup?.(msg);
 		},
 	};
@@ -974,6 +1021,35 @@ await checkAsync("执行器：沙箱钉不上就绝不发 prompt（P0 回归）"
 	assert.equal(result.status, "failed", "setup 没被调用也必须失败");
 	assert.match(result.error, /沙箱档位未确认/);
 	assert.equal(calls.followup.length, 0, "一个 prompt 都不许发");
+	assert.equal(calls.disposed, 1);
+});
+
+// ④ 这一轮**确实起来了**（seq 增长），但事件快照还是空的 —— 早先的实现会在
+//    followup 之后直接等 whenIdle（那一刻还没有 driver，它立刻兑现），读到空事件集，
+//    然后因为「缺 turn/end」把跑得好好的任务记成 failed。要先等 seq 增长再等结束。
+await checkAsync("执行器：这一轮起来了但还没写事件，不能判失败", async () => {
+	process.env.DSH_HOME = path.join(tmpRoot, "home-exec");
+	const { scope, calls } = fakeExecutorScope({ break: { seqGrows: true, noTurnEvents: true } });
+	const executor = createExecutor({ scope, config: SCHEDULER_DEFAULTS });
+	const task = buildTask({ name: "t", prompt: "跑吧", schedule: { kind: "daily", time: "09:00" }, permission: "workspace-write" }).task;
+	const result = await executor.run(task, { runId: "r4" });
+	assert.equal(result.status, "succeeded", `空事件快照不该判失败，实际 ${JSON.stringify(result)}`);
+	assert.equal(calls.followup.length, 1);
+	assert.equal(calls.disposed, 1);
+});
+
+// ⑤ 等满启动窗口也没见 seq 增长 —— 这一轮**确实**没起来，这时才判失败。
+//    它和「缺 turn/end」是两件事，不能互相推。
+await checkAsync("执行器：等满窗口没见启动才判失败", async () => {
+	process.env.DSH_HOME = path.join(tmpRoot, "home-exec");
+	const { scope, calls } = fakeExecutorScope({ break: { seqFrozen: true, noTurnEvents: true } });
+	const executor = createExecutor({ scope, config: SCHEDULER_DEFAULTS, turnStartTimeoutMs: 20 });
+	const task = buildTask({ name: "t", prompt: "跑吧", schedule: { kind: "daily", time: "09:00" }, permission: "workspace-write" }).task;
+	const result = await executor.run(task, { runId: "r5" });
+	assert.equal(result.status, "failed");
+	assert.match(result.error, /等不到这一轮启动/);
+	// prompt 已经发出去了：这不是「准备会话失败」，别把两类错混成一个文案
+	assert.equal(calls.followup.length, 1);
 	assert.equal(calls.disposed, 1);
 });
 
