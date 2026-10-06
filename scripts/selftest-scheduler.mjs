@@ -583,6 +583,34 @@ await checkAsync("engine.advance：interval/custom 按原定时刻推进，其�
 	const hr = await settle("h1");
 	assert.ok(hr.nextRunAt > Date.now(), `hourly 的下一跳必须在将来，实际 ${new Date(hr.nextRunAt).toISOString()}`);
 	assert.ok(hr.nextRunAt <= Date.now() + 3600000, "而且不该超过一小时");
+
+	// ③ 停机积压：原定时刻在过去 10 小时（周期 10 分钟 = 积压 60 格）。
+	//    从原定推 → 下一跳还在过去 → 下一 tick 立刻又跑，把 60 格挨个真跑一遍。
+	//    文档里的「不做什么」写的是不补跑，所以算出来已经过去的下一跳要回落到 now。
+	await store.mutateTasks((tasks) => {
+		tasks.push({ id: "b1", name: "积压 60 格", enabled: true, prompt: "p", schedule: { kind: "interval", everyMinutes: 10 }, nextRunAt: Date.now() - 10 * 3600000 });
+	});
+	await engine.tick();
+	const bk = await settle("b1");
+	assert.ok(bk.nextRunAt > Date.now(), `积压后下一跳必须在将来，实际 ${new Date(bk.nextRunAt).toISOString()}`);
+	// 再 tick 几次，确认不会连着补跑
+	await engine.tick();
+	await engine.tick();
+	await new Promise((r) => setTimeout(r, 60));
+	assert.equal(store.readRuns().filter((r) => r.taskId === "b1").length, 1, "错过 60 格只许跑这一次，不许补跑");
+
+	// ④ 手动触发：那一格还没到（`nextRunAt` 在将来），这次运行**没有**消耗它。
+	//    从原定推会再往后跳一整格 —— `custom everyDays=7` 就是把下一次吞掉一周。
+	const weekSchedule = { kind: "custom", everyDays: 7, time: "09:00", anchor: new Date(Date.now() - 30 * 86400000).toISOString() };
+	const week = nextOccurrence(weekSchedule, Date.now());
+	assert.ok(week > Date.now(), "测试前提：7 天的下一格在将来");
+	await store.mutateTasks((tasks) => {
+		tasks.push({ id: "m1", name: "每周", enabled: true, prompt: "p", schedule: weekSchedule, nextRunAt: week });
+	});
+	await engine.trigger("m1");
+	const mn = await settle("m1");
+	assert.equal(mn.nextRunAt, week, "手动跑不算消耗那一格，下一格不能被顶掉");
+	assert.equal(mn.lastRunAt !== undefined, true, "手动跑过也要记 lastRunAt");
 });
 
 // ── 4. 事件摘要与结论 ────────────────────────────────────────────────────────
