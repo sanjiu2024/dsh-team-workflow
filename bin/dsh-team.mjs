@@ -11,6 +11,7 @@
  *   dsh-team mc show                         看 mc 与 dsh 两边的压缩阈值是否拉开了
  *   dsh-team mc apply  [--dry-run]           把 mc 执行阈值写进 ~/.config/cortexkit/magic-context.jsonc
  *   dsh-team skills                         列出本包带的 skills
+ *   dsh-team plugins  [--with-<key>|--without-<key>|--no-plugins]  可选装三个第三方插件（REQ-008）
  *
  * 只做这三件事：调 dsh / pnpm、写 profile 下的 JSON/YAML、打印现状。
  * 不做自我更新（不碰 git），不做全局 shell hook。
@@ -19,6 +20,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
 import { applyPatch, patchStatus, restorePatch } from "../lib/chat-expand.js";
@@ -38,6 +40,17 @@ import {
 	readEffectiveThrift,
 	resolveThriftConfig,
 } from "../lib/preset-gen.js";
+import {
+	installedVersions,
+	OPTIONAL_PLUGINS,
+	repoMatches,
+	pluginAddArgs,
+	pluginDecisions,
+	SKIP_ALL_FLAG,
+	summarizePlugins,
+	unknownPluginFlags,
+	withPluginBundles,
+} from "../lib/profile-plugins.js";
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PKG_NAME = "dsh-team-workflow";
@@ -108,6 +121,26 @@ function readJson(file, fallback) {
 	}
 }
 
+/** 和 `readJson` 一样，但**不**退出：坏文件返回 null（读到了但不是对象也当没有）。
+ *
+ *  装插件那一段的 catch 拦不住 `readJson`（它内部是 `process.exit`），而「这一段出任何事
+ *  都不许把 install 带走」是明确承诺过的。**例外只有一处**：上面读 profile 自己那份
+ *  `package.json`（算「这个 profile 带不带 web 界面」）仍然用 `readJson` —— 那份文件坏了
+ *  是环境坏了，dsh 自己也加载不了它，别的子命令同样直接报错退出；这里若改成「当没有」，
+ *  用户看到的会是「不装插件」而不是「你的 profile 坏了」，那是更坏的一种沉默。 */
+function tryReadJson(file) {
+	const value = (() => {
+		try {
+			return JSON.parse(fs.readFileSync(file, "utf8"));
+		} catch {
+			return null;
+		}
+	})();
+	// `[]` / `"x"` / `123` 都是合法 JSON 但不是我们要的那个对象：当成「读到了」会拿
+	// `{...[]}` 之类写回去，把人家整个 profile 冲掉
+	return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
 function requireProfile() {
 	if (!fs.existsSync(path.join(profileDir, "package.json"))) {
 		fail(`profile "${profile}" 不存在：${profileDir}`);
@@ -164,7 +197,186 @@ function skillDescription(text) {
 
 // —— 子命令 ——
 
-function cmdInstall() {
+/**
+ * 认不出的 `--with-xx` 直接报错。**必须在动手装之前叫** ——
+ * 放在后面的话，`dsh-team install --with-pets` 会先把工作流装好、再以 1 退出，
+ * 脚本/CI 看到的就是「装失败了」，而它其实已经装好了。
+ */
+function assertKnownPluginFlags() {
+	const bad = unknownPluginFlags(flags);
+	if (bad.length > 0) {
+		fail(`认不出的 flag：${bad.map((n) => `--${n}`).join(", ")}；可用：${OPTIONAL_PLUGINS.map((p) => `--with-${p.key}`).join(", ")}`);
+	}
+	// 这俩是矛盾的。谁优先都能讲通，但**讲不通的是不吭声**：写 `--with-pet` 的人
+	// 会以为 pet 装上了，而它被 `--no-plugins` 静默吃掉
+	const named = OPTIONAL_PLUGINS.filter((p) => flags[`with-${p.key}`] !== undefined);
+	if (flags[SKIP_ALL_FLAG] !== undefined && named.length > 0) {
+		fail(`--${SKIP_ALL_FLAG} 和 ${named.map((p) => `--with-${p.key}`).join("、")} 是矛盾的：前者说一个都别装，后者又点名要装。留一个`);
+	}
+}
+
+/** 装的是哪个 npm 包、来自哪个仓库、什么许可 —— 询问与直装两条路共用一份，免得走岔 */
+function describePlugin(item) {
+	console.log(`  ${item.name}  →  npm: ${item.name}@latest  源码 ${item.repo}`);
+	console.log(`    ${item.what}；要求 ${item.need}；许可 ${item.note}`);
+}
+
+/**
+ * 交互式提问：一次装一个 readline 接口，问完关掉。
+ * 每次问都新建接口会把「用户提前敲进去的输入」丢掉，所以整个会话共用一个。
+ */
+function makePrompter() {
+	const rl = createInterface({ input: process.stdin, output: process.stdout });
+	// 输入被关掉（提示符上按 Ctrl+D、或 stdin 断了）时，question() 有可能既不 resolve
+	// 也不 reject —— 那样 await 会一直挂着，node 收场时报 `unsettled top-level await`
+	// 并以 13 退出，绕过 finally 与汇总。所以除了 catch，再和一个 close 信号赛跑。
+	let resolveClosed;
+	const closed = new Promise((resolve) => {
+		resolveClosed = resolve;
+	});
+	rl.once("close", () => resolveClosed(false));
+	return {
+		async yes(question) {
+			try {
+				const answer = await Promise.race([rl.question(question), closed]);
+				if (typeof answer !== "string") return false;
+				return ["y", "yes", "是"].includes(answer.trim().toLowerCase());
+			} catch {
+				// 在提示符上按 Ctrl+D（或输入被关掉）时，node 的 question() 是 **reject**
+				// 而不是 resolve 空串 —— 这是最平常的一个动作，不许把整个命令崩掉。
+				// 按默认（不装）算，并补一个换行免得下一段输出接在提示符后面。
+				console.log();
+				return false;
+			}
+		},
+		close() {
+			rl.close();
+		},
+	};
+}
+
+/**
+ * 可选安装三个第三方插件（REQ-008）。**失败只进汇总，不 fail()** ——
+ * 工作流本体已经装好了，别人家的包装不上不该把这件事退回去。
+ *
+ * @param {boolean} interactive 要不要问（非 TTY 或 dry-run 时不问）
+ */
+async function installOptionalPlugins(interactive) {
+	const pkgFile = path.join(profileDir, "package.json");
+	const decisions = pluginDecisions({ profilePkg: readJson(pkgFile), flags, interactive });
+	const rows = [];
+	const prompter = interactive && decisions.some((d) => d.action === "ask") ? makePrompter() : null;
+
+	try {
+		for (const item of OPTIONAL_PLUGINS) {
+			const decision = decisions.find((d) => d.key === item.key);
+			if (!decision) continue;
+			try {
+				let action = decision.action;
+				let reason = decision.reason;
+
+				// 问了但没人能答（非 TTY 又没摆出 prompter）：按「不装」算，不许崩
+				if (action === "ask" && !prompter) {
+					rows.push({ key: item.key, name: item.name, status: "skipped", reason: "非交互环境不询问" });
+					continue;
+				}
+
+				const asked = action === "ask";
+				if (asked) {
+					console.log();
+					describePlugin(item);
+					action = (await prompter.yes("    装吗？[y/N] ")) ? "install" : "skip";
+					reason = "你没选它";
+				}
+
+				if (action !== "install") {
+					rows.push({ key: item.key, name: item.name, status: "skipped", reason });
+					continue;
+				}
+
+				console.log();
+				if (!asked) describePlugin(item); // 点名直装绕过了询问，条款与来源在这里露一次
+				// stdin 交给子进程会吃掉用户预输入的 `y`/`n`（readline 还开着）—— 它只写不读
+				const result = run("dsh", pluginAddArgs(profile, item.name), { stdio: ["ignore", "inherit", "inherit"] });
+				if (result.status !== 0) {
+					rows.push({ key: item.key, name: item.name, status: "failed", detail: `dsh plugin add 退出码 ${result.status}` });
+					continue;
+				}
+
+				if (dryRun) {
+					// 干跑也要看得出「会不会顺带动 bundles」——同一份逻辑算一遍，只是不写。
+					// 读不到就当「看不到」，别在 dry-run 里再造一条能改退出码的路径
+					const current = tryReadJson(pkgFile);
+					if (current && withPluginBundles(current, [item.name]) !== current) {
+						console.log(`[dry-run] 写 ${pkgFile}  （dsh.profile.bundles += ${item.name}）`);
+					}
+					rows.push({ key: item.key, name: item.name, status: "installed" });
+					continue;
+				}
+
+				// 先确认装上了，**再**动 bundles：反过来的话，包没落盘会留下一个指向不存在包的
+				// bundle 项，dsh 启动时会去加载它 —— 失败路径也不许留这种东西
+				const linked = path.join(profileDir, "node_modules", item.name);
+				if (!fs.existsSync(linked)) {
+					rows.push({ key: item.key, name: item.name, status: "failed", installed: true, detail: `没写 bundles（${linked} 不在）` });
+					continue;
+				}
+				// 装完**读回来确认**：dsh 只在包声明了 dsh.bundle.patch 时才自动追加 bundles，
+				// 没声明的会警告「declares no dsh.bundle」并只当普通依赖。与其假设，不如自己补。
+				const before = tryReadJson(pkgFile);
+				if (!before) {
+					// 读不了就**不写**：半懂的情况下写回去会把用户自己别的字段冲掉，
+					// 那比报一句「没写 bundles」严重得多
+					rows.push({ key: item.key, name: item.name, status: "failed", installed: true, detail: `读不了 ${pkgFile}，没写 bundles` });
+					continue;
+				}
+				const after = withPluginBundles(before, [item.name]);
+				if (after !== before) {
+					try {
+						fs.writeFileSync(pkgFile, `${JSON.stringify(after, null, 2)}\n`);
+					} catch (error) {
+						rows.push({ key: item.key, name: item.name, status: "failed", installed: true, detail: `写 ${pkgFile} 失败（${error.code ?? error.message}）；profile 可能写坏了，装之前那份请自行核对` });
+						continue;
+					}
+					console.log(`$ 写 ${pkgFile}  （dsh.profile.bundles += ${item.name}）`);
+				}
+				// 装的是 npm 名，名字和仓库不是一回事（同名抢注包也会被装进来）—— 读一眼它
+				// 自己的 package.json 确认来源，对不上就报出来，不静默放过
+				const theirs = tryReadJson(path.join(linked, "package.json"));
+				if (theirs && !repoMatches(theirs, item.repo)) {
+					console.log(`  ！${item.name} 自己声明的来源不是 ${item.repo}（装到的可能是同名包）`);
+				}
+				rows.push({ key: item.key, name: item.name, status: "installed", version: installedVersions(after)[item.name] });
+			} catch (error) {
+				// 这一步出任何事都不许把 `dsh-team install` 带走：工作流本体已经装好了，
+				// 报「这个插件没装上」才是对的，崩掉会让用户以为整个安装失败
+				rows.push({ key: item.key, name: item.name, status: "failed", detail: error?.message ?? String(error) });
+			}
+		}
+	} finally {
+		prompter?.close();
+	}
+
+	console.log();
+	console.log("可选插件：");
+	for (const line of summarizePlugins(rows, profile, { dryRun })) console.log(`  ${line}`);
+	if (rows.some((row) => row.status === "failed")) {
+		console.log("  装错版本会被 dsh 启动预检静默禁用；重启后看不到效果就先查它要求的 dsh 版本。");
+	}
+	return rows;
+}
+
+async function cmdPlugins() {
+	assertKnownPluginFlags();
+	requireProfile();
+	const interactive = process.stdin.isTTY === true && !dryRun;
+	if (!interactive) console.log("（非交互环境或 --dry-run：不询问，只按 flag 决定）");
+	const rows = await installOptionalPlugins(interactive);
+	if (!dryRun && rows.some((row) => row.status === "installed")) console.log("  重启 dsh 后生效。");
+}
+
+async function cmdInstall() {
+	assertKnownPluginFlags();
 	requireProfile();
 	const pkgFile = path.join(profileDir, "package.json");
 	const before = readJson(pkgFile);
@@ -202,8 +414,12 @@ function cmdInstall() {
 
 	const linked = path.join(profileDir, "node_modules", PKG_NAME);
 	if (!fs.existsSync(linked)) fail(`装完了但 ${linked} 不存在；检查上面的 pnpm 输出`);
-	ok(`已装进 profile "${profile}"（${linked}）；重启 dsh 后生效`);
-	console.log("  重启后可用 /team-baseline 自检。");
+	ok(`已装进 profile "${profile}"（${linked}）`);
+
+	// 可选插件放在最后：工作流本体已经落定，这一步出任何问题都不该影响它
+	await installOptionalPlugins(process.stdin.isTTY === true && !dryRun);
+
+	console.log("  重启 dsh 后生效；可用 /team-baseline 自检。");
 }
 
 function cmdUninstall() {
@@ -231,7 +447,7 @@ function cmdUninstall() {
 function cmdStatus() {
 	const profilePkg = readProfilePkg();
 	const bundles = profilePkg.dsh?.profile?.bundles ?? [];
-	const deps = profilePkg.dependencies ?? {};
+	const installed = installedVersions(profilePkg);
 	const inBundles = bundles.includes(PKG_NAME);
 	// 我们的两行是 bundle 补丁插入的，不在 bundles 列表里，落在 profile 的 patch 结果上
 	const patchFile = path.join(profileDir, "cordis.patch.yml");
@@ -244,7 +460,7 @@ function cmdStatus() {
 	console.log(`${PKG_NAME} ${pkg.version}`);
 	console.log(`  包位置      ${PKG_ROOT}`);
 	console.log(`  profile     ${profile}  (${profileDir})`);
-	console.log(`  已装依赖    ${deps[PKG_NAME] ?? "否"}`);
+	console.log(`  已装依赖    ${installed[PKG_NAME] ?? "否"}`);
 	console.log(`  注册为 bundle ${inBundles ? "是" : "否"}`);
 	console.log(`  用户 patch  ${fs.existsSync(patchFile) ? patchFile : "（无）"}`);
 	if (patchText.includes(ROW_ID)) console.log(`  用户 patch 引用了 ${ROW_ID}`);
@@ -263,6 +479,12 @@ function cmdStatus() {
 	if (new RegExp(`default:\\s*${PRESET_ID}\\b`).test(patchText2)) console.log(`  默认预设    ${PRESET_ID}`);
 	console.log();
 	console.log(`  定时任务    ${schedulerOn() ? "开" : "关（默认）"}  ${path.join(PKG_ROOT, "team", "extensions", "scheduler.json")}`);
+	// 可选插件（REQ-008）：只报「装没装」，不判断它自己开没开（那是它们各自的界面设置）
+	console.log("  可选插件");
+	for (const item of OPTIONAL_PLUGINS) {
+		const version = installed[item.name];
+		console.log(`    ${item.name.padEnd(30)} ${version === undefined ? "未装" : `已装 ${version}`}`);
+	}
 	console.log(`  bundle 补丁插入的行：${SKILLS_ROW_ID}（skills） + ${ROW_ID}（插件本体）`);
 }
 
@@ -754,6 +976,12 @@ function cmdHelp() {
                                       让思考链/工具行默认展开（改 dsh 安装树，可还原）
   dsh-team scheduler [status|enable|disable]
                                       定时任务调度器开关（默认关，改完重启 dsh）
+  dsh-team plugins [--dry-run]        可选安装三个第三方插件（交互式逐项询问，默认都不装）
+    --with-sidebar / --with-wallpaper / --with-pet
+                                      点名要哪个（默认只装这一个，不用再问）
+    --without-sidebar / …             点名不要哪个
+    --no-plugins                      一个都别问、也别装
+                                      点名的插件已经装过时，--with-<key> 会升到最新
 
 环境变量：DSH_HOME（默认 ~/.dsh）`);
 }
@@ -1151,13 +1379,16 @@ function cmdScheduler(mode) {
 const [command, sub] = positional;
 switch (command) {
 	case "install":
-		cmdInstall();
+		await cmdInstall();
 		break;
 	case "uninstall":
 		cmdUninstall();
 		break;
 	case "status":
 		cmdStatus();
+		break;
+	case "plugins":
+		await cmdPlugins();
 		break;
 	case "skills":
 		cmdSkills();

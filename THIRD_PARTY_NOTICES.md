@@ -88,6 +88,25 @@ Copyright 2026 MichengAI contributors
 
 ---
 
+## 可选安装的第三方插件（**不随本仓库分发**，也不改其代码）
+
+`dsh-team install` / `dsh-team plugins` 会**问**用户要不要顺带装下面三个（默认都不装），
+装的动作只是替用户跑 `dsh plugin --profile <p> add <包名>@latest` —— 包从 npm 取，
+本仓库既不打包也不修改它们的代码。列在这里是为了把「本包会替你装谁」这件事写清楚。
+
+| npm 包 | 仓库 | 许可 |
+| --- | --- | --- |
+| `dsh-better-sidebar` | <https://github.com/omdsh-dev/DSH-better-sidebar> | MIT |
+| `dsh-plugin-wallpaper-engine` | <https://github.com/elysia395/dsh-wallpaper-engine> | MIT |
+| `dsh-pet` | <https://github.com/PC2005-cloud/dsh-pet> | MIT；**README 另有素材条款** |
+
+`dsh-pet` 的附加条款（原文在它 README 的许可一节，此处仅转述）：动画、提示词、
+源视频等**素材**仅供开源使用、**禁止商用**；二次创作须在展示或分发处附上作者的
+GitHub 地址。本仓库没有使用它的素材，故不构成再分发；但既然本包会推荐并代装它，
+这条得让用户自己看得到 —— 交互询问与 `--with-<key>` 点名直装时都会一并打印仓库地址与许可。
+
+---
+
 ## 相邻但**未使用**的实现
 
 - [`@deepseek-ai/dsh-schedule`](https://www.npmjs.com/package/@deepseek-ai/dsh-schedule) ——

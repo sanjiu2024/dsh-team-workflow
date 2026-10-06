@@ -28,6 +28,7 @@ dsh-team skills                      # 列出本包带的技能
 dsh-team thrift apply                # 把 ~/.dsh/team-workflow/thrift.json 写进团队预设（真生效的那两行）
 dsh-team preset install              # 生成「团队模式」预设（rc.x 下是个 bundle，见下）
 dsh-team preset install --default    # 顺带把它设成新会话的默认预设
+dsh-team plugins                     # 可选装三个第三方插件（交互式逐项问，默认都不装）
 dsh-team patch                       # 思考链/工具行默认展开（改安装树，--restore 可还原）
 dsh-team patch --status              # 只看看打没打（认得出 dsh 新旧两种组件形态）
 dsh-team uninstall                   # 卸载
@@ -41,6 +42,35 @@ dsh-team uninstall                   # 卸载
 > 老形态改组件里的 `useState(false)`，rc.x 形态给 `useDisclosure` 加 `defaultOpen` 形参、
 > 再改三处调用点（终端行在 rc.x 里叫 `StartedBashRow`，`BashRow` 只剩分发）。
 > 上游再改就会报「找不到组件」—— 它拒绝猜。npx 缓存被清或 dsh 升级后要重跑一次。
+
+## 可选装的三个第三方插件
+
+`dsh-team install` 装完本包后会**逐个问**要不要顺带装这三个（默认都不装，回车即跳过）。
+装完才想装的，用 `dsh-team plugins` 再问一遍；非交互环境不询问，要用 `--with-<key>` 点名：
+
+```bash
+dsh-team plugins --profile tauri                 # 交互式问三遍
+dsh-team plugins --with-sidebar --with-pet       # 点名，不问
+dsh-team plugins --no-plugins                    # 一个都别问
+dsh-team status                                  # 三个各是「已装 x.y.z」还是「未装」
+```
+
+| key | npm 包 | 是什么 | 许可 |
+| --- | --- | --- | --- |
+| `sidebar` | `dsh-better-sidebar` | 右侧栏工作台（编辑器 / 文件树 / Git / 侧边对话） | MIT |
+| `wallpaper` | `dsh-plugin-wallpaper-engine` | 把本机 Wallpaper Engine 壁纸渲染到界面后面 | MIT |
+| `pet` | `dsh-pet` | 桌面宠物（浏览器 overlay，可选 Electron 透明置顶小窗） | MIT，**素材另有条款**：禁商用、二创须署名 |
+
+三条行为上的约定：
+
+- **已经在 profile 里的一律不动**（本机 web profile 里本来就有 `dsh-better-sidebar@0.24.1`，
+  这种情况直接跳过并报「已装 x.y.z」）。只有 `--with-<key>` 点名才会升到最新。
+- **装不上只警告**：工作流本体照常生效，退出码仍是 0，末尾汇总里给出重试命令。
+- **只往带 web 界面的 profile 里装**（这三个都是 `platform: "web"` 的界面插件）。
+
+> 版本对表要注意：`dsh-better-sidebar` 要 dsh ≥ `0.2.0-rc.1`（0.1.7 线得钉 `@0.22.1`），
+> `dsh-pet` 明写 `0.1.7-rc.2` 不兼容。**装错版本会被 dsh 启动预检静默禁用**——
+> 重启后看不到效果，先查它要求的 dsh 版本。
 
 ## 团队预设：rc.x 起由 bundle 承载
 
@@ -457,10 +487,10 @@ dsh 的客户端模块只做 `readFileSync` + 原样 HTTP，没有转译器，�
 npm test
 ```
 
-18 个自检，每个都用假 ctx 跑真实逻辑：系统提示段顺序、四个命令、审计落盘与脱敏、节流统计、
+19 个自检，每个都用假 ctx 跑真实逻辑：系统提示段顺序、四个命令、审计落盘与脱敏、节流统计、
 异常隔离、magic-context 折叠、thrift 阈值换算与预设生成、context7、lens 工具集、会话交接、
 会话消息形状、linux 命令工具、启动自动更新、worktree 沙箱、工具参数 schema、操控电脑守护进程、
-mc 与 dsh 的压缩阈值不变式、定时任务调度器。
+mc 与 dsh 的压缩阈值不变式、定时任务调度器、可选第三方插件的安装判据。
 
 后几个会**真跑外部程序**（真 bash、真 git 沙箱、真 PowerShell 守护进程与鼠标钩子），
 不以「桩返回了新值」为凭据。
