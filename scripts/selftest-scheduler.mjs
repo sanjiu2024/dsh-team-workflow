@@ -801,7 +801,9 @@ check("decideRunOutcome：四种结束原因 + 超时 + 取消", () => {
 	assert.match(decideRunOutcome({ text: "x", hasTurnEnd: true, reason: "error" }).error, /error/);
 	assert.equal(decideRunOutcome({ text: "x", hasTurnEnd: true }, { timedOut: true }).status, "failed");
 	assert.match(decideRunOutcome({ text: "x", hasTurnEnd: true }, { timedOut: true }).error, /超时/);
-	assert.equal(decideRunOutcome({ text: "x", hasTurnEnd: true }, { cancelled: true }).status, "cancelled");
+	// 取消只有一条**活**路径：快照里的 `aborted`。曾经还有个 `cancelled` 参数，
+	// 但没有任何调用方能传进来（唯一赋值它的地方紧接着就 return 了 failed）——
+	// 恒为 false 的分支等于没有，删掉。
 	// reason 是对象形态也要认（AgentCancelCause 那种）
 	assert.equal(decideRunOutcome({ text: "x", hasTurnEnd: true, reason: "completed" }).status, "succeeded");
 });
