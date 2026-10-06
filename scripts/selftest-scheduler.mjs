@@ -532,6 +532,30 @@ await checkAsync("engine.tick：算不出下次（过期 once）不静默停用�
 	assert.equal(typeof fixed.nextRunAt, "number", "计划改好后应补算出下一次");
 	assert.equal(fixed.enabled, true);
 	assert.equal(logs.filter((m) => m.includes("算不出下一次运行时间")).length, 1, "恢复后不该再告警");
+
+	// 去重集合必须等于**当前**卡住的那批 id，不能只增不减：只增的话，任务停用（或删除）
+	// 之后再变回卡住，就永远不会再报警 —— 「只报一次」会实变成「一次都不报」。
+	const warns = () => logs.filter((m) => m.includes("算不出下一次运行时间")).length;
+	// 先重新卡住并告警一次（此时去重集合里**有** t2 的条目）
+	await store.mutateTasks((tasks) => {
+		const task = tasks.find((t) => t.id === "t2");
+		task.schedule = { kind: "once", at: new Date(Date.now() - 86400000).toISOString() };
+		task.nextRunAt = null;
+	});
+	await engine.tick();
+	assert.equal(warns(), 2, "重新卡住要重新告警");
+	// 再停用：这一步 guard 会变假（没有「启用着但缺下一次」的任务了）
+	await store.mutateTasks((tasks) => {
+		tasks.find((t) => t.id === "t2").enabled = false;
+	});
+	await engine.tick();
+	assert.equal(warns(), 2, "停用状态下不该告警");
+	// 再启用：仍然卡着，必须**重新**告警一次 —— 集合只增不减的话这里永远不会再报
+	await store.mutateTasks((tasks) => {
+		tasks.find((t) => t.id === "t2").enabled = true;
+	});
+	await engine.tick();
+	assert.equal(warns(), 3, "停用再启用后仍然卡着，必须重新告警一次");
 });
 
 await checkAsync("engine.tick：一次性任务跑完仍然自动停用（与补算分支的区分）", async () => {
