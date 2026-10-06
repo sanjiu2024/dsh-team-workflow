@@ -551,8 +551,41 @@ await checkAsync("engine.tick：一次性任务跑完仍然自动停用（与补
 	assert.equal(done.nextRunAt, null);
 });
 
-// ── 4. 事件摘要与结论 ────────────────────────────────────────────────────────
+await checkAsync("engine.advance：interval/custom 按原定时刻推进，其它按现在", async () => {
+	const store = freshStore("advance-basis");
+	const engine = createEngine({ store, executor: { run: async () => ({ status: "succeeded" }) }, config: { ...SCHEDULER_DEFAULTS } });
+	const settle = async (id) => {
+		for (let i = 0; i < 200; i += 1) {
+			const task = store.readTasks().find((t) => t.id === id);
+			if (task !== undefined && task.lastRunAt !== undefined) return task;
+			await new Promise((r) => setTimeout(r, 10));
+		}
+		throw new Error(`等 ${id} 落盘超时`);
+	};
 
+	// ① interval：原定时刻在过去 1 分钟（模拟上一轮跑晚了），周期 10 分钟。
+	//    按现在推 → now + 10min；按原定推 → due + 10min，也就是 now + 9min。
+	//    用现在推会把每轮耗时累加进周期，任务越跑越偏。
+	const due = Date.now() - 60000;
+	await store.mutateTasks((tasks) => {
+		tasks.push({ id: "i1", name: "每 10 分钟", enabled: true, prompt: "p", schedule: { kind: "interval", everyMinutes: 10 }, nextRunAt: due });
+	});
+	await engine.tick();
+	const iv = await settle("i1");
+	assert.equal(iv.nextRunAt, due + 10 * 60000, "interval 的下一跳要从原定时刻算，不是从「跑完的现在」");
+
+	// ② hourly 是「下一个钟表整点」，跟本次耗时无关 —— 必须仍然按现在算。
+	//    按原定算的话，原定时刻在过去 3 小时 → 下一跳还是过去 → 立刻又跑，空转。
+	await store.mutateTasks((tasks) => {
+		tasks.push({ id: "h1", name: "每小时", enabled: true, prompt: "p", schedule: { kind: "hourly", minute: 0 }, nextRunAt: Date.now() - 3 * 3600000 });
+	});
+	await engine.tick();
+	const hr = await settle("h1");
+	assert.ok(hr.nextRunAt > Date.now(), `hourly 的下一跳必须在将来，实际 ${new Date(hr.nextRunAt).toISOString()}`);
+	assert.ok(hr.nextRunAt <= Date.now() + 3600000, "而且不该超过一小时");
+});
+
+// ── 4. 事件摘要与结论 ────────────────────────────────────────────────────────
 check("summarizeEvents：取最后一条非空 assistant 消息", () => {
 	const summary = summarizeEvents([
 		{ type: "assistant/message", data: { message: { content: [{ type: "text", text: "第一版" }] } } },
