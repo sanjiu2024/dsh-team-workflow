@@ -1238,6 +1238,28 @@ await checkAsync("工具：scheduler_create 真写进存储，scheduler_list 读
 	assert.equal(missing.ok, false);
 	const noFields = await update.execute({ task_id: created.taskId }, {});
 	assert.equal(noFields.ok, false, "没给要改的字段应拒绝");
+
+	// run_now 和补丁一起传时，补丁必须**先落地**。早先的实现一进 run_now 分支就
+	// trigger + return，于是 `{task_id, prompt, run_now:true}` 的 prompt 被静默丢掉、
+	// 跑的还是旧指令，而工具回的是 ✅ —— 用户以为改了。
+	const readPrompt = (id) => scheduler.store.readTasks().find((t) => t.id === id)?.prompt;
+	assert.equal(readPrompt(created.taskId), "写日报");
+	const both = await update.execute({ task_id: created.taskId, prompt: "改成写周报", run_now: true }, {});
+	assert.equal(both.ok, true);
+	assert.equal(both.ran, true);
+	assert.equal(both.updated, true, "同一批带了补丁，要报出「也改了」");
+	assert.equal(readPrompt(created.taskId), "改成写周报", "run_now 不能把同一批的补丁丢掉");
+
+	// 只传 run_now 仍然合法（「立刻跑一次，别的都不改」），不能报「没有要改的字段」。
+	// 另起一个任务：上面那个已经进 running 了，同一个任务会被并发闸拦成「该任务正在运行」，
+	// 那就测不出这条。
+	const solo = await create.execute({ name: "临时", prompt: "原始指令", schedule: { kind: "daily", time: "10:00" } }, {});
+	const soloRun = await update.execute({ task_id: solo.taskId, run_now: true }, {});
+	assert.equal(soloRun.ok, true, "只传 run_now 不该被拒");
+	assert.equal(soloRun.updated, false, "只传 run_now 没有补丁");
+	assert.equal(readPrompt(solo.taskId), "原始指令", "只传 run_now 不该动任何字段");
+	await remove.execute({ task_id: solo.taskId }, {});
+
 	const deleted = await remove.execute({ task_id: created.taskId }, {});
 	assert.equal(deleted.ok, true);
 	const deletedAgain = await remove.execute({ task_id: created.taskId }, {});
