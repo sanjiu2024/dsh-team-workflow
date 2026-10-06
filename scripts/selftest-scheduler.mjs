@@ -613,6 +613,36 @@ await checkAsync("engine.advance：interval/custom 按原定时刻推进，其�
 	assert.equal(mn.lastRunAt !== undefined, true, "手动跑过也要记 lastRunAt");
 });
 
+await checkAsync("engine.tick：补算不许用旧快照盖掉并发写进去的下一跳", async () => {
+	// `plan` 是 tick 开头读的快照，写盘还要排一次队。这中间任务可能已经被 advance
+	// 推走（手动触发、上一 tick 的 execute 还没落完）。无条件把旧值写回去，就会把
+	// 刚算好的 nextRunAt **改回过去** → 下一 tick 立刻又跑一遍。
+	//
+	// 真实的交错没法从公开接口里稳定复现（写队列是串行的，谁先谁后取决于时刻），
+	// 所以这里在**写盘边界**注入：让这一批 mutate 拿到的 list 已经不是 plan 看到的那份。
+	// 这正好就是竞态的结果形态 —— plan 说「它没有 nextRunAt」，而 list 说「有了」。
+	const store = freshStore("tick-plan-race");
+	const engine = createEngine({ store, executor: { run: async () => ({ status: "succeeded" }) }, config: { ...SCHEDULER_DEFAULTS } });
+	await store.mutateTasks((tasks) => {
+		tasks.push({ id: "r1", name: "竞争写", enabled: true, prompt: "p", schedule: { kind: "interval", everyMinutes: 10 }, nextRunAt: null });
+	});
+	// 必须和 plan 会算出来的值（~now + 10 分钟）**不同**，否则「被覆盖」和「没被覆盖」
+	// 结果一样，测试两头都绿 —— 第一版就踩了这个坑。
+	const future = Date.now() + 99 * 60000;
+	const inner = store.mutateTasks.bind(store);
+	store.mutateTasks = async (fn) => inner((tasks) => {
+		const task = tasks.find((t) => t.id === "r1");
+		// 模拟「排在我们前面的那一次写已经落盘了」
+		if (task !== undefined && task.nextRunAt === null) task.nextRunAt = future;
+		return fn(tasks);
+	});
+	await engine.tick();
+	const raced = store.readTasks().find((t) => t.id === "r1");
+	assert.equal(raced.nextRunAt, future, "并发写进去的下一跳不能被补算的旧快照盖掉");
+	assert.equal(store.readRuns().filter((r) => r.taskId === "r1").length, 0, "下一跳在将来，这一 tick 不该触发它");
+});
+
+
 // ── 4. 事件摘要与结论 ────────────────────────────────────────────────────────
 
 check("summarizeEvents：取最后一条非空 assistant 消息", () => {
