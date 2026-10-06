@@ -95,6 +95,25 @@ const has = (name) => name in flags;
 
 const dryRun = has("dry-run");
 
+// profile 名会被拼进 shell 命令行（`run()`）、也会出现在**打印出来给人复制的命令**里，
+// 所以只认能直接粘贴的字符集。这不是「防用户害自己」—— 防的是从别处抄来的命令行里
+// 夹带的东西（`--profile 'x; curl … | sh'`）。放在这里是因为它是唯一一处解析点：
+// 收在这里，后面所有 `run("dsh", [..., profile, ...])` 与所有提示行就都安全了。
+// `--profile ""`（或 `--profile --dry-run` 这种后面跟开关的写法）会让 parseArgs 把它当成
+// 「没给」，于是**静默改默认 profile** —— 用户以为点了名，实际动的是另一个安装树
+if ("profile" in flags && typeof flags.profile !== "string") {
+	fail("--profile 后面要给个 profile 名（空值 / 直接跟开关都会被当成没给）");
+}
+
+// 一串点（`.`、`..`、`...`）都过得了上面那个字符集，但 `.`/`..` 会让 profileDir 被
+// path.join 归一化成 `$DSH_HOME`（或它的父目录）；`...` 在 Windows 上会被 Win32 路径层
+// 剥掉尾点，收敛成 `profiles/package.json` —— 都是一句话就改到别人安装树上的写法。
+// 尾点同理（`--profile a.` 在 Windows 上就是 `a`）：Linux 下它是个合法目录名，但没人
+// 会这么起名，宁可报错也别让同一个命令在两个系统上指向两个 profile。
+if (!/^[A-Za-z0-9._-]+$/.test(profile) || /^\.+$/.test(profile) || profile.endsWith(".")) {
+	fail(`profile 名只认字母、数字和 . _ -，不能是 . / .. 这类，也不能以点结尾：${JSON.stringify(profile)}`);
+}
+
 function fail(message, code = 1) {
 	console.error(`✗ ${message}`);
 	process.exit(code);
@@ -139,6 +158,80 @@ function tryReadJson(file) {
 	// `[]` / `"x"` / `123` 都是合法 JSON 但不是我们要的那个对象：当成「读到了」会拿
 	// `{...[]}` 之类写回去，把人家整个 profile 冲掉
 	return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+/**
+ * 写 JSON 到文件：先写同目录的临时文件，再 `rename` 顶上去。
+ *
+ * 直接 `writeFileSync` 是「先截断再写」—— 中途失败（ENOSPC、EIO、断电）留下的是**半个**
+ * 文件。这些文件（`profile/package.json`）是 dsh 启动就要读的，半个等于整个环境起不来；
+ * 而 `rename` 在同一文件系统内是原子的，要么旧的要么新的。
+ */
+function writeJsonAtomic(file, value) {
+	// 目标是符号链接时，改的必须是链接**指向**的那个文件（`writeFileSync` 就是这个语义）：
+	// 直接对链接 rename 会把链接本身换成普通文件，用户那边看自己那份根本没动过
+	let target = file;
+	let plain = false;
+	try {
+		target = fs.realpathSync(file);
+	} catch {
+		// 还不存在（或读不到）就按给的路径写。**悬空符号链接**要单独认出来：realpath 与
+		// stat 对它都失败，但 `writeFileSync(file)` 会穿过链接去建被指向的那个文件、链接
+		// 保留，而 rename 会把链接本身顶成普通文件 —— dotfiles 式管理的那份从此静默脱链
+		try {
+			plain = fs.lstatSync(file).isSymbolicLink();
+		} catch {
+			// 连 lstat 都不行（父目录不存在等）：按普通新文件处理
+		}
+	}
+	let mode;
+	if (!plain) {
+		try {
+			const stat = fs.statSync(target);
+			// 指向设备/管道之类的目标：老语义就是「往里写」。在这儿建临时文件再 rename
+			// 会把那个节点顶掉（不可逆），所以退回直接写
+			plain = !stat.isFile();
+			mode = stat.mode & 0o777;
+		} catch {
+			// 新文件：用默认权限
+		}
+	}
+	const text = `${JSON.stringify(value, null, 2)}\n`;
+	if (plain) {
+		fs.writeFileSync(file, text);
+		return;
+	}
+	// 临时文件名带 pid + 随机串，且用 `"wx"`（必须新建）打开：这个目录可写的人若能预置
+	// 一个同名符号链接，普通写会顺着它把内容写到别处去
+	const tmp = `${target}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+	try {
+		// 0o666 由 umask 收口 —— 与原来的 `writeFileSync` 一致，别顺手改权限
+		const fd = fs.openSync(tmp, "wx", 0o666);
+		try {
+			fs.writeFileSync(fd, text);
+			// rename 换的是 inode：不把原权限位带上，就等于顺手把 600 的口令文件改成 644。
+			// 但改不动不该算失败：组可写、文件属主是别人的时候 EPERM 是正常的，
+			// 以前 `writeFileSync` 这种情形能写成，现在也得能
+			if (mode !== undefined) {
+				try {
+					fs.fchmodSync(fd, mode);
+				} catch {
+					// 权限位只是顺带保住：网络盘 / FUSE / CIFS 上可能根本不支持 chmod，
+					// 旧代码也没有这一步 —— 不能因为「保不住权限」就把整次写判失败
+				}
+			}
+		} finally {
+			fs.closeSync(fd);
+		}
+		fs.renameSync(tmp, target);
+	} catch (error) {
+		try {
+			fs.rmSync(tmp, { force: true });
+		} catch {
+			// 临时文件删不掉不是这里该管的事，别把原始错误盖掉
+		}
+		throw error;
+	}
 }
 
 function requireProfile() {
@@ -333,9 +426,9 @@ async function installOptionalPlugins(interactive) {
 				const after = withPluginBundles(before, [item.name]);
 				if (after !== before) {
 					try {
-						fs.writeFileSync(pkgFile, `${JSON.stringify(after, null, 2)}\n`);
+						writeJsonAtomic(pkgFile, after);
 					} catch (error) {
-						rows.push({ key: item.key, name: item.name, status: "failed", installed: true, detail: `写 ${pkgFile} 失败（${error.code ?? error.message}）；profile 可能写坏了，装之前那份请自行核对` });
+						rows.push({ key: item.key, name: item.name, status: "failed", installed: true, detail: `写 ${pkgFile} 失败（${error.code ?? error.message}）；原文件没动` });
 						continue;
 					}
 					console.log(`$ 写 ${pkgFile}  （dsh.profile.bundles += ${item.name}）`);
@@ -404,7 +497,7 @@ async function cmdInstall() {
 		console.log(`[dry-run]   dependencies[${PKG_NAME}] = ${spec}`);
 		console.log(`[dry-run]   dsh.profile.bundles += ${PKG_NAME}`);
 	} else {
-		fs.writeFileSync(pkgFile, `${JSON.stringify(next, null, 2)}\n`);
+		writeJsonAtomic(pkgFile, next);
 		console.log(`$ 写 ${pkgFile}`);
 	}
 
@@ -433,10 +526,7 @@ function cmdUninstall() {
 	if (dryRun) {
 		console.log(`[dry-run] 从 ${pkgFile} 移除 ${PKG_NAME}（dependencies + bundles）`);
 	} else {
-		fs.writeFileSync(
-			pkgFile,
-			`${JSON.stringify({ ...before, dependencies: deps, dsh: { ...before.dsh, profile: { ...before.dsh?.profile, bundles } } }, null, 2)}\n`,
-		);
+		writeJsonAtomic(pkgFile, { ...before, dependencies: deps, dsh: { ...before.dsh, profile: { ...before.dsh?.profile, bundles } } });
 		console.log(`$ 写 ${pkgFile}`);
 	}
 	const result = run("dsh", ["plugin", "--profile", profile, "install"]);
@@ -660,7 +750,7 @@ function installTeamPresetBundle() {
 	if (dryRun) {
 		console.log(`[dry-run] 写 ${path.join(profileDir, "package.json")}（dependencies + bundles 加 ${PRESET_BUNDLE_NAME}）`);
 	} else if (JSON.stringify(next) !== JSON.stringify(before)) {
-		fs.writeFileSync(path.join(profileDir, "package.json"), `${JSON.stringify(next, null, 2)}\n`);
+		writeJsonAtomic(path.join(profileDir, "package.json"), next);
 		console.log(`$ 写 ${path.join(profileDir, "package.json")}`);
 	}
 	const result = run("dsh", ["plugin", "--profile", profile, "install"]);
@@ -1340,12 +1430,10 @@ function cmdScheduler(mode) {
 			console.log(`调度器已经是${want ? "开" : "关"}的，没动。`);
 		} else {
 			raw.enabled = want;
-			// 临时文件 + rename：直接覆写的话，写到一半被打断就留下半个 JSON。
-			// `readJsonConfig` 遇到解析失败会静默退回内置默认值（= enabled: false），
-			// 于是「文件坏了」表现为「调度器自己关了」，排查起来很费劲。
-			const tmp = `${file}.tmp-${process.pid}`;
-			fs.writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
-			fs.renameSync(tmp, file);
+			// 直接覆写的话，写到一半被打断就留下半个 JSON：`readJsonConfig` 遇到解析失败
+			// 会静默退回内置默认值（= enabled: false），于是「文件坏了」表现为「调度器
+			// 自己关了」，排查起来很费劲。走同一份 `writeJsonAtomic`（别处再抄一遍更糟）
+			writeJsonAtomic(file, raw);
 			ok(`已把 ${path.relative(PKG_ROOT, file)} 的 enabled 改成 ${want}`);
 		}
 	}

@@ -19,6 +19,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const ROOT = new URL("../", import.meta.url);
 const {
@@ -257,8 +258,11 @@ fs.writeFileSync(fakePkgFile, JSON.stringify(profilePkg({ "dsh-better-sidebar": 
 // 所以这里先摆一个空目录出来，好走到「可选插件」那一段
 fs.mkdirSync(path.join(fakeDir, "node_modules", "dsh-team-workflow"), { recursive: true });
 
+// `new URL(...).pathname` 在 Windows 上是 `/C:/...`，不能用它当可执行路径
+const binPath = fileURLToPath(new URL("bin/dsh-team.mjs", ROOT));
+
 const runCli = (args) =>
-	spawnSync(process.execPath, [new URL("bin/dsh-team.mjs", ROOT).pathname, ...args], {
+	spawnSync(process.execPath, [binPath, ...args], {
 		encoding: "utf8",
 		env: { ...process.env, DSH_HOME: tmpHome },
 	});
@@ -349,6 +353,129 @@ if (!hasDsh) {
 	});
 }
 
+// —— 4. 真跑「装成功」那条路（假 dsh 顶上 PATH）——
+// 上面只验过「装不上」：成功那条路（写 bundles、报版本、给卸载命令、不动用户别的字段）
+// 一次都没真跑过。假 dsh 只干一件真事：把包"装"进 node_modules 并写成依赖（模拟 pnpm）。
+
+/** 摆一份「装得成」的现场：可写 profile + 顶上 PATH 的假 dsh。repo 是假 dsh 给包写的来源 */
+function okScene(label, repo) {
+	const home = fs.mkdtempSync(path.join(os.tmpdir(), `dsh-team-plugins-${label}-`));
+	const dir = path.join(home, "profiles", label);
+	const pkgFile = path.join(dir, "package.json");
+	fs.mkdirSync(path.join(dir, "node_modules", "dsh-team-workflow"), { recursive: true });
+	// 故意用 4 空格缩进 + 一个用户自己的字段：验完得看得出「只加了自己的东西」
+	fs.writeFileSync(pkgFile, JSON.stringify({ ...profilePkg(), keepMe: { 用户自己的字段: true } }, null, 4));
+	const shimDir = path.join(home, "shim");
+	fs.mkdirSync(shimDir, { recursive: true });
+	fs.writeFileSync(
+		path.join(shimDir, "dsh"),
+		`#!/bin/sh
+name=$(echo "$5" | sed 's/@latest$//')
+node -e '
+const fs = require("fs"), path = require("path");
+const pkgFile = process.argv[1], name = process.argv[2], repo = process.argv[3];
+const json = JSON.parse(fs.readFileSync(pkgFile, "utf8"));
+json.dependencies = { ...(json.dependencies ?? {}), [name]: "9.9.9" };
+fs.writeFileSync(pkgFile, JSON.stringify(json, null, 4));
+const where = path.join(path.dirname(pkgFile), "node_modules", name);
+fs.mkdirSync(where, { recursive: true });
+fs.writeFileSync(path.join(where, "package.json"), JSON.stringify({ name, version: "9.9.9", repository: { url: repo } }, null, 2));
+' ${JSON.stringify(pkgFile)} "$name" ${JSON.stringify(repo)}
+`,
+	);
+	fs.chmodSync(path.join(shimDir, "dsh"), 0o755);
+	const run = (args) =>
+		spawnSync(process.execPath, [binPath, ...args], {
+			encoding: "utf8",
+			env: { ...process.env, DSH_HOME: home, PATH: `${shimDir}${path.delimiter}${process.env.PATH ?? ""}` },
+		});
+	return { home, dir, pkgFile, run };
+}
+
+// Windows 上造不出能被 `cmd` 找到的可执行 shim（无扩展名脚本它不执行）—— 那样假 dsh 会
+// 静默落到 PATH 上的真 dsh，去跑一次真的网络安装。宁可跳过，也不能让测试「因为跑错了
+// 东西」而通过
+const canFakeDsh = process.platform !== "win32";
+const noShim = "Windows 下造不出可执行 shim，会落到 PATH 上的真 dsh";
+
+check("CLI：装成功那条路真跑一遍（补 bundles / 报版本 / 给卸载命令 / 不动用户字段 / 不留临时文件）", () => {
+	if (!canFakeDsh) return skip("CLI：装成功那条路", noShim);
+	const scene = okScene("ok", "https://github.com/PC2005-cloud/dsh-pet.git");
+	const result = scene.run(["plugins", "--profile", "ok", "--with-pet"]);
+	try {
+		assert.equal(result.status, 0, `退出码该是 0：${result.stderr}`);
+		const after = JSON.parse(fs.readFileSync(scene.pkgFile, "utf8"));
+		assert.ok(after.dsh.profile.bundles.includes("dsh-pet"), "bundles 没补上");
+		assert.equal(after.dependencies["dsh-pet"], "9.9.9");
+		assert.equal(after.keepMe["用户自己的字段"], true, "把用户自己别的字段冲掉了");
+		assert.match(result.stdout, /✓ dsh-pet@9\.9\.9 已装进 profile "ok"/);
+		assert.match(result.stdout, /要卸掉：dsh plugin --profile ok remove dsh-pet/);
+		assert.ok(!/！/.test(result.stdout), `来源对得上不该报警告：${result.stdout}`);
+		assert.ok(!fs.readdirSync(scene.dir).some((name) => name.includes(".tmp-")), "留下了临时文件");
+	} finally {
+		fs.rmSync(scene.home, { recursive: true, force: true });
+	}
+});
+
+check("CLI：包自称的来源不是那个仓库时报出来（防同名抢注包）", () => {
+	if (!canFakeDsh) return skip("CLI：来源告警", noShim);
+	const scene = okScene("taken", "https://github.com/someone-else/dsh-pet.git");
+	const result = scene.run(["plugins", "--profile", "taken", "--with-pet"]);
+	try {
+		assert.match(result.stdout, /！dsh-pet 自己声明的来源不是 .*dsh-pet（装到的可能是同名包）/);
+	} finally {
+		fs.rmSync(scene.home, { recursive: true, force: true });
+	}
+});
+
+check("CLI：原子写必须保住原文件的权限位（rename 换 inode，不带就丢了）", () => {
+	if (!canFakeDsh || process.platform === "win32") return skip("CLI：权限位", "chmod 在 Windows 下不是这个语义");
+	const scene = okScene("mode", "https://github.com/PC2005-cloud/dsh-pet.git");
+	try {
+		fs.chmodSync(scene.pkgFile, 0o600);
+		const result = scene.run(["plugins", "--profile", "mode", "--with-pet"]);
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(fs.statSync(scene.pkgFile).mode & 0o777, 0o600, "重写完权限位被改成 umask 默认了");
+	} finally {
+		fs.rmSync(scene.home, { recursive: true, force: true });
+	}
+});
+
+check("CLI：profile/package.json 是符号链接时，改的是它指向的文件（链接本身不许被换掉）", () => {
+	if (!canFakeDsh) return skip("CLI：符号链接", noShim);
+	const scene = okScene("link", "https://github.com/PC2005-cloud/dsh-pet.git");
+	try {
+		const real = path.join(scene.home, "real-package.json");
+		fs.renameSync(scene.pkgFile, real);
+		fs.symlinkSync(real, scene.pkgFile);
+		const result = scene.run(["plugins", "--profile", "link", "--with-pet"]);
+		assert.equal(result.status, 0, result.stderr);
+		assert.ok(fs.lstatSync(scene.pkgFile).isSymbolicLink(), "链接被换成普通文件了（用户那边会以为自己那份没动）");
+		assert.ok(JSON.parse(fs.readFileSync(real, "utf8")).dsh.profile.bundles.includes("dsh-pet"), "链接指向的那份没被更新");
+	} finally {
+		fs.rmSync(scene.home, { recursive: true, force: true });
+	}
+});
+
+check("CLI：--profile 名里有 shell 元字符直接拒（它会被拼进 run() 和打印出来的命令）", () => {
+	for (const bad of ["x; rm -rf ~", ".", "..", "...", "a.", "a/b", "a b", "$(id)"]) {
+		const result = runCli(["plugins", "--profile", bad, "--dry-run"]);
+		assert.equal(result.status, 1, `该拒：${JSON.stringify(bad)}`);
+		assert.match(result.stderr, /profile 名只认字母、数字和 \. _ -/);
+	}
+	// 一串点 / 尾点：不做归一化兜底 —— `.`/`..` 会把 profileDir 收敛到 $DSH_HOME，
+	// `...` 与 `a.` 在 Windows 上会被 Win32 路径层剥掉尾点、落到别的 profile 名下
+	for (const bad of [".", "..", "...", "a."]) {
+		assert.match(runCli(["plugins", "--profile", bad, "--dry-run"]).stderr, /不能是 \. \/ \.\. 这类，也不能以点结尾/);
+	}
+	// 空值不许静默落到默认 profile：用户以为点了名，实际动的是另一个安装树
+	for (const args of [["--profile", ""], ["--profile", "--dry-run"]]) {
+		const result = runCli(["plugins", ...args]);
+		assert.equal(result.status, 1, `该拒：${JSON.stringify(args)}`);
+		assert.match(result.stderr, /--profile 后面要给个 profile 名/);
+	}
+});
+
 fs.rmSync(tmpHome, { recursive: true, force: true });
 
 // 先验后写：这条路径（dsh add 退出码 0 但 node_modules 里没有）很难真造出来，
@@ -356,7 +483,7 @@ fs.rmSync(tmpHome, { recursive: true, force: true });
 check("源码顺序：确认装上（existsSync）必须在写 bundles（writeFileSync）之前", () => {
 	const source = fs.readFileSync(new URL("bin/dsh-team.mjs", ROOT), "utf8");
 	const verified = source.indexOf("const linked = path.join(profileDir, \"node_modules\", item.name);");
-	const written = source.indexOf("fs.writeFileSync(pkgFile");
+	const written = source.indexOf("writeJsonAtomic(pkgFile, after)");
 	assert.ok(verified > 0 && written > 0, "找不到这两处，得改这条断言");
 	assert.ok(verified < written, "先写了 bundles 才验包：失败会留下指向不存在包的 bundle 项");
 });
