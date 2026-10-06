@@ -736,6 +736,20 @@ check("summarizeEvents：空输入不抛", () => {
 	const summary = summarizeEvents(undefined);
 	assert.equal(summary.text, "");
 	assert.equal(summary.hasTurnEnd, false);
+	assert.equal(summary.hasAnyEvent, false, "读不出事件时是「零事件」，不是「有事件」");
+});
+
+check("summarizeEvents：hasAnyEvent 分得开「零事件」和「有事件没内容」", () => {
+	// 这一条是给 decideRunOutcome 的 noEvents 供料的：只看 text 的话，两种情况
+	// 都是空字符串 —— 而它们的含义完全不同（一个说不了任何事，一个说明跑过但没输出）。
+	assert.equal(summarizeEvents([]).hasAnyEvent, false);
+	assert.equal(summarizeEvents(undefined).hasAnyEvent, false);
+	assert.equal(summarizeEvents(null).hasAnyEvent, false);
+	// 有事件、但内容完全取不出文本：hasAnyEvent 仍为 true
+	const empty = summarizeEvents([{ type: "assistant/attempt", data: { stream: { text: "" } } }]);
+	assert.equal(empty.text, "");
+	assert.equal(empty.hasAnyEvent, true, "有条目就算「有事件」，哪怕取不出文本");
+	assert.equal(summarizeEvents([{ type: "turn/end", data: { reason: "completed" } }]).hasAnyEvent, true);
 });
 
 check("decideRunOutcome：缺 turn/end 算成功，但「没观察到启动」算失败", () => {
@@ -748,6 +762,15 @@ check("decideRunOutcome：缺 turn/end 算成功，但「没观察到启动」�
 	// 判定可以宽松，证据不能丢：模型崩了也是这个形状，运行历史要能事后分辨
 	assert.equal(outcome.incomplete, true, "缺 turn/end 必须留下 incomplete 标记");
 	assert.equal(decideRunOutcome({ text: "ok", hasTurnEnd: true, reason: "completed" }).incomplete, undefined, "干净收尾不该有标记");
+
+	// 「有事件但没收尾」和「一个事件都没有」必须分得开：后者可能是会话结构漂移，
+	// 连「跑过没有」都说不出来。判定上都从宽（零事件判 failed 就是假失败 ——
+	// `session.seq` 读不到时事件集必然为空），但证据要留得下来。
+	const noEvents = decideRunOutcome({ text: "", hasTurnEnd: false, hasAnyEvent: false });
+	assert.equal(noEvents.status, "succeeded", "零事件同样不许判失败（观测不到不等于没发生）");
+	assert.equal(noEvents.incomplete, true);
+	assert.equal(noEvents.noEvents, true, "零事件要单独标出来");
+	assert.equal(decideRunOutcome({ text: "半截", hasTurnEnd: false, hasAnyEvent: true }).noEvents, false, "有事件就不是零事件");
 
 	// 「跑没跑起来」是另一个问题，由 started 表达，不能靠 turn/end 缺席来推。
 	const notStarted = decideRunOutcome({ text: "", hasTurnEnd: false }, { started: false });
@@ -792,6 +815,28 @@ check("engine：成功但收尾不完整的一轮，运行记录里必须分得�
 	assert.equal(inc.summary, "看起来写完了");
 	assert.equal(ok.status, "succeeded");
 	assert.equal(ok.incomplete, undefined, "干净收尾不该带标记");
+
+	// 零事件那一轮：记录里得有话说，不能是一条空摘要 —— 空摘要和「跑了但没输出」
+	// 长得一模一样，事后分不出是哪种
+	const noEvStore = freshStore("run-no-events");
+	const noEvEngine = createEngine({
+		store: noEvStore,
+		config: { ...SCHEDULER_DEFAULTS },
+		executor: { run: async () => ({ status: "succeeded", incomplete: true, noEvents: true, summary: "" }) },
+	});
+	await noEvStore.mutateTasks((tasks) => {
+		tasks.push({ id: "ne1", name: "零事件", enabled: true, prompt: "p", schedule: { kind: "interval", everyMinutes: 60 }, nextRunAt: Date.now() - 1000 });
+	});
+	await noEvEngine.tick();
+	let neRuns = [];
+	for (let i = 0; i < 300; i += 1) {
+		neRuns = noEvStore.readRuns();
+		if (neRuns.length === 1 && neRuns[0].finishedAt !== undefined) break;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.equal(neRuns.length, 1);
+	assert.equal(neRuns[0].incomplete, true);
+	assert.equal(neRuns[0].summary, "（这一轮没有观测到任何事件）", "零事件必须留下能区分的一句话");
 });
 
 
