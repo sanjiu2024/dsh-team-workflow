@@ -186,7 +186,7 @@ worktree_drop(...)       → 清掉
 | --- | --- |
 | 侦察型 | `subagent_std` |
 | 审查型 | `subagent_power`（普通审查都是这一档；**只有三层审查的第 1 层**例外用 `subagent_std`，见「## 审查（三层）」） |
-| 调研型 | `subagent_power` |
+| 调研型 | `subagent_std`（调研的产出就是「结论 + 来源」，标准档够；只有**多来源互相冲突、要当场权衡**这种复杂调研才升 `subagent_power`） |
 | 质疑型 | `subagent_max` |
 | 探活 | `subagent` + 显式传 `tier-free`（见下面第 2 种用法） |
 
