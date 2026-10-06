@@ -308,6 +308,9 @@ check("SCHEDULER_FIELDS：enabled 只认真布尔", () => {
 	assert.equal(SCHEDULER_FIELDS.enabled(1), undefined);
 	assert.equal(SCHEDULER_FIELDS.tickMs(50), undefined, "间隔太小会烧 CPU");
 	assert.equal(SCHEDULER_FIELDS.tickMs(1000), 1000);
+	// 下限就是默认值：比设计频率还快没有正当场景，而每次 tick 都要整份读 tasks.json
+	assert.equal(SCHEDULER_FIELDS.tickMs(SCHEDULER_DEFAULTS.tickMs), SCHEDULER_DEFAULTS.tickMs);
+	assert.equal(SCHEDULER_FIELDS.tickMs(SCHEDULER_DEFAULTS.tickMs - 1), undefined);
 	assert.equal(SCHEDULER_FIELDS.maxConcurrent(0), undefined);
 	assert.equal(SCHEDULER_DEFAULTS.enabled, false, "默认必须是关的");
 	// 这个字段以前只被 createExecutor 用、却没进 FIELDS，于是 config 里写了会被
@@ -373,6 +376,11 @@ await checkAsync("装配：整份配置都要过 FIELDS（插件配置那一路�
 	assert.equal(warnings.length, 5, `五个坏值要各报一次，实际：${warnings.join(" | ")}`);
 	assert.match(warnings.join("\n"), /maxConcurrent=null 不合法/);
 	assert.match(warnings.join("\n"), /已改用默认值 4/, "要说清楚改成了什么");
+	// 白名单外的键（含拼错的键名）一律不留：留着就是「将来加个读取点即绕过校验」
+	const weird = installScheduler(probeCtx, { config: { ...SCHEDULER_DEFAULTS, enabled: false, maxConcurrenc: 64, 拼错的: 1 } });
+	assert.equal("maxConcurrenc" in weird.config, false, "拼错的键名不该留下");
+	assert.equal("拼错的" in weird.config, false);
+	assert.equal(weird.config.maxConcurrent, SCHEDULER_DEFAULTS.maxConcurrent, "拼错了就是没配，走默认值");
 	// 合法的值不许被顺手改掉（收口不等于消毒）
 	const ok = installScheduler(probeCtx, { config: { ...SCHEDULER_DEFAULTS, enabled: false, maxConcurrent: 3, historyLimit: 50 } });
 	assert.equal(ok.config.maxConcurrent, 3);
