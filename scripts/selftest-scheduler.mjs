@@ -638,12 +638,37 @@ await checkAsync("engine.advance：interval/custom 按原定时刻推进，其�
 	const week = nextOccurrence(weekSchedule, Date.now());
 	assert.ok(week > Date.now(), "测试前提：7 天的下一格在将来");
 	await store.mutateTasks((tasks) => {
-		tasks.push({ id: "m1", name: "每周", enabled: true, prompt: "p", schedule: weekSchedule, nextRunAt: week });
+		// `permission` 要写全：手工造的任务缺这个字段时，`permissionRank` 会把它当
+		// 「比天花板还高」（未知一律从严），于是 `trigger` 拒掉、执行器也拒掉。
+		// 真实任务都经过 `buildTask`，这个字段一定在。
+		tasks.push({ id: "m1", name: "每周", enabled: true, prompt: "p", permission: "read-only", schedule: weekSchedule, nextRunAt: week });
 	});
 	await engine.trigger("m1");
 	const mn = await settle("m1");
 	assert.equal(mn.nextRunAt, week, "手动跑不算消耗那一格，下一格不能被顶掉");
 	assert.equal(mn.lastRunAt !== undefined, true, "手动跑过也要记 lastRunAt");
+
+	// ⑤ 手动触发一个**将来的**一次性任务：那一格还在，不能被这次运行顶掉。
+	//    否则「立即运行」会把一个还没到的一次性任务直接停用 —— 下次再也不触发，
+	//    而工具/路由回的是 ✅。
+	const onceAtIso = new Date(Date.now() + 3600000).toISOString();
+	const onceAt = new Date(onceAtIso).getTime();
+	await store.mutateTasks((tasks) => {
+		tasks.push({ id: "o1", name: "将来的一次性", enabled: true, prompt: "p", permission: "read-only", schedule: { kind: "once", at: onceAtIso }, nextRunAt: onceAt });
+	});
+	await engine.trigger("o1");
+	const oc = await settle("o1");
+	assert.equal(oc.enabled, true, "手动跑一次性任务不能把它停用");
+	assert.equal(oc.nextRunAt, onceAt, "原定那一格要留着");
+
+	// ⑥ 无锚点 interval 同理：那一格在将来时，手动触发不能把它顺延一整个周期
+	const future = Date.now() + 5 * 60000;
+	await store.mutateTasks((tasks) => {
+		tasks.push({ id: "u1", name: "无锚点每 10 分钟", enabled: true, prompt: "p", permission: "read-only", schedule: { kind: "interval", everyMinutes: 10 }, nextRunAt: future });
+	});
+	await engine.trigger("u1");
+	const un = await settle("u1");
+	assert.equal(un.nextRunAt, future, "手动触发不该把将来那一格往后顺延");
 });
 
 await checkAsync("engine.tick：补算不许用旧快照盖掉并发写进去的下一跳", async () => {
