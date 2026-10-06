@@ -1532,6 +1532,19 @@ await checkAsync("工具：scheduler_create 真写进存储，scheduler_list 读
 	assert.match(report.report, /日报/);
 	assert.match(report.report, /每天 09:00/);
 
+	// 「启用着但算不出下一次」= 不会再触发。面板和这个列表都必须说出来 —— 否则它
+	// 和正常任务在输出上没区别，用户以为在跑，几个月后才发现一次都没跑过。
+	await scheduler.store.mutateTasks((tasks) => {
+		const task = tasks.find((t) => t.id === created.taskId);
+		task.nextRunAt = null;
+	});
+	assert.match((await list.execute({}, {})).report, /算不出下次运行时间/, "启用但算不出下次时必须给出警告");
+	await scheduler.store.mutateTasks((tasks) => {
+		const task = tasks.find((t) => t.id === created.taskId);
+		task.enabled = false;
+	});
+	assert.doesNotMatch((await list.execute({}, {})).report, /算不出下次运行时间/, "停用的任务不该报这个警（那是另一回事）");
+
 	const patched = await update.execute({ task_id: created.taskId, name: "周报" }, {});
 	assert.equal(patched.ok, true);
 	const afterRename = await list.execute({}, {});
