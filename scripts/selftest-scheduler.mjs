@@ -2003,6 +2003,13 @@ check("工具：render 对成功/失败都给得出文案", () => {
 			assert.doesNotMatch(nothingChanged[0].text, /改动已生效/, "什么都没改，不能说改动已生效");
 			assert.match(nothingChanged[0].text, /什么都没改/);
 			assert.match(nothingChanged[0].text, /不用重试|什么都没改/);
+			// 手动触发那一路的提示不许把话说死：此刻 nextRunAt 会不会变，取决于原定
+			// 时刻在不在将来（`advance` 对 `nextRunAt > now` 直接早退）。原先写的是
+			// 「会在这一轮跑起来时按计划重算」—— 那是早退修复**之前**的行为，留着
+			// 就是文案与实现相反。
+			const ranHintText = tool.output.render({}, { ok: true, taskId: "t", ran: true, updated: false });
+			assert.match(ranHintText[0].text, /可能要等这一轮跑起来才更新/);
+			assert.doesNotMatch(ranHintText[0].text, /按计划重算/);
 		}
 	}
 });
@@ -2091,6 +2098,7 @@ const reply = (status, payload) => async () => ({
 	status,
 	text: async () => JSON.stringify(payload),
 });
+
 
 check("客户端模块：契约（id / apply / inject）与「只 require baseline」", () => {
 	const { definition, exports, required } = loadClient();
