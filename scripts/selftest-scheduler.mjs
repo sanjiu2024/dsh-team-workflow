@@ -32,6 +32,11 @@ const {
 	buildTask,
 	createStore,
 	decideRunOutcome,
+	MAX_CANCEL_TIMEOUT_MS,
+	MAX_CONCURRENT,
+	MAX_HISTORY_LIMIT,
+	MAX_RUN_TIMEOUT_MINUTES,
+	MAX_TASKS,
 	TURN_START_TIMEOUT_MAX_MS,
 	TURN_START_TIMEOUT_MIN_MS,
 	TURN_START_TIMEOUT_MS,
@@ -317,12 +322,59 @@ check("SCHEDULER_FIELDS：enabled 只认真布尔", () => {
 	for (const key of Object.keys(SCHEDULER_DEFAULTS)) {
 		assert.equal(typeof SCHEDULER_FIELDS[key], "function", `SCHEDULER_DEFAULTS.${key} 没有对应的 FIELDS 校验`);
 	}
+	// 数值字段都得上界。只卡下限的字段意味着「配多大都行」，而这些值全都会**持有资源**：
+	// 并发的是真会话、超时的是占着的名额、historyLimit 的是 runs.json 的体积。
+	assert.equal(SCHEDULER_FIELDS.tickMs(60 * 60 * 1000 + 1), undefined);
+	assert.equal(SCHEDULER_FIELDS.maxConcurrent(MAX_CONCURRENT), MAX_CONCURRENT);
+	assert.equal(SCHEDULER_FIELDS.maxConcurrent(MAX_CONCURRENT + 1), undefined, "并发上界：每个并发都是带 bash 的真会话");
+	assert.equal(SCHEDULER_FIELDS.runTimeoutMinutes(MAX_RUN_TIMEOUT_MINUTES), MAX_RUN_TIMEOUT_MINUTES);
+	assert.equal(SCHEDULER_FIELDS.runTimeoutMinutes(MAX_RUN_TIMEOUT_MINUTES + 1), undefined, "单轮时长上界");
+	assert.equal(SCHEDULER_FIELDS.cancelTimeoutMs(MAX_CANCEL_TIMEOUT_MS), MAX_CANCEL_TIMEOUT_MS);
+	assert.equal(SCHEDULER_FIELDS.cancelTimeoutMs(MAX_CANCEL_TIMEOUT_MS + 1), undefined);
+	assert.equal(SCHEDULER_FIELDS.historyLimit(MAX_HISTORY_LIMIT + 1), undefined, "记录条数上界");
+	assert.equal(SCHEDULER_FIELDS.maxTasks(MAX_TASKS + 1), undefined);
 });
 
 // ── 3. 存储 ──────────────────────────────────────────────────────────────────
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-sched-"));
 const freshStore = (name, options) => createStore(path.join(tmpRoot, name), options);
+
+await checkAsync("装配：整份配置都要过 FIELDS（插件配置那一路绕过了字段校验）", async () => {
+	// `lib/index.js:81` 的 `...override` 是原样展开的，**不过 FIELDS** —— 结构上拿不到
+	// 「值一定合法」的保证。插件配置写坏了不该变成「静默的资源失控」。
+	// 这一块故意用 enabled:false：要测的是校验，不是挂载（挂载要一整套假宿主）。
+	const probeCtx = { logger: { info: () => {} } };
+	process.env.DSH_HOME = path.join(tmpRoot, "home-cfg-normalize");
+	const hostile = {
+		enabled: false,
+		maxConcurrent: Number.NaN, // 无并发上限 → 无界起真会话
+		historyLimit: Number.NaN, // runs.length > NaN 恒假 → runs.json 无界增长
+		runTimeoutMinutes: 1e9, // 单轮占着名额 24.8 天
+		tickMs: null,
+		permission: "not-a-preset",
+	};
+	const scheduler = installScheduler(probeCtx, { config: { ...SCHEDULER_DEFAULTS, ...hostile } });
+	const cfg = scheduler.config;
+	assert.equal(cfg.maxConcurrent, SCHEDULER_DEFAULTS.maxConcurrent, "坏并发值必须回落默认，不能变成「不限」");
+	assert.equal(cfg.historyLimit, SCHEDULER_DEFAULTS.historyLimit, "坏记录条数必须回落默认，不能变成「不限」");
+	assert.equal(cfg.runTimeoutMinutes, SCHEDULER_DEFAULTS.runTimeoutMinutes, "坏单轮时长必须回落默认");
+	assert.equal(cfg.tickMs, SCHEDULER_DEFAULTS.tickMs);
+	assert.equal(cfg.permission, SCHEDULER_DEFAULTS.permission);
+	// 合法的值不许被顺手改掉（收口不等于消毒）
+	const ok = installScheduler(probeCtx, { config: { ...SCHEDULER_DEFAULTS, enabled: false, maxConcurrent: 3, historyLimit: 50 } });
+	assert.equal(ok.config.maxConcurrent, 3);
+	assert.equal(ok.config.historyLimit, 50);
+	// store 必须拿**归一化之后**的 historyLimit 建：顺序错了就等于没修
+	process.env.DSH_HOME = path.join(tmpRoot, "home-cfg-normalize-2");
+	const storeProbe = installScheduler(probeCtx, { config: { ...SCHEDULER_DEFAULTS, enabled: false, historyLimit: Number.NaN } });
+	await storeProbe.store.mutateRuns((runs) => {
+		for (let i = 0; i < 5; i += 1) runs.push({ id: `r${i}`, taskId: "t", status: "succeeded", startedAt: i });
+	});
+	assert.equal(storeProbe.store.readRuns().length, 5, "5 条在默认 200 条保留量之内，不该被裁掉");
+	scheduler.dispose();
+});
+
 
 await checkAsync("存储：空目录读出来是空表，不抛", async () => {
 	const store = freshStore("empty");
@@ -434,6 +486,12 @@ await checkAsync("staleRunMs：阈值跟着 runTimeoutMinutes 走，不会误标
 	assert.equal(staleRunMs({ runTimeoutMinutes: 24 * 60 }), 48 * 60 * 60 * 1000, "24 小时上限 → 48 小时兜底");
 	assert.equal(staleRunMs({}), DEFAULT_STALE_RUN_MS);
 	assert.equal(staleRunMs(undefined), DEFAULT_STALE_RUN_MS);
+	// 自己夹住：不假设 config 已经过 FIELDS。不夹的话 `1e9` 会把兜底阈值抬到几千年，
+	// 时间兜底等于没有（而它正是「进程被杀留下的 running 记录」唯一的下线手段）。
+	assert.equal(staleRunMs({ runTimeoutMinutes: 1e9 }), MAX_RUN_TIMEOUT_MINUTES * 60 * 1000 * 2);
+	assert.equal(staleRunMs({ runTimeoutMinutes: Number.NaN }), DEFAULT_STALE_RUN_MS);
+	assert.equal(staleRunMs({ runTimeoutMinutes: -5 }), DEFAULT_STALE_RUN_MS);
+	assert.equal(staleRunMs({ runTimeoutMinutes: Number.POSITIVE_INFINITY }), DEFAULT_STALE_RUN_MS);
 });
 
 await checkAsync("recoverInterruptedRuns：pid 被复用的烂记录靠时间兜底回收", async () => {
