@@ -758,6 +758,31 @@ check("waitForTurnStart：seq 不增长就不放行，观测不到 seq 时不判
 	const blind = {};
 	assert.equal(await waitForTurnStart(blind, 0), true);
 	assert.equal(await waitForTurnStart(undefined, 0), true);
+
+	// `NaN` 也是 number —— 只查 typeof 会连那次退让等待都跳过（0ms 就返回）。
+	const nan0 = Date.now();
+	assert.equal(await waitForTurnStart({ seq: Number.NaN }, 0), true);
+	assert.ok(Date.now() - nan0 >= 40, "NaN 也要走退让等待，不能 0ms 直接放行");
+
+	// seq 倒退 = 会话被换掉/重置，`firstSeq` 不在同一个坐标系了。再等只会等满窗口，
+	// 然后把一轮正常运行判成「没启动」。
+	const resetting = { seq: 9 };
+	setTimeout(() => {
+		resetting.seq = 0;
+	}, 20);
+	const tReset = Date.now();
+	assert.equal(await waitForTurnStart(resetting, 9, 3000), true, "seq 倒退按「观测不到」处理，不判死");
+	assert.ok(Date.now() - tReset < 2000, "倒退要立刻放行，不该等满窗口");
+
+	// 中途变得读不出来：同样是「观测不到」，不判死
+	const vanishing = { seq: 1 };
+	setTimeout(() => {
+		delete vanishing.seq;
+	}, 20);
+	assert.equal(await waitForTurnStart(vanishing, 1, 3000), true);
+
+	// 数字得是有限的才算「观测得到」
+	assert.equal(await waitForTurnStart({ seq: Number.POSITIVE_INFINITY }, 0), true);
 });
 
 check("decideRunOutcome：四种结束原因 + 超时 + 取消", () => {
