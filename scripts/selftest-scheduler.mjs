@@ -302,6 +302,15 @@ check("SCHEDULER_FIELDS：enabled 只认真布尔", () => {
 	assert.equal(SCHEDULER_FIELDS.tickMs(1000), 1000);
 	assert.equal(SCHEDULER_FIELDS.maxConcurrent(0), undefined);
 	assert.equal(SCHEDULER_DEFAULTS.enabled, false, "默认必须是关的");
+	// 这个字段以前只被 createExecutor 用、却没进 FIELDS，于是 config 里写了会被
+	// layered 丢掉 —— 「看起来能配其实配不了」。登记进来才算真能配。
+	assert.equal(SCHEDULER_DEFAULTS.turnStartTimeoutMs, 30000);
+	assert.equal(SCHEDULER_FIELDS.turnStartTimeoutMs(10), undefined, "太小等于每轮都判「等不到启动」");
+	assert.equal(SCHEDULER_FIELDS.turnStartTimeoutMs(200), 200);
+	// 每个 DEFAULTS 的键都得有校验函数，否则写进 config 会被静默丢掉
+	for (const key of Object.keys(SCHEDULER_DEFAULTS)) {
+		assert.equal(typeof SCHEDULER_FIELDS[key], "function", `SCHEDULER_DEFAULTS.${key} 没有对应的 FIELDS 校验`);
+	}
 });
 
 // ── 3. 存储 ──────────────────────────────────────────────────────────────────
