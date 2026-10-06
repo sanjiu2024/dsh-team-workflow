@@ -1955,6 +1955,14 @@ await checkAsync("工具：scheduler_list 要说得出「上次跑成什么样�
 	assert.match(blockOf("有运行记录"), /（成功，没观测到事件）/, "零事件要单独说，不能混进「收尾不完整」");
 	assert.doesNotMatch(blockOf("有运行记录"), /收尾不完整/, "更具体的那一种只说一遍");
 
+	// 状态从记录里读，不许硬写「成功」：runs.json 是会被手改的输入，
+	// 真出现 failed + noEvents 的组合时，硬写就是把假话报给 agent
+	await scheduler.store.mutateRuns((runs) => {
+		runs.push({ id: "r7", taskId: made.taskId, taskName: "有运行记录", trigger: "scheduled", status: "failed", startedAt: 7, noEvents: true });
+	});
+	report = (await list.execute({}, {})).report;
+	assert.match(blockOf("有运行记录"), /（失败，没观测到事件）/, "零事件那一路也要带上真实状态");
+
 	// 记录被裁掉（historyLimit）或被人删掉之后：不许只剩一个时间戳装作干净成功。
 	// 时间戳来自任务、结论来自 runs，两者不同源 —— 缺一边就得明说。
 	await scheduler.store.mutateTasks((tasks) => {
