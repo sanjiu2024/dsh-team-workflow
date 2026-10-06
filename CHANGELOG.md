@@ -8,6 +8,198 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [1.11.0]
+
+新增**定时任务调度器**（REQ-007），移植自 Tauri 桌面版内置插件 `dsh-tauri-scheduler`。
+到点在**一个全新会话**里无人值守跑一段 prompt —— 这是它和官方
+`@deepseek-ai/dsh-schedule` 的分界：官方那个把提醒投递回原会话，这个新建会话跑完。
+两者可以并存（工具名错开：`schedule_*` vs `scheduler_*`）。
+
+**默认关闭**，要开的人自己开：
+
+```text
+dsh-team scheduler enable     # 改 team/extensions/scheduler.json，然后重启 dsh
+```
+
+关的时候是**真的关**：一个工具不注册、一条路由不挂、GUI 面板探活失败也不出现。
+
+### 为什么
+
+「每天/每周自动做某事」这类需求在 dsh 里以前只能靠人记着。官方的 schedule 解决的是
+「到点提醒我回到那个会话」，不是「到点让模型自己把活干了」—— 后者要求新会话、无人值守
+（审批策略 `never`）、跑完留痕。桌面版那个插件正是干这个的，但它是 TS + tsdown + 依赖
+workspace 私有的 `dsh-tauri`/`dsh-tauri-ui` 宏，在纯 dsh 里一个宏都用不了，所以整个重写。
+
+### 加了什么
+
+- `lib/scheduler.js`：宿主侧。8 种计划（once/hourly/daily/interval/workdays/weekly/
+  monthly/custom）、4 个工具（`scheduler_create` / `scheduler_list` / `scheduler_update` /
+  `scheduler_delete`）、一条前缀路由 `/api/team/scheduler`、每秒一跳的调度循环
+  （全局并发上限 4、单次运行 30 分钟上限、无重试、无补偿队列）、运行历史留最近 200 条。
+  存储 `<DSH_HOME>/team-workflow/scheduler/{tasks,runs}.json`，写走串行队列 + 临时文件
+  `rename` 原子替换。
+- `lib/scheduler-client.js`：Web GUI 面板（侧栏「定时任务」+ 主区页面）。**手写的、
+  零构建**——dsh 的客户端模块只做 `readFileSync` + 原样 HTTP，没有转译器，所以不写 JSX，
+  也不 require 任何 baseline 之外的包，样式全内联。
+- `team/extensions/scheduler.json`：配置，`enabled: false`。
+- `bin/dsh-team.mjs`：`scheduler [status|enable|disable]`。
+- `lib/commands.js`：`/team-scheduler` 命令（开关 + 任务列表 + 最近 5 次运行）。
+- `scripts/selftest-scheduler.mjs`：见下。
+
+### 三个刻意与源头不同的地方
+
+1. **不搬 `timeZone` 字段**。源头那个字段是死的（`cron-schedule` 没有时区支持，实际按
+   进程本地时区算）。搬一个不生效的字段比不搬更坏。
+2. **不引 `cron-schedule`**。daily/workdays/weekly/monthly 直接算下一个本地钟表时点，
+   比源头「先拼 cron 表达式再解析回来」更直白，也少一个依赖（本包零依赖）。
+3. **修了源头 `custom` 的 bug**。源头校验了 `time` 却从不使用它（occurrence 只由
+   anchor + N×天 算），于是「每 3 天的 09:00」实际用的是 anchor 自带的时刻。这里让
+   `time` 真正生效，并在自检里钉了回归测试。
+
+另外继承了源头一个刻意的选择：**结果摘要用全量事件快照，不用增量流**。源头
+`docs/sync-log.md` 记着这条 —— 增量流缺 `turn/end` 时若不回退全量，失败会被静默记成成功。
+
+### 两个必须知道的风险
+
+- **这是本包唯一碰 dsh 内部 API 的模块**（`ctx.agents.create` / `agentPresets.mount` /
+  `setApprovalPolicy` 那一套），会随 dsh 版本漂移。所以它**不进顶层 `inject`**，改用模块内
+  `ctx.inject` 条件激活 —— `inject` 里写一个当前 profile 没有的服务会让**整个插件**静默
+  不激活，那会把团队基线一起弄没。依赖不齐时只有调度器不激活。
+- **无人值守 = 审批策略强制 `never`**。没人能点「同意」，不设 `never` 工具调用会卡死。
+  所以创建任务时的 `permission` 是唯一的安全边界，默认 `read-only`，且受
+  `maxPermission`（默认 `workspace-write`）天花板约束 —— 见下面「安全边界」第 ⑥ 条。
+
+### 安全边界（第 1/3 层审查后加硬的部分）
+
+这个模块和本包其它模块有一个本质区别：**它会在没人看着的时候自己起会话、自己调工具。**
+所以下面几条不是顺手加的防御，是这个功能能存在的前提。详见 REQ-007 §6.6。
+
+- **路由自带栅栏**。dsh 的 web server 自己不鉴权（`dsh-host-webserver` 直接 `listen`，
+  全包没有 Authorization / CSRF）。不设栅栏的话，用户浏览器里的任意网页用一个
+  `fetch` + `content-type: text/plain`（不触发预检）就能 POST 建任务；DNS rebinding
+  更能**读走**全部任务的 prompt 与运行历史。`isTrustedRequest()` 四条判据照抄本机
+  同 profile 的第三方插件 `@linxin666/dsh-client-ui-git-graph`：socket 地址回环、
+  `Host` 头回环、`sec-fetch-site !== "cross-site"`、`Origin` 与 `Host` 同源。
+  **`/options` 探活也拦** —— 客户端拿 403 照样不注册面板，行为与「没启用」一致。
+- **沙箱档位钉死，设不上就不跑**。审批策略被强制 `never`，所以 `permission` 是唯一的
+  安全边界。`setup` 里 `setSandboxMode()` → `setApprovalPolicy()`，任一失败就 dispose 掉
+  刚建的 handle 并把本轮记成 failed —— **绝不在沙箱没设上的情况下把 prompt 发出去**。
+  （不用 `permissionPresets.set()`：本机那份预设表只有 `workspace-write` 和
+  `danger-full-access`，**没有 `read-only`**，传未知名字还直接抛。）
+- **禁止自我繁殖**。`scheduler_*` 是全局工具，无人值守会话一样看得见。不禁掉的话，
+  一个 `read-only` 的任务能调 `scheduler_create` 建一个 `danger-full-access` 的新任务 ——
+  这就是提权。`setup` 里 `agentCtx.tools.restrict({ deny: [...] })` 掉三个写工具，
+  留只读的 `scheduler_list`。
+- **任务数上限在写队列里把关**。每个任务到点都起一个真会话，无上限 = 无界建会话。
+  「读长度 → 判断 → push」必须在**同一个** `mutateTasks` 回调里，否则并发请求会一起通过。
+- **存储坏了不许静默清库**。写路径读文件用 strict 模式：不是合法 JSON 就抛，抛之前
+  把坏文件改名成 `<file>.corrupt-<ts>` 留证。原来的「解析失败返回 `[]`」会让下一次写入
+  把用户的任务整体覆写成空数组 —— 数据没了，还没有任何痕迹。
+
+**⑥ 权限天花板 —— 栅栏挡不住的那一半。** `tools.restrict` 不是能力边界：一个已经在跑的
+无人值守会话手里有 bash，它可以 `curl` 打本机 `/api/team/scheduler/tasks` —— 回环 socket、
+回环 `Host`、无 `Origin`、无 `sec-fetch-site`，四条栅栏全过 —— 自己建一个
+`permission: "danger-full-access"` 的任务。`restrict` 只约束本会话的工具表，管不到子代理，
+更管不到 shell 里的 `curl`。所以边界放到服务端：`maxPermission`（默认 `workspace-write`）
+是任务级 `permission` 的天花板，**建**（HTTP 与工具两条路）和**改**（`PUT /tasks` 与
+`scheduler_update`）四个口子全过 `checkPermissionCeiling()`。要放开得自己改
+`team/extensions/scheduler.json` —— 那是一次有意识的操作，不是模型能顺手做的。
+
+**⑦ 放行判据必须是正向的。** `agentCtx.tools.restrict()` 原来落在设 `setupError` 的
+try **外面**，于是 `restrict` 一抛，`setupError` 还是 `undefined`。三步现在在同一个 try
+里。
+
+（初版这里写过一句「`agents.create` 不保证透传 `setup` 的异常」，**那句是错的**，已对着
+源码核正：`dsh-agent-loop/lib/index.js:1889` 会 `await` setup，异常由 `setupAndPublish`
+重抛，`create()` 因此 reject。落在外面的真实后果是失败文案不准，不是「在没钉沙箱的会话里
+发 prompt」。）
+
+但「没记下 `setupError`」本身不是「钉上了」的证据：宿主漂移让 setter **不抛却不生效**、
+或让 `agents.create` **根本不调 `setup`** 时，`setupError` 也还是 `undefined`、`create`
+照样正常返回。所以放行判据改成**写进去再读回来**：沙箱写完回读会话日志里那条
+`sandbox/mode` 事件、审批写完回读那条 `approval/policy` 事件，两者都对上了才置
+`pinned = true`，`!pinned` 一律 dispose + failed。
+
+审批也必须回读 —— 它的死法和沙箱不同：沙箱没钉上是越权，审批没设成 `never` 是工具调用
+**永远卡着**等人点，而无人值守没人在。读法都对着源码核过（`session.append` 同步，
+所以 setter 返回时事件必已在日志里）：`dsh-sandbox-policy/lib/index.js:41`、
+`dsh-user-approval/lib/index.js:63-65`。假宿主刻意模仿了「吞异常」「静默不生效」
+「压根不调 setup」三种形态，共五局。
+
+**⑦b `read-only` 不拦 exec，有一条 `read-only` → `workspace-write` 的提权链。**
+`read-only` 管的是文件写入（read-only 下可写根为空），exec 不受限。所以一个 read-only 的
+无人值守会话手里仍有 bash，能 `curl` 本机路由自己建一个 `workspace-write` 的任务。
+`tools.restrict` 管不到子代理和 shell，`maxPermission` 只钉得住链的终点。**把
+`maxPermission` 设成 `"read-only"` 可当场断掉这条链**；默认给 `workspace-write` 是
+实用性取舍，明写出来而不是假装覆盖了。
+
+**⑦c 执行时再查一次天花板。** 只在写口拦 = 只拦新增不拦存量：调低 `maxPermission` 之后，
+库里那些旧任务、手工改过的 `tasks.json`、旧版本留下的记录，还能靠 `run_now` / `toggle` /
+定时触发重新跑起来。`run()` 开头再查一遍，超了直接 failed 且**连会话都不建**。
+
+**⑧ 手动触发也受并发上限约束。** `trigger()` 原来只查「这个任务在不在跑」，不看
+`running.size`。`POST /tasks/run` 和 `scheduler_update` 的 `run_now` 都走它 ——
+`maxTasks` 默认 200，也就是能同时起 200 个真会话。
+
+同一轮修掉的正确性 bug（都由自检钉住，含反向验证）：
+
+- `engine.tick` 的补算 `nextRunAt` 原来写在 `readTasks()` 的**副本**上，再
+  `mutateTasks(() => {})` 从盘上重读写回 —— 改动被丢掉，于是 `nextRunAt` 为 null 的任务
+  **永不触发**，而且 `dirty` 恒真、**每秒全量写盘一次**。现在整个循环在回调里做。
+- `execute()` 的 `running.delete()` 不在 `finally` 里，且 `void execute(...)` 没有 `.catch`：
+  一次写盘失败就会把任务永久留在 `running` 集合里占着并发名额，未处理的拒绝还能打挂宿主。
+- `recoverInterruptedRuns` 无差别把所有 `running` 标成 `interrupted` —— 多开 dsh 时会把
+  另一个进程正在跑的那一轮历史污染掉。现在运行记录带 `pid`，只动本进程或已死进程留下的。
+- `readJsonBody` 没挂 `close`/`aborted`，客户端断连时 promise 永不 settle（每次漏一个 handler）；
+  handler 的兜底 catch 把内部故障也说成 400，现在只有 `BadRequest` 回 400，其余回 500。
+- `summarizeEvents` 只判 `content.length > 0`，末条 assistant 消息只含 tool-call 时会把
+  前面那条真答案覆盖成空摘要。
+- `readJsonBody` 超限时 `reject` 后立刻 `req.destroy()`：socket 一没，那个 400 还没发出去
+  就丢了，客户端只看到 `ECONNRESET`，不知道是自己发的包太大。改成排空 + `settled` 标志。
+- `execute()` 的 `running.add` + `randomUUID()` 在 try 外面（与注释自述不符）：极端下
+  `randomUUID()` 抛会让任务永久留在 `running`、占满 `maxConcurrent`。
+- `recoverInterruptedRuns` 只看 pid：pid 会被系统复用，另一个 dsh 崩在任务里、它的 pid
+  后来分给了别人，`isProcessAlive` 就永远返回 true，那条记录永远留在 `running`。
+  现在加时间兜底（超过 12 小时未结束一律算中断）。
+- `resolveWorkspace` 的兜底目录直接用 `path.join(DSH_HOME, config.workspaceFallback)`：
+  `workspaceFallback` 写成 `"../.."` 就能让兜底工作目录逃出 `DSH_HOME`。字段校验加
+  「拒绝绝对路径与 `..`」，解析后再核一遍落在 `DSH_HOME` 下。
+- `validateSchedule` 只回布尔，面板上把「第几分」清空时报的是笼统的「schedule 不合法」，
+  指不出字段。补 `explainScheduleProblem()`，报「hourly 需要 minute（0-59 的整数）」。
+- `dsh-team scheduler enable/disable` 直接 `writeFileSync` 覆盖配置文件：写到一半被打断
+  就留下半个 JSON，而 `readJsonConfig` 遇到解析失败会静默退回内置默认值 ——
+  「文件坏了」表现为「调度器自己关了」。改成临时文件 + `rename`。
+
+### 自检
+
+`scripts/selftest-scheduler.mjs` 八段、64 个断言块：计划纯函数（8 种 + 边界）、
+任务构造与补丁、存储（原子写 / 历史裁剪 / 串行队列 / 坏文件留证 / 恢复中断记录）、
+事件摘要与结论判定、`engine.tick` 的落盘与终态、**假宿主装配 + 真跑 HTTP 路由**
+（含信任栅栏、任务数上限并发、断连收敛、500 vs 400）、4 个工具的参数表与
+`output.schema` 全量校验、客户端面板（用 `new Function` 真加载那份 classic script）。
+
+最后两段是重点：这个功能最大的风险不是算错时间，是「默认关的时候没真关」
+「依赖不齐的时候把整个插件拖死」「路由被跨站调用」「无人值守会话把自己提权」——
+纯函数一条都测不出。
+
+八条负向验证（写进 REQ-007 §8）：
+
+- 把 `anchoredOccurrence` 的 `Math.floor(...) + 1` 改成 `Math.round(...)`（即不再取
+  「严格大于 from」的刻度）→ 2 条自检变红，退出码 1；还原后退出码 0。
+- `enabled=false` / `enabled` 缺失 / `enabled=true` 但依赖不齐 → 工具 0、路由 0、
+  effect 0；依赖齐备 → 工具 4、路由 1、effect 2；无 `webServer` → 工具 4、路由 0。
+- 把 `engine.tick` 还原成旧写法 → 2 条自检变红；还原后退出码 0。
+- 把 `agentCtx.tools.restrict` 移回设 `setupError` 的 try 外面 →
+  「沙箱钉不上就绝不发 prompt（P0 回归）」变红；还原后退出码 0。
+- 摘掉 `insertTask` 与两条 update 路径上的 `checkPermissionCeiling()` →
+  「权限天花板：建和改都不许越过 maxPermission」变红；还原后退出码 0。
+- 把放行判据从 `pinned` 改回「没记下 `setupError`」→ 「沙箱钉不上就绝不发 prompt」
+  的 `setupNotCalled` 那一局变红；还原后退出码 0。
+- 摘掉 `run()` 开头的 `checkPermissionCeiling()` → 「执行时也查天花板」变红；
+  还原后退出码 0。
+- 摘掉 `setApprovalPolicy` 后面那段回读 → 「沙箱钉不上就绝不发 prompt」的
+  `silentApproval` 那一局变红；还原后退出码 0。
+
 ## [1.10.1]
 
 修 magic-context 把会话写坏、**重启后整段历史打不开**的 bug

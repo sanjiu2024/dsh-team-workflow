@@ -262,7 +262,18 @@ function cmdStatus() {
 	const patchText2 = fs.existsSync(patchFile) ? fs.readFileSync(patchFile, "utf8") : "";
 	if (new RegExp(`default:\\s*${PRESET_ID}\\b`).test(patchText2)) console.log(`  默认预设    ${PRESET_ID}`);
 	console.log();
+	console.log(`  定时任务    ${schedulerOn() ? "开" : "关（默认）"}  ${path.join(PKG_ROOT, "team", "extensions", "scheduler.json")}`);
 	console.log(`  bundle 补丁插入的行：${SKILLS_ROW_ID}（skills） + ${ROW_ID}（插件本体）`);
+}
+
+/** 调度器开没开 —— 只读包内那份配置，不碰 profile */
+function schedulerOn() {
+	const file = path.join(PKG_ROOT, "team", "extensions", "scheduler.json");
+	try {
+		return JSON.parse(fs.readFileSync(file, "utf8")).enabled === true;
+	} catch {
+		return false;
+	}
 }
 
 function findLens() {
@@ -741,6 +752,8 @@ function cmdHelp() {
   dsh-team mc apply [--dry-run]        把 mc 执行阈值写进 ~/.config/cortexkit/magic-context.jsonc
   dsh-team patch [--status|--restore] [--dry-run]
                                       让思考链/工具行默认展开（改 dsh 安装树，可还原）
+  dsh-team scheduler [status|enable|disable]
+                                      定时任务调度器开关（默认关，改完重启 dsh）
 
 环境变量：DSH_HOME（默认 ~/.dsh）`);
 }
@@ -1080,6 +1093,61 @@ function cmdMcApply() {
 	console.log("  验证：dsh-team mc show");
 }
 
+/**
+ * 定时任务调度器（REQ-007）的开关。
+ *
+ * 只改包内 `team/extensions/scheduler.json` 的 `enabled` —— 不改 profile、不重装。
+ * 因为调度器是本包的一个模块，不是独立 bundle：默认关靠的是这份配置，
+ * `installScheduler` 在 enabled !== true 时立刻返回，什么都不注册。
+ */
+function cmdScheduler(mode) {
+	const file = path.join(PKG_ROOT, "team", "extensions", "scheduler.json");
+	if (!fs.existsSync(file)) fail(`找不到 ${file}`);
+	const raw = readJson(file, null);
+	if (raw === null || typeof raw !== "object") fail(`${file} 不是合法 JSON 对象`);
+
+	if (mode === "enable" || mode === "disable") {
+		const want = mode === "enable";
+		if (raw.enabled === want) {
+			console.log(`调度器已经是${want ? "开" : "关"}的，没动。`);
+		} else {
+			raw.enabled = want;
+			// 临时文件 + rename：直接覆写的话，写到一半被打断就留下半个 JSON。
+			// `readJsonConfig` 遇到解析失败会静默退回内置默认值（= enabled: false），
+			// 于是「文件坏了」表现为「调度器自己关了」，排查起来很费劲。
+			const tmp = `${file}.tmp-${process.pid}`;
+			fs.writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+			fs.renameSync(tmp, file);
+			ok(`已把 ${path.relative(PKG_ROOT, file)} 的 enabled 改成 ${want}`);
+		}
+	}
+
+	const on = raw.enabled === true;
+	const store = path.join(dshHome, "team-workflow", "scheduler");
+	console.log();
+	console.log(`定时任务调度器  ${on ? "已开启" : "已关闭（默认）"}`);
+	console.log(`  配置文件    ${file}`);
+	console.log(`  存储目录    ${store}${fs.existsSync(store) ? "" : "（还没建，跑过才有）"}`);
+	console.log(`  调度间隔    ${raw.tickMs ?? 1000}ms`);
+	console.log(`  并发上限    ${raw.maxConcurrent ?? 4}`);
+	console.log(`  单次上限    ${raw.runTimeoutMinutes ?? 30} 分钟`);
+	console.log(`  历史条数    ${raw.historyLimit ?? 200}`);
+	console.log(`  任务数上限  ${raw.maxTasks ?? 200}`);
+	console.log(`  默认 preset ${raw.agentPreset ?? "standard"}`);
+	console.log(`  默认权限档  ${raw.permission ?? "read-only"}   ← 每个新任务的默认沙箱档位`);
+	console.log(`  权限天花板  ${raw.maxPermission ?? "workspace-write"}   ← 任何任务都不许超过它`);
+	console.log();
+	if (!on) {
+		console.log("  开启：dsh-team scheduler enable   （改完要重启 dsh）");
+		console.log("  它做什么：到点在**全新会话**里无人值守跑一段 prompt，8 种计划，");
+		console.log("            4 个 scheduler_* 工具 + Web GUI 面板。");
+		console.log("  注意：无人值守 = 审批策略强制 never，permission 是唯一安全边界。");
+	} else {
+		console.log("  关闭：dsh-team scheduler disable  （改完要重启 dsh）");
+		console.log(`  路由前缀    /api/team/scheduler`);
+	}
+}
+
 const [command, sub] = positional;
 switch (command) {
 	case "install":
@@ -1118,6 +1186,11 @@ switch (command) {
 	case "thrift":
 		if (sub !== "apply") fail("用法：dsh-team thrift apply");
 		cmdThriftApply();
+		break;
+	case "scheduler":
+		if (sub === void 0 || sub === "status") cmdScheduler("status");
+		else if (sub === "enable" || sub === "disable") cmdScheduler(sub);
+		else fail("用法：dsh-team scheduler [status|enable|disable]");
 		break;
 	case undefined:
 	case "help":
