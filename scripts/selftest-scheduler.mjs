@@ -350,7 +350,8 @@ await checkAsync("装配：整份配置都要过 FIELDS（插件配置那一路�
 	// `lib/index.js:81` 的 `...override` 是原样展开的，**不过 FIELDS** —— 结构上拿不到
 	// 「值一定合法」的保证。插件配置写坏了不该变成「静默的资源失控」。
 	// 这一块故意用 enabled:false：要测的是校验，不是挂载（挂载要一整套假宿主）。
-	const probeCtx = { logger: { info: () => {} } };
+	const warnings = [];
+	const probeCtx = { logger: { info: () => {}, warn: (m) => warnings.push(m) } };
 	process.env.DSH_HOME = path.join(tmpRoot, "home-cfg-normalize");
 	const hostile = {
 		enabled: false,
@@ -367,6 +368,11 @@ await checkAsync("装配：整份配置都要过 FIELDS（插件配置那一路�
 	assert.equal(cfg.runTimeoutMinutes, SCHEDULER_DEFAULTS.runTimeoutMinutes, "坏单轮时长必须回落默认");
 	assert.equal(cfg.tickMs, SCHEDULER_DEFAULTS.tickMs);
 	assert.equal(cfg.permission, SCHEDULER_DEFAULTS.permission);
+	// 回落**必须留痕**：静默被改掉的配置是最难查的一类（配了 2 小时的 tick 变成 1 秒，
+	// 触发频率差 7200 倍，而配置人只会觉得「我明明配了」）
+	assert.equal(warnings.length, 5, `五个坏值要各报一次，实际：${warnings.join(" | ")}`);
+	assert.match(warnings.join("\n"), /maxConcurrent=null 不合法/);
+	assert.match(warnings.join("\n"), /已改用默认值 4/, "要说清楚改成了什么");
 	// 合法的值不许被顺手改掉（收口不等于消毒）
 	const ok = installScheduler(probeCtx, { config: { ...SCHEDULER_DEFAULTS, enabled: false, maxConcurrent: 3, historyLimit: 50 } });
 	assert.equal(ok.config.maxConcurrent, 3);

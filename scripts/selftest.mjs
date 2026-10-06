@@ -27,7 +27,8 @@ function parseJson(text, what) {
 const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-team-selftest-"));
 process.env.DSH_HOME = tempHome;
 
-const { apply } = await import(new URL("../lib/index.js", import.meta.url).href);
+const { apply, makeLayered } = await import(new URL("../lib/index.js", import.meta.url).href);
+const { readJsonConfig } = await import(new URL("../lib/util.js", import.meta.url).href);
 
 /** 最小可用的 cordis ctx */
 function makeCtx(baseUrl) {
@@ -624,6 +625,57 @@ assert.ok(bareCtx._sections.some((s) => s.name === "team:baseline"), "没 web �
 	for (const mark of ["## 1. 理清需求", "## 2. 写计划前", "## 3. 实现", "## 4. 三层审查", "## 5. 验收"]) {
 		assert.ok(raw.includes(mark), `workflow skill 丢了关口段：${mark}`);
 	}
+}
+
+// —— 12b. 配置里被拒的值必须报出来（静默回落是最难查的一类）——
+
+{
+	// 「配了但没生效」这件事以前是**完全静默**的：`readJsonConfig` 只返回采纳了
+	// 哪些键，被丢掉的那个值它自己不说。`tickMs` 写成 2 小时会被改成 1 秒
+	// （触发频率差 7200 倍），而配置人只会觉得「我明明配了」。
+	const fields = { a: (v) => (typeof v === "number" && v >= 10 ? v : undefined) };
+	const defaults = { a: 10 };
+	const probe = path.join(tempHome, "probe-config.json");
+
+	fs.writeFileSync(probe, JSON.stringify({ a: 3 }), "utf8");
+	const warns = [];
+	const out = readJsonConfig(probe, defaults, fields, (msg, quiet) => {
+		if (quiet !== true) warns.push(msg);
+	});
+	assert.equal(out.a, defaults.a, "不合法的值要用默认值");
+	assert.equal(warns.length, 1, "被拒的值必须报一次");
+	assert.match(warns[0], /a=3 不合法/, "要说清楚是哪个键、什么值");
+	assert.match(warns[0], /默认值 10/, "要说清楚改成了什么");
+
+	// 合法值不该报（否则日志会把真问题淹掉）
+	fs.writeFileSync(probe, JSON.stringify({ a: 20 }), "utf8");
+	const quietWarns = [];
+	assert.equal(readJsonConfig(probe, defaults, fields, (m, q) => { if (q !== true) quietWarns.push(m); }).a, 20);
+	assert.equal(quietWarns.length, 0, "合法配置一个字都不该说");
+
+	// 键**不在**文件里时也不该报（那是「没配」，不是「配错了」）
+	fs.writeFileSync(probe, JSON.stringify({ b: 1 }), "utf8");
+	const absentWarns = [];
+	readJsonConfig(probe, defaults, fields, (m, q) => { if (q !== true) absentWarns.push(m); });
+	assert.equal(absentWarns.length, 0, "没配的键不该报成「配错了」");
+
+	// 接线：`layered()` 必须把 ctx.logger.warn 真的传下去 —— 不传的话上面那套
+	// 全部白搭（日志函数默认是 no-op）。这里用绝对路径探针文件走同一条路。
+	const wired = [];
+	const layered = makeLayered({ logger: { warn: (m) => wired.push(m) } });
+	fs.writeFileSync(probe, JSON.stringify({ tickMs: 50 }), "utf8");
+	const cfg = layered(probe, { tickMs: 1000 }, { tickMs: (v) => (Number.isFinite(v) && v >= 1000 ? v : undefined) }, undefined);
+	assert.equal(cfg.tickMs, 1000, "被拒的值要回落默认值");
+	assert.equal(wired.length, 1, "layered 必须把 warn 接上，否则留痕是空转");
+	assert.match(wired[0], /tickMs=50 不合法/);
+
+	// 插件 config（override）那一路由各模块自己兜底；这里只确认 layered 不擅自
+	// 判断 override —— 它今天的契约就是「原样展开」
+	const passed = layered(probe, { tickMs: 1000 }, { tickMs: (v) => (v > 0 ? v : undefined) }, { tickMs: 50 });
+	assert.equal(passed.tickMs, 50, "override 是原样展开的（结构上不过 fields）");
+
+	fs.rmSync(probe, { force: true });
+	console.log("✓ 配置被拒必须留痕（合法/未配/插件 config 三条负向都不报）");
 }
 
 // —— 13. 清理 ——
