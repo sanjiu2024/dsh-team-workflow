@@ -1297,6 +1297,23 @@ await checkAsync("路由：全套 CRUD + 选项 + 历史", async () => {
 	assert.equal(toggledBack.body.task.enabled, true);
 	assert.ok(typeof toggledBack.body.task.nextRunAt === "number", "重新启用要补回下次运行时间");
 
+	// 显式传 enabled 时必须**幂等**：同一个请求发两次结果一样。
+	// 原来只能取反，于是「停用」按钮在快照过期时会把任务启用 —— 点两次等于没点。
+	const off1 = await request(handler, "POST", "/api/team/scheduler/tasks/toggle", { id, enabled: false });
+	assert.equal(off1.body.task.enabled, false);
+	const off2 = await request(handler, "POST", "/api/team/scheduler/tasks/toggle", { id, enabled: false });
+	assert.equal(off2.body.task.enabled, false, "显式停用重复发也必须是停用");
+	const on1 = await request(handler, "POST", "/api/team/scheduler/tasks/toggle", { id, enabled: true });
+	assert.equal(on1.body.task.enabled, true);
+	const on2 = await request(handler, "POST", "/api/team/scheduler/tasks/toggle", { id, enabled: true });
+	assert.equal(on2.body.task.enabled, true, "显式启用重复发也必须是启用");
+	// 非布尔值不猜：`"true"` 这种含糊输入要么被当取反、要么被当假值，两种都错
+	const badType = await request(handler, "POST", "/api/team/scheduler/tasks/toggle", { id, enabled: "true" });
+	assert.equal(badType.status, 400);
+	assert.equal(badType.body.error, "enabled 必须是布尔值");
+	const stillOn = await request(handler, "GET", "/api/team/scheduler/tasks");
+	assert.equal(stillOn.body.tasks[0].enabled, true, "400 之后不能已经改了一半");
+
 	// 改
 	const updated = await request(handler, "PUT", "/api/team/scheduler/tasks", { id, name: "写周报" });
 	assert.equal(updated.body.task.name, "写周报");
