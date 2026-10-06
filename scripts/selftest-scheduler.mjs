@@ -926,6 +926,62 @@ check("依赖齐备：4 个工具 + 1 条路由 + 2 个 effect", () => {
 	scheduler.dispose();
 });
 
+/**
+ * 照 dsh 的 `validateJsonSchemaValue` 抄一份值校验（不依赖 dsh 包，本仓库零依赖）。
+ *
+ * 为什么必须抄：dsh 的注册表在 `createSuccessResult` 里拿 `output.schema` 校验
+ * **真实返回值**，不匹配直接抛 `ToolOutputError`（`dsh-tools/lib/index.js:3543`）。
+ * 而各 selftest 里的 `tools.register` 是**假实现** —— 它只把 definition 存下来，
+ * 直接调 `execute()` 就绕过了那道校验。于是「schema 声明 `nextRunAt` 是 string、
+ * 实际返回数字时间戳」这种错能一路活下来：每次成功的 `scheduler_create` 都会在工具
+ * 边界上炸，而所有自检全绿。
+ *
+ * 只实现本项目真正会用到的关键字。
+ */
+function schemaViolations(schema, value, path = "value") {
+	const out = [];
+	if (schema?.oneOf !== undefined) {
+		const matched = schema.oneOf.filter((branch) => schemaViolations(branch, value, path).length === 0).length;
+		if (matched !== 1) out.push(`${path} 必须正好匹配 oneOf 的一个分支（匹配了 ${matched} 个）`);
+		return out;
+	}
+	if (schema?.const !== undefined && value !== schema.const) out.push(`${path} 必须是 ${JSON.stringify(schema.const)}`);
+	if (Array.isArray(schema?.enum) && !schema.enum.includes(value)) out.push(`${path} 不在 enum 里`);
+	const type = schema?.type;
+	if (type !== undefined) {
+		const ok =
+			type === "null" ? value === null
+			: type === "string" ? typeof value === "string"
+			: type === "number" ? typeof value === "number"
+			: type === "integer" ? Number.isInteger(value)
+			: type === "boolean" ? typeof value === "boolean"
+			: type === "array" ? Array.isArray(value)
+			: type === "object" ? value !== null && typeof value === "object" && !Array.isArray(value)
+			: true;
+		if (!ok) {
+			out.push(`${path} 应是 ${type}，实际是 ${value === null ? "null" : typeof value}`);
+			return out;
+		}
+	}
+	if (type === "array" && schema?.items !== undefined) {
+		value.forEach((item, index) => out.push(...schemaViolations(schema.items, item, `${path}[${index}]`)));
+	}
+	if (type === "object") {
+		for (const key of schema?.required ?? []) {
+			if (!(key in value)) out.push(`${path}.${key} 缺失（required）`);
+		}
+		for (const [key, sub] of Object.entries(schema?.properties ?? {})) {
+			if (key in value) out.push(...schemaViolations(sub, value[key], `${path}.${key}`));
+		}
+		if (schema?.additionalProperties === false) {
+			for (const key of Object.keys(value)) {
+				if (!(key in (schema.properties ?? {}))) out.push(`${path}.${key} 没在 properties 里声明，而 additionalProperties=false`);
+			}
+		}
+	}
+	return out;
+}
+
 check("工具注册表：参数是合法 JSON Schema，且 output.schema 不带 required", () => {
 	const { ctx, record } = fakeCtx(REQUIRED);
 	installScheduler(ctx, { config: { ...SCHEDULER_DEFAULTS, enabled: true } });
@@ -945,8 +1001,47 @@ check("工具注册表：nullable 字段用 oneOf（type 数组和 anyOf 都会�
 	const { ctx, record } = fakeCtx(REQUIRED);
 	installScheduler(ctx, { config: { ...SCHEDULER_DEFAULTS, enabled: true } });
 	const create = record.tools.find((t) => t.name === "scheduler_create");
+	const update = record.tools.find((t) => t.name === "scheduler_update");
 	const nextRunAt = create.output.schema.properties.nextRunAt;
-	assert.deepEqual(nextRunAt, { oneOf: [{ type: "string" }, { type: "null" }] });
+	// `nextRunAt` 是 **epoch 毫秒**（数字），不是字符串。这里以前钉的是 `string|null` ——
+	// 断言把 bug 一起钉住了：声明和真实返回值对不上，dsh 的输出校验会抛错。
+	assert.deepEqual(nextRunAt, { oneOf: [{ type: "number" }, { type: "null" }] });
+	assert.deepEqual(update.output.schema.properties.nextRunAt, nextRunAt);
+});
+
+await checkAsync("工具：每个真实返回值都必须过自己的 output.schema（dsh 会这么校验）", async () => {
+	process.env.DSH_HOME = path.join(tmpRoot, "home-schema-check");
+	const { ctx, record } = fakeCtx(REQUIRED);
+	const scheduler = installScheduler(ctx, { config: { ...SCHEDULER_DEFAULTS, enabled: true } });
+	const tool = (name) => record.tools.find((t) => t.name === name);
+	const create = tool("scheduler_create");
+	const update = tool("scheduler_update");
+	const list = tool("scheduler_list");
+	const remove = tool("scheduler_delete");
+
+	// 把真实返回值攒起来，每一条都过一遍 schema
+	const cases = [];
+	const grab = async (name, args) => {
+		const value = await tool(name).execute(args, {});
+		cases.push([name, value]);
+		return value;
+	};
+
+	await grab("scheduler_list", {});
+	const created = await grab("scheduler_create", { name: "校验用", prompt: "p", schedule: { kind: "daily", time: "09:00" } });
+	assert.equal(typeof created.nextRunAt, "number", "这条断言本身就要是数字，否则下面的校验测不到东西");
+	await grab("scheduler_create", { name: "缺计划", prompt: "p", schedule: { kind: "daily" } });
+	await grab("scheduler_update", { task_id: created.taskId, name: "改名" });
+	await grab("scheduler_update", { task_id: created.taskId, run_now: true });
+	await grab("scheduler_update", { task_id: "不存在", name: "x" });
+	await grab("scheduler_delete", { task_id: created.taskId });
+	await grab("scheduler_delete", { task_id: created.taskId });
+
+	for (const [name, value] of cases) {
+		const violations = schemaViolations(tool(name).output.schema, value);
+		assert.deepEqual(violations, [], `${name} 的返回值不合自己的 output.schema：${JSON.stringify(value)}`);
+	}
+	scheduler.dispose();
 });
 
 // ── 6. 真跑 HTTP 路由（假 req/res，不发真请求） ──────────────────────────────
