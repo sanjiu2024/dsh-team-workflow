@@ -586,6 +586,7 @@ await checkAsync("engine.advance：interval/custom 按原定时刻推进，其�
 });
 
 // ── 4. 事件摘要与结论 ────────────────────────────────────────────────────────
+
 check("summarizeEvents：取最后一条非空 assistant 消息", () => {
 	const summary = summarizeEvents([
 		{ type: "assistant/message", data: { message: { content: [{ type: "text", text: "第一版" }] } } },
@@ -628,6 +629,9 @@ check("decideRunOutcome：缺 turn/end 算成功，但「没观察到启动」�
 	const outcome = decideRunOutcome({ text: "看起来写完了", hasTurnEnd: false });
 	assert.equal(outcome.status, "succeeded");
 	assert.equal(outcome.summary, "看起来写完了");
+	// 判定可以宽松，证据不能丢：模型崩了也是这个形状，运行历史要能事后分辨
+	assert.equal(outcome.incomplete, true, "缺 turn/end 必须留下 incomplete 标记");
+	assert.equal(decideRunOutcome({ text: "ok", hasTurnEnd: true, reason: "completed" }).incomplete, undefined, "干净收尾不该有标记");
 
 	// 「跑没跑起来」是另一个问题，由 started 表达，不能靠 turn/end 缺席来推。
 	const notStarted = decideRunOutcome({ text: "", hasTurnEnd: false }, { started: false });
@@ -637,6 +641,43 @@ check("decideRunOutcome：缺 turn/end 算成功，但「没观察到启动」�
 	// 明确失败的信号不能被吞成成功 —— 这才是原来那条规则要防的
 	assert.equal(decideRunOutcome({ text: "x", hasTurnEnd: true, reason: "error" }).status, "failed");
 });
+
+check("engine：成功但收尾不完整的一轮，运行记录里必须分得出来", async () => {
+	// 「缺 turn/end 判成功」是为了不制造假失败，但它和干净收尾是同一个形状 ——
+	// 记录里不留标记，用户就永远看不出这一轮其实没有正常收尾。
+	const store = freshStore("run-incomplete");
+	const engine = createEngine({
+		store,
+		config: { ...SCHEDULER_DEFAULTS },
+		// 一轮「成功但没写 turn/end」，一轮干净收尾
+		executor: {
+			run: async (task) =>
+				task.id === "inc1"
+					? { status: "succeeded", incomplete: true, summary: "看起来写完了" }
+					: { status: "succeeded", summary: "写完了" },
+		},
+	});
+	await store.mutateTasks((tasks) => {
+		tasks.push({ id: "inc1", name: "崩了", enabled: true, prompt: "p", schedule: { kind: "interval", everyMinutes: 60 }, nextRunAt: Date.now() - 1000 });
+		tasks.push({ id: "ok1", name: "干净", enabled: true, prompt: "p", schedule: { kind: "interval", everyMinutes: 60 }, nextRunAt: Date.now() - 1000 });
+	});
+	await engine.tick();
+	let runs = [];
+	for (let i = 0; i < 300; i += 1) {
+		runs = store.readRuns();
+		if (runs.length === 2 && runs.every((r) => r.finishedAt !== undefined)) break;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	const inc = runs.find((r) => r.taskId === "inc1");
+	const ok = runs.find((r) => r.taskId === "ok1");
+	assert.ok(inc !== undefined && ok !== undefined, "两轮都该有记录");
+	assert.equal(inc.status, "succeeded");
+	assert.equal(inc.incomplete, true, "收尾不完整的成功必须留标记");
+	assert.equal(inc.summary, "看起来写完了");
+	assert.equal(ok.status, "succeeded");
+	assert.equal(ok.incomplete, undefined, "干净收尾不该带标记");
+});
+
 
 check("waitForTurnStart：seq 不增长就不放行，观测不到 seq 时不判死", async () => {
 	// 启动窗口跟源头同一个值（30s）
