@@ -1748,6 +1748,33 @@ await checkAsync("工具：scheduler_create 真写进存储，scheduler_list 读
 	scheduler.dispose();
 });
 
+await checkAsync("engine.trigger：超天花板的存量任务要在触发时就拒，不能回 ✅", async () => {
+	const store = freshStore("trigger-ceiling");
+	const ran = [];
+	const engine = createEngine({
+		store,
+		executor: { run: async (task) => { ran.push(task.id); return { status: "succeeded" }; } },
+		// 天花板收到 read-only：库里那些 workspace-write 的旧任务跑不了
+		config: { ...SCHEDULER_DEFAULTS, maxPermission: "read-only" },
+	});
+	await store.mutateTasks((tasks) => {
+		tasks.push({ id: "over", name: "旧任务", enabled: true, prompt: "p", permission: "workspace-write", schedule: { kind: "daily", time: "09:00" }, nextRunAt: Date.now() - 1000 });
+		tasks.push({ id: "fine", name: "合法", enabled: true, prompt: "p", permission: "read-only", schedule: { kind: "daily", time: "09:00" }, nextRunAt: Date.now() - 1000 });
+	});
+	// 以前这里回 {ok:true}，而执行器到 run() 里才拒 —— 调用方拿到 ✅「已触发」，
+	// 实际一个会话都没起，只有事后一条 failed 记录：权限拒绝被成功文案盖住。
+	const refused = engine.trigger("over");
+	assert.equal(refused.ok, false, "超天花板必须报「这次调用没生效」");
+	assert.match(refused.error, /上限/);
+	await new Promise((r) => setTimeout(r, 50));
+	assert.deepEqual(ran, [], "被拒的任务不许真的起会话");
+	assert.equal(engine.isRunning("over"), false);
+
+	assert.equal(engine.trigger("fine").ok, true, "合法的照旧要能触发");
+	for (let i = 0; i < 100 && !ran.includes("fine"); i += 1) await new Promise((r) => setTimeout(r, 10));
+	assert.deepEqual(ran, ["fine"]);
+});
+
 check("工具：render 对成功/失败都给得出文案", () => {
 	const { ctx, record } = fakeCtx(REQUIRED);
 	installScheduler(ctx, { config: { ...SCHEDULER_DEFAULTS, enabled: true } });
