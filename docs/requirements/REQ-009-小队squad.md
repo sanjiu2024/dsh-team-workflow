@@ -279,10 +279,10 @@ board 条目 = { at, from, text }
 
 | 标准 | 实际命令 | 实际输出 |
 | --- | --- | --- |
-| 纯逻辑对 | `node scripts/selftest-squad.mjs; echo EXIT=$?` | `✓ 自检通过：名册与黑板 / 权限三种视角 / 快照 / 6 个工具真跑（返回值过 schema）/ 装配与会话清理 / HTTP 路由与信任栅栏负例 / 客户端面板真渲染与进入会话` / `EXIT=0`（24 个 `check`） |
+| 纯逻辑对 | `node scripts/selftest-squad.mjs; echo EXIT=$?` | `✓ 自检通过：名册与黑板 / 权限三种视角 / 快照 / 6 个工具真跑（返回值过 schema）/ 装配与会话清理 / HTTP 路由与信任栅栏负例 / 真 socket 端到端（路由挂载 + prefix 匹配）/ 客户端面板真渲染与进入会话` / `EXIT=0`（25 个 `check`） |
 | 权限真的是认证 | 同上第 3 段 + 工具层负例段 | 绿。工具层实测：`squad_status` 外人 → `[失败]`；成员改别人那行 / 加人 / 关队 → 各一条 `[失败]`；成员自己写黑板 → 署自己的成员名（不是「主 agent」） |
 | 面板真能看 | 同上第 7 段（`new Function("window", clientSource)` 真加载 classic script + 假 React 真渲染） | 绿：成员名/角色/状态/任务/worktree/黑板都在；「进入会话」把 `agentId` 交给 `uiWorkspace.openSession`；没绑 id 的按钮禁用；轮询 `setInterval` 创建数 == 清理数 |
-| 面板取数只走宿主 | 同上第 6 段（真调路由 handler） | 绿：`/options`、`/squads` 200；路径不对 404；非回环 / `sec-fetch-site: cross-site` / 异源 Origin → 403；写方法一律 404 |
+| 面板取数只走宿主 | 同上第 6 段（真调路由 handler）+ 收尾补的**真 socket** 段（`node:http` 起服务、照抄宿主 `match()`） | 绿：`/options`、`/squads` 200 有数据；路径不对 / prefix 本身 404；非回环 / `sec-fetch-site: cross-site` / 异源 Origin / 坏 Host → 403；写方法（POST/DELETE）一律 404 |
 | 挂进主套件 | `npm test; echo EXIT=$?` | `EXIT=0`，`grep -c "^✗"` = `0`，命令数 `19 → 20`（`package.json` 的 `scripts.test` 里 `selftest-squad.mjs` 已并入） |
 | 工具能被 dsh 认 | `node scripts/selftest-tool-schema.mjs; echo EXIT=$?` | `✓ 自检通过：参数表+output.schema 全量真校验（14 个工具，对齐 dsh 子集）/ 反例可被抓到` / `EXIT=0`（非 win32：bash×4 + worktree×4 + squad×6 = 14；win32 为 21） |
 | 版本号与 CHANGELOG 一致 | `node scripts/selftest.mjs`（里面那条「版本一致」） | `✓ … / 版本一致 / …`；`package.json` 1.12.1 → **1.13.0**，`CHANGELOG.md` 顶部新增 `## [1.13.0]` |
