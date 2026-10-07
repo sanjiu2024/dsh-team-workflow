@@ -133,6 +133,12 @@ assert.ok(
 	baselineText.includes("派审查必须给边界") && baselineText.includes("输出上限"),
 	"「派审查必须给边界」纪律段丢失（上游 v1.13.5 移植，见 docs/UPSTREAM-SYNC.md）",
 );
+// 略过判据（2026-10-08 用户定，v1.14.0 固化）—— 两个条件都满足才略过，且必须留痕。
+// 防的是两种漂移：判据被删（回到「小问题也逐个返工」），或「留一行记录」被省掉（变成隐瞒）。
+assert.ok(
+	baselineText.includes("两个条件都满足才略过") && baselineText.includes("略过不是隐瞒"),
+	"「略过：不重要且不危害的直接跳过」判据段丢失（v1.14.0，见 CHANGELOG）",
+);
 // 版本行 —— 注入文本必须带 package.json 的当前版本（与唯一来源逐字一致，防版本号漂移）。
 const pkgVersion = parseJson(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"), "package.json").version;
 assert.ok(
