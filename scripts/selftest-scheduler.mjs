@@ -2156,16 +2156,19 @@ await checkAsync("客户端模块：宿主没启用（404）→ 一个槽位都�
 await checkAsync("客户端模块：宿主启用了 → 挂 sidebar.panellist + main，且 id 与 key 自洽", async () => {
 	const { exports } = loadClient();
 	const { ctx, record } = fakeClientCtx();
-	let requested;
+	const requested = [];
 	await withFetch(async (url) => {
-		requested = url;
+		requested.push(url);
 		return reply(200, { ok: true, workspaces: [], permissions: [], scheduleKinds: [] })();
 	}, async () => {
 		exports.apply(ctx);
 		await settle();
 	});
-	assert.equal(requested, "/api/team/scheduler/options", "探活必须打宿主那条路由前缀");
-	assert.deepEqual(record.injects.sort(), ["main", "sidebar.panellist"]);
+	// 这个文件里现在有两个面板（定时任务 + 小队 REQ-009），各自探活各自的路由
+	// 前缀。这条断言只管调度器那一条：它必须在，且前缀不能变。
+	// （小队那条由 scripts/selftest-squad.mjs 自己验。）
+	assert.ok(requested.includes("/api/team/scheduler/options"), "探活必须打宿主那条路由前缀");
+	assert.deepEqual(record.injects.sort(), ["main", "main", "sidebar.panellist", "sidebar.panellist"]);
 
 	const panel = record.registrations.find((r) => r.options.name === "sidebar.panellist");
 	const page = record.registrations.find((r) => r.options.name === "main");
@@ -2194,7 +2197,9 @@ await checkAsync("客户端模块：槽位未声明（register 抛）→ 不连�
 		console.warn = warn;
 	}
 	assert.deepEqual(record.registrations, []);
-	assert.deepEqual(record.injects.sort(), ["main", "sidebar.panellist"], "两个槽位都该试过");
+	// 第二个面板（小队 REQ-009）也会 inject 同样的两个槽位名，所以去重看：
+	// 这条要的是「两个槽位都试过了」，不是「一共 inject 了几次」。
+	assert.deepEqual([...new Set(record.injects)].sort(), ["main", "sidebar.panellist"], "两个槽位都该试过");
 });
 
 check("客户端模块：宿主侧读得到它（exports[\"./client\"] + dsh.client 清单）", () => {

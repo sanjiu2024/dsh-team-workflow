@@ -86,12 +86,16 @@ function makeCtx(baseUrl) {
 			disposers.push(run);
 			return run;
 		},
-		// 可选依赖：真 cordis 里 `ctx.inject([服务], cb)` 等该服务就结后再跑。
-		// 这里模拟成“服务存在就立刻跑”，这样能真的测到 provider 注册。
-		// 设 _noWeb 就不跑，用来验证没 web 服务时不会把整包带崩。
+		// 可选依赖：真 cordis 里 `ctx.inject([服务], cb)` 等**该服务就绪**才跑。
+		// 这里照做：依赖里出现假 ctx 没有的服务，就不跑。
+		// （原先只特判了 "web"，于是任何新模块的 `ctx.inject([...], cb)` 都会被
+		//   无条件回调，拿到一个「声称有、实际没有」的 scope —— REQ-009 的 squad
+		//   注入 webServer 挂路由时就是这么炸的。替身撒谎比被测代码出错更难查。）
 		inject(deps, callback) {
-			const scoped = { ...this, web: this._web, logger: this.logger };
-			if (this._web || !deps.includes("web")) callback(scoped);
+			const missing = deps.filter((name) => name !== "web" && this[name] === undefined);
+			if (missing.length > 0) return () => {};
+			if (deps.includes("web") && !this._web) return () => {};
+			callback({ ...this, web: this._web, logger: this.logger });
 			return () => {};
 		},
 		// 探针：这些服务"存在"
