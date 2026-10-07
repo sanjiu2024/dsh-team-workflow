@@ -20,7 +20,7 @@
   "main": "./lib/index.js",
   "exports": {
     ".": "./lib/index.js",
-    "./client": "./lib/scheduler-client.js",
+    "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
   "bin": {

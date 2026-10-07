@@ -586,7 +586,7 @@ MIT。
   MIT License, Copyright (c) 2026 DietrichGebert，许可证原文见 `skills/ponytail/LICENSE`。
 - pi-lens 集成调用的是 [pi-lens](https://www.npmjs.com/package/pi-lens) 4.2.1 的
   `dist/mcp/analyze-cli.js`，未修改其代码。
-- **定时任务调度器**（`lib/scheduler.js`、`lib/scheduler-client.js`）移植自
+- **定时任务调度器**（`lib/scheduler.js`、`lib/client.js`）移植自
   [dsh-tauri/deepseek-harness-desktop](https://github.com/dsh-tauri/deepseek-harness-desktop)
   的 `packages/dsh-tauri-scheduler`，而那个包又改编自
   [MichengAI/dsh-automation](https://github.com/MichengAI/dsh-automation)（**Apache-2.0**）。

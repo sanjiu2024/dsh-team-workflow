@@ -2053,7 +2053,12 @@ check("工具：render 对成功/失败都给得出文案", () => {
  *         成功时挂的槽位与 id/key 是否自洽、槽位抛错时会不会连累别人。
  * 不能验的：浏览器里长什么样（那要重启 dsh 目视，记在 REQ-007 §8）。
  */
-const clientSource = fs.readFileSync(new URL("lib/scheduler-client.js", ROOT), "utf8");
+// 客户端入口路径**从 package.json 读**，不写死：本包只有一个客户端入口
+// （dsh 的 `clientExportOf` 只认 exports["./client"] 一个值），所以小队面板
+// （REQ-009）加进来时 lib/scheduler-client.js 改名成了 lib/client.js ——
+// 写死路径的自检当场红，而它本来该验的是「契约对不对」，不是「文件叫什么」。
+const clientExport = JSON.parse(fs.readFileSync(new URL("package.json", ROOT), "utf8")).exports["./client"];
+const clientSource = fs.readFileSync(new URL(clientExport, ROOT), "utf8");
 const REACT_STUB = {
 	createElement: () => null,
 	useState: () => [undefined, () => {}],
@@ -2194,9 +2199,9 @@ await checkAsync("客户端模块：槽位未声明（register 抛）→ 不连�
 
 check("客户端模块：宿主侧读得到它（exports[\"./client\"] + dsh.client 清单）", () => {
 	const pkg = JSON.parse(fs.readFileSync(new URL("package.json", ROOT), "utf8"));
-	assert.equal(pkg.exports["./client"], "./lib/scheduler-client.js");
+	assert.equal(pkg.exports["./client"], clientExport);
 	assert.equal(typeof pkg.exports["./client"], "string", "只接受字符串或带 default 的对象");
-	assert.ok(fs.existsSync(new URL("lib/scheduler-client.js", ROOT)), "导出的文件必须真的存在");
+	assert.ok(fs.existsSync(new URL(pkg.exports["./client"], ROOT)), "导出的文件必须真的存在");
 	assert.equal(pkg.dsh?.client?.platform, "web", "platform 只接受 web");
 	assert.ok(!("entry" in (pkg.dsh?.client ?? {})), "dsh.client 没有 entry 字段，别自己发明");
 });

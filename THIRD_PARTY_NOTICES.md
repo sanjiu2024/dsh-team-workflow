@@ -7,7 +7,7 @@
 
 ---
 
-## 定时任务调度器（`lib/scheduler.js`、`lib/scheduler-client.js`）
+## 定时任务调度器（`lib/scheduler.js`、`lib/client.js`）
 
 ### 直接来源：`dsh-tauri-scheduler`
 
@@ -67,7 +67,7 @@ Copyright 2026 MichengAI contributors
 
 本仓库做的是**重写级移植**，不是逐行翻译。承接自上述来源的文件：
 
-`lib/scheduler.js`、`lib/scheduler-client.js`、`scripts/selftest-scheduler.mjs`、
+`lib/scheduler.js`、`lib/client.js`、`scripts/selftest-scheduler.mjs`、
 `team/extensions/scheduler.json`、`docs/requirements/REQ-007-定时任务调度器.md`
 
 主要修改（完整设计见 REQ-007）：
