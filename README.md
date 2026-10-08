@@ -146,17 +146,22 @@ dsh-team preset install [--default]   # 生成 + 挂载；--default 顺带设成
 
 | | 阈值 | 换算成 token | 干什么 |
 | --- | --- | --- | --- |
-| magic-context | 20%（主动线 18%） | 102K | 按 tag 细粒度删除旧内容、必要时生成分级折叠摘要 |
-| dsh 自带 | 25%（`compactThresholdRatio` 0.25） | 128K | 应急兜底：把一整段旧对话交给 LLM 摘要后整体替换 |
+| magic-context | 65%（主动线 63%） | 333K | 按 tag 细粒度删除旧内容、必要时生成分级折叠摘要 |
+| dsh 自带 | 70%（`compactThresholdRatio` 0.7） | 358K | 应急兜底：把一整段旧对话交给 LLM 摘要后整体替换 |
 
-**为什么必须拉开**（2026-09-29 实测）：mc 的默认执行阈值是 65%（主动线 63%），
-而 dsh 在 25% 就压 —— dsh 先把地板压回低位，mc 的 63% 结构性不可达。
-实测后果：mc **一次都没出手**（`shouldFire=true` 出现 0 次）、它排队的
-**26 个 drop 操作永远不执行**，而 dsh 一天压 **83 次**。
+**为什么必须拉开**（2026-09-29 实测）：dsh 若比 mc 先压，它会先把地板压回低位，
+mc 的阈值就结构性不可达。实测后果：mc **一次都没出手**（`shouldFire=true` 出现 0 次）、
+它排队的 **26 个 drop 操作永远不执行**，而 dsh 一天压 **83 次**。
 
-而且 dsh 压得并不便宜：压缩后地板只从 128K 掉到 **~70K** —— 系统提示 + 工具声明 + 摘要本身
-就有 ~70K 不可压缩底座，每个周期只有 ~58K 可用空间，约 5–10 轮就又撞线，
-所以“发一条指令就触发一次压缩”是必然的，不是概率。
+当时的对策是「把 mc 压到 20%、dsh 保持 25%」（102K / 128K）。**2026-10-08 用户要求
+「不要在 128K 就压」，改成 dsh 70% / mc 65%**（358K / 333K）—— 不变式照旧满足（mc < dsh，
+差 5 个点），而 mc 回到自己的默认值，那套 20% 的补偿（`history_budget_percentage` 0.45）
+也一并撤销回默认 0.15。**代价是已知的**：压得晚 = 地板平均爬得更高 = cacheRead 约翻倍，
+这正是当年没选这条路的原因（见 `docs/requirements/REQ-003-mc与dsh压缩阈值冲突.md` 的修订节）。
+
+上界有两个，改这个值时都不能越：自检断言阈值 ≤ 400,000（`scripts/selftest-preset-gen.mjs`，
+460,800 那次「阈值够不着、压缩永不触发」的回归）；以及 compaction-basic 的
+`pressureBudget = 窗口 − 输出预留 − headroomTokens`（tier-max 预留 64000 → 382,464）。
 
 ```bash
 dsh-team mc show            # 并排看两边阈值，并判不变式
@@ -164,15 +169,21 @@ dsh-team mc apply           # 写入（先校验不变式，不合法就拒绝�
 dsh-team mc apply --dry-run # 只看会改什么
 ```
 
+> **profile 别打错**：`dsh-team` 的默认 profile 是**写死的 `tauri`**（`bin/dsh-team.mjs:86`），
+> 而浏览器里跑的是别的 profile（本机是 `web`，看 `$DSH_PROFILE`）。打错目标时命令
+> **不会**报错，只会把预设和配置写到另一个 profile 里去 —— 所以装完之后一律显式写
+> `--profile "$DSH_PROFILE"`，生成完再回读一眼生成物里的值（`thresholdRatio` 那一行）。
+> （本文档别处的 `--profile tauri` 示例是桌面端场景，照抄到浏览器 profile 上就会打错。）
+
 `mc apply` 只动 `~/.config/cortexkit/magic-context.jsonc` 里的
-**两个受管键**（`execute_threshold_percentage` 与配套补偿的 `history_budget_percentage`），其余字节（你自己写的 historian 配置、注释）原样保留 ——
+**两个受管键**（`execute_threshold_percentage` 与 `history_budget_percentage` —— 后者现为 mc 默认
+0.15，写它只为覆盖用户配置里可能残留的旧补偿值 0.45），其余字节（你自己写的 historian 配置、注释）原样保留 ——
 因为 mc 的配置是深合并 + 逐键回落默认值，没写的键走 mc 自己的默认。
 **改完要重启 dsh**（这些键不在 mc 的实时重载名单里）。
 
-
-> 为什么要连 history 预算一起调：它按 `窗口 × (执行阈值/100) × history_budget_percentage` 算，
-> 阈值一降、绝对预算会跟着缩水（默认 0.15 时约 50K → 15K）。所以配套设 0.45，
-> 把绝对预算拉回同量级（约 46K）——降阈值是为了让 mc 先动手，不是砍它的历史预算。
+> 为什么要连 history 预算一起调：它按 `窗口 × (执行阈值/100) × history_budget_percentage` 算。
+> 2026-10-08 之前阈值被压到 20% 时，不补偿会让绝对预算从约 50K 缩到 15K，所以配套设 0.45；
+> 阈值抬回 65% 后补偿不再需要，模板显式写回默认 0.15（512000 × 0.65 × 0.15 = 49,920）。
 
 `scripts/selftest-mc-config.mjs` 把这条不变式锁进 `npm test`：
 改了任一边的值而两边不再拉开，自检直接红。详见

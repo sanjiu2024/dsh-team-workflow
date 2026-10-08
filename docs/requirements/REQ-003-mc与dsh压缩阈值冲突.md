@@ -25,7 +25,7 @@
 | --- | --- | --- |
 | 今日 dsh 压缩次数 | **83 次** | 全部在 24.4%–25.2% 触发 |
 | 压缩后地板 | **65–77K（13–15%）** | 不是 retainRatio 理论上的 25.6K |
-| 每周期可用空间 | **~58K** | 128K − 70K 底座 |
+| 每周期可用空间 | **~58K** | 128K − 70K 底座（**改前**的算例，即 0.25/128K 时代；§2 全节都是 2026-10-08 前的观测） |
 | mc `shouldFire=true` | **0 次**（两个日志全时段） | 历史最高 usage 仅 25.4% |
 | mc 排队未执行的 `drop` | **26 个** | `pending_ops` 表 |
 | mc 产出过的 compartment | **2 个** | 机制能跑通，只是几乎不被触发 |
@@ -46,7 +46,7 @@
 - [ ] `npm test` 全绿，`selftest.mjs` 新增**不变式断言**：mc 阈值 < dsh 阈值（单位统一换算后比较），反向验证（把 mc 调到高于 dsh）→ 红。
 - [ ] 新增 CLI 子命令（`dsh-team mc show` / `dsh-team mc apply`）真跑：`mc apply` 后 `~/.config/cortexkit/magic-context.jsonc` 里出现 `execute_threshold_percentage`，且**原有键（historian.pi.model 等用户配置）不被覆盖**。
 - [ ] 合并语义有测试：给一个含用户自定义键的 jsonc，apply 后用户键仍在（反向验证：把合并写坏 → 红）。
-- [ ] 落地后实测：mc 的 `pending_ops` 从 26 开始下降、`shouldFire=true` 首次出现、地板稳定在低位（用 `~/.dsh/storages/audit-log` 与 `magic-context.log` 取数，写入 §8）。
+- [ ] 落地后实测：mc 的 `pending_ops` 从 26 开始下降、`shouldFire=true` 首次出现、**地板爬到多高才出现第一次压缩**（2026-10-08 起口径反转：改前是 ~14% 爬到 25% 就压，现在是爬到 65% 附近才有动作）（用 `~/.dsh/storages/audit-log` 与 `magic-context.log` 取数，写入 §8）。
 - [ ] `package.json` 版本 = `CHANGELOG.md` 首节；README 增「与 magic-context 的阈值关系」说明。
 
 ## 5. 已知约束（侦察出来的硬事实）
@@ -58,8 +58,8 @@
 | 该文件现只有 `historian.pi.model`（用户配置），无阈值键 | 实测读取 | 必须**深合并**，否则丢掉用户配置 |
 | mc 的 `pending_ops` 里 26 个 `drop` 从未 drain | `context.db` 的 `pending_ops` 表 | 阈值生效后应由 mc 自己排空 |
 | mc 用 512K 做分母（自己的测量与 audit 地板一致） | mc 日志 `usage=16.3% (83325 tokens)` → 83325/512000 | 两个阈值可直接按百分比比较 |
-| dsh 压缩阈值 = 128,000（0.25 × 512000） | `team/agent-settings.json` + `lib/preset-gen.js`；`~/.dsh/.agent-presets/team/agent.cordis.yml` | mc 阈值须低于 25% |
-| 压缩后地板有 ~70K 不可压缩底座 | 实测：压缩后 65–77K（retainRatio 只保留 25.6K） | 抬高 dsh 阈值会更贵，故不选 |
+| dsh 压缩阈值 = **358,400**（0.70 × 512000；2026-10-08 前是 128,000 = 0.25 × 512000） | `team/agent-settings.json` + `lib/preset-gen.js`；rc.x 预设 `~/.dsh/team-workflow/preset-team/cordis.patch.yml` | mc 阈值须低于 **70%** |
+| 压缩后地板有 ~70K 不可压缩底座 | 实测：压缩后 65–77K（retainRatio 只保留 25.6K） | 抬高 dsh 阈值会更贵 —— **2026-10-08 仍改选了它**，代价已知并接受（§6 末） |
 | mc `compartments` 已有 2 行 | `context.db` | mc 摘要链路能跑通 |
 | mc 合并是**深合并 + 逐键回落默认值**（不是整文件替换） | bundle `mergeRawConfigs` `index-5tw61yhp.js:23001-23016`、zod `safeParse` `:23027` | 只写受管键不会丢用户设置 |
 | mc 配置用 `jsonc-parser` 解析（支持尾逗号与注释） | bundle `:21354-21366` `{ allowTrailingComma: true, disallowComments: false }` | 就地文本改写必须保注释 |
@@ -81,6 +81,10 @@
 | 阈值设低了会怎样？ | 低于 20% 被 schema 剪掉并回退默认 65%（fail-safe，不会静默变危险） | bundle `7863` min 20；`23100` 剪枝逻辑 |
 
 ### 落地
+
+> **本节（§6）以下内容是 2026-09-29 的原方案（mc 20% / dsh 25%），已于 2026-10-08 被取代 ——
+> 现行为 dsh 70%（358,400）/ mc 65%，见本节末「2026-10-08 修订」。留在这里是为了
+> 记住当初为什么这么选、以及当时就知道的取舍。**
 
 **mc 侧降到 20%**（主动线 18% = 92K），**dsh 保持 25%**（128K）作应急兜底。两个阈值之间留 5 个百分点（≈25K token）。
 
@@ -107,7 +111,7 @@
 
 | 文件 | 作用 |
 | --- | --- |
-| `team/mc-config.template.jsonc`（新） | 团队阈值模板（含为什么是 20% 的解释注释），`mc apply` 的来源 |
+| `team/mc-config.template.jsonc`（新） | 团队阈值模板（**现为 65% / history 0.15**；注释写的是「为什么这么选」，含 2026-10-08 撤销 20% 那套的理由），`mc apply` 的来源 |
 | `lib/mc-config.js`（新） | 纯函数：JSONC 注释安全的顶层键定位与**就地**改写、阈值读取、不变式校验 |
 | `bin/dsh-team.mjs` | 新增 `mc show`（并排显示两边阈值 + 判不变式）、`mc apply [--dry-run]`（就地写、写前校验、绝不整体覆盖用户配置） |
 | `scripts/selftest-mc-config.mjs`（新） | 35 条断言：JSONC 扫描器（**防嵌套同名键**、防字符串/注释误判、转义引号、尾逗号、幂等）+ 阈值不变式 + **仓库自身两值自洽** |
@@ -121,18 +125,66 @@
 
 用户已选此路。另一条（让 mc 在 63% 自然出手、dsh 抬到 72% 兜底）也自洽、且更贴合 mc 原设计（65% 是它的缓存安全线），但代价是地板平均要爬到 ~35%（≈180K）才有动作，cacheRead 约翻倍（当前 ~20% ≈ 100K）。REQ-001 以来的省 token 方向是压低地板，所以选 mc 提前动手。
 
+### 2026-10-08 修订：用户改用「另一条路」（dsh 70% / mc 65%）
+
+上线后用户在真机上提出：**「不要把上下文长度限制到 128k 就会压缩，这样不行」** —— 即明确选择
+上面「不选的那条路」。已按此改：
+
+| | 改前（REQ-003 原方案） | 改后 |
+| --- | --- | --- |
+| dsh `compactThresholdRatio` | 0.25（128K） | **0.7（358,400）** |
+| mc `execute_threshold_percentage` | 20（主动线 18%，102K） | **65（主动线 63%，332,800）** |
+| mc `history_budget_percentage` | 0.45（20% 的配套补偿） | **0.15（默认，补偿撤销）** |
+
+不变式仍满足：mc 65% < dsh 70%，差 5 个百分点（≈26K token）。
+
+**为什么是 70% 而不是更高**：两个上界 —— ① `scripts/selftest-preset-gen.mjs:318-323` 断言
+阈值 ≤ 400,000（460,800 那次「阈值够不着、压缩永不触发」的回归）；② compaction-basic 的
+`pressureBudget = 窗口 − 输出预留 − headroomTokens(65536)`（`dsh-compaction-basic/lib/index.js:130-132`），
+`tier-max` 预留 64000 → 382,464。0.70 在两者之内，且三个档位算出的触发点一致。
+
+**为什么不是本节标题里的 72%**：72% = 368,640，也在上面两条上界之内，所以不是「越不过去」。
+取 70% 是为了让余量口径和原方案一致（mc 执行阈值 65% + 5 = dsh 70%），好记也好验；
+72% 会把余量拉到 9 点（mc 主动线 63% 到 dsh 70% 已经隔了 7 点），没有额外好处。
+
+**已知并接受的代价**：§6 末段当年否决这条路的理由就是成本 ——「地板平均要爬到 ~35%（≈180K）
+才有动作，cacheRead 约翻倍」。现在阈值更高（mc 333K / dsh 358K），地板会爬得更高。
+这是用户的明确选择，记录在此以免日后被当成 bug 回滚。
+
+**配套撤销**：20% 时代的 `history_budget_percentage: 0.45` 失去意义（它存在的唯一目的是在
+阈值被压到 20% 时把绝对预算拉回同量级）；模板改为**显式**写回默认 0.15 —— 必须显式写，因为
+`mc apply` 只写模板里有的键，不写就会把上次 apply 的 0.45 留在用户配置里（预算变成 149,760）。
+
+**生效条件**：dsh 阈值在预设里（`dsh-team preset install` 重新生成后**重启 dsh** 才生效）；
+mc 阈值不在 mc 的实时重载名单里，同样要重启。§8 的首日观测口径随之改变：现在要观察的是
+「地板能爬到多高才出现第一次压缩」以及 cacheRead 是否如预期上升。
+
 ## 7. 天花板（做完之后仍不支持的）
 
 - **只调阈值，不改 mc 的算法**：mc 的 drop 策略、compartment 分级、protected_tokens 派生逻辑都保持原样。
-- **不保证 mc 一定压得住地板**：mc 的删除是「按 tag 删旧内容」，遇到「整段都是必须保留的近期工作」时它也会保留。压不住时 **dsh 的 25% 仍然兜底** —— 最坏情况就是回到改前的行为，不会更糟。
+- **不保证 mc 一定压得住地板**：mc 的删除是「按 tag 删旧内容」，遇到「整段都是必须保留的近期工作」时它也会保留。压不住时 **dsh 的 70%（358,400）仍然兜底** —— 最坏情况是 dsh 自己动手做整体摘要，不会更糟（但地板要先爬到 358K 才发生，这正是 §6 末记的代价）。
 - **不做历史积压的定向清理**：那 26 个 `drop` 由 mc 自己 drain，我们不直接写它的 sqlite。
 - **不自动 apply**：`mc apply` 要人手跑一次（它会改 `~/.config/` 下的用户文件，属于该让用户知情的操作）；插件加载时**不会**偷偷改。
 - **改完要重启 dsh** 才生效（`execute_threshold_percentage` 不在 mc 的实时重载名单里）。
-- **`history_budget_percentage: 0.45` 是推导值、未实测**：它的作用是让绝对预算与改前同量级（92%），但 0.45 这个具体取值没有实测依据（mc 从未跑过）。首日观测里要留意 mc 注入的历史是多是少。
-- **低阈值下的紧急 drain 闩锁行为未验证**：mc 的 `emergencyDrainExitThreshold = max(0, 阈值−10)`，20% 时是 10%（改前是 55%）。闩锁（`emergency_drain_active`）在低阈值下是否更久不释放，未实测 —— 若发现压缩后长时间不再动作，这是第一个要查的点。
+- **已作废（2026-10-08）**：~~`history_budget_percentage: 0.45` 是推导值、未实测~~ —— 0.45 是 20% 时代的配套补偿，阈值回到 65% 后已撤销回默认 0.15（§6 末）。该键现在就是 mc 的默认值，不再有「推导值未实测」的问题。
+- **已作废（2026-10-08）**：~~低阈值下的紧急 drain 闩锁行为未验证~~ —— 那是 20% 阈值下的问题。现阈值为 65%，`emergencyDrainExitThreshold = max(0, 阈值−10)` = **55%**，与改前一致，无需再验。
 - 本环境 mc 从未真正出手过（`compartments` 仅 2 行、`shouldFire=true` 0 次），**阈值生效后的实际压缩效果属首次验证** —— §8 记录首日观测值。
 
 ## 8. 验收记录
+
+**2026-10-08 修订（全部真实运行）：**
+
+- [x] 两处自检全绿
+      → `node scripts/selftest-mc-config.mjs` → `✓ 自检通过：JSONC 就地改写（保注释/防嵌套/防尾逗号）/ 阈值不变式 / 仓库配置自洽`，EXIT=0
+      → `node scripts/selftest-preset-gen.mjs` → `仅通过纯函数那几节（阈值/键名 + rc.x 生成器）✓`，EXIT=0
+- [x] 全量测试全绿：`npm test` → 20 个套件全部通过，EXIT=0
+- [x] 预设真的重新生成、新值真的写进去了（不是从配置推断的）
+      → `dsh-team preset install --profile web` → `✓ 团队预设已就位：/home/sanjiu/.dsh/team-workflow/preset-team → profile "web"／已应用 5 处团队设置`
+      → 回读生成物 `~/.dsh/team-workflow/preset-team/cordis.patch.yml:81-82`：`thresholdRatio: 0.7`、`retainRatio: 0.05`，同块 `auto: true`
+- [x] mc 的用户配置真的改了
+      → `dsh-team mc apply` → `execute_threshold_percentage：20 → 65`、`history_budget_percentage：0.45 → 0.15`（原件备份到 `magic-context.jsonc.bak`）
+      → `dsh-team mc show` → `mc 65% < dsh 70%，余量 5 个百分点`、`history block 预算：0.15 → 约 49920 tokens`
+- [x] 第 1 层审查 3 轮：首轮报 6 条（P1 两条 —— §5 表仍写 25%/128,000、§7 仍写「dsh 的 25% 兜底」；P2 四条 —— §5「故不选」、§7 两处 0.45/20% 的作废项、§8 判据写反、§8 缺本次记录）；第 2 轮复核再报 7 条（1 必须修 —— §4 验收标准里还有**第二份**写反的判据；6 条 P2 是措辞与指路牌）；第 3 轮闭环。全部已改。
 
 **2026-09-29 实测（全部真实运行）：**
 
@@ -197,4 +249,5 @@
 - [ ] 重启 dsh 后，mc 日志出现 `shouldFire=true`（阈值生效的第一个证据）
 - [ ] `pending_ops` 从 26 开始下降（mc 真在 drain 积压的 drop）
 - [ ] 当日 dsh 压缩次数显著低于改前的 83 次
-- [ ] 地板稳定在低位（改前每周期从 ~14% 爬到 25%）
+- [ ] 地板**爬到多高**才出现第一次压缩（改前是 ~14% 爬到 25% 就压；现在预期到 333K/65% 附近才有动作）
+- [ ] cacheRead 是否如预期上升 —— 这是这条路的**代价**（§6 末），要看到它才能确认代价的量级
