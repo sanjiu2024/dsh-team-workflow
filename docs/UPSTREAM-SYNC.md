@@ -73,6 +73,11 @@
 | `team/agent-settings.json` / `templates/project-settings.json`：`reserveTokens` 32768 → 65536 | ❌ 不搬 | 依据是 pi 的 `shouldCompact`（触发点 = 窗口 − reserve，须容下 tier-max 64k 输出）。本地压缩已 dsh 化：12800/25600 → 0.9 兜底阈值（由 `lib/preset-gen.js` 消费，historian 在 65% 主力折叠），照搬反而破坏本地设计 |
 | `extensions/team-baseline.ts`：存量迁移（窗口/reserve）+ healthCheck 跨文件对账 | ❌ 不搬 | pi 扩展代码（改成员 `~/.pi` 文件）；dsh 侧模板不落盘到成员机器，「团队改模板推不到老成员」这个问题不存在 |
 | 附带实测结论：`disableThinking` 不是速效药；reviewer 换 `tier-std` A/B 三轮结论「不换」（异模型审查价值高于速度） | ✅ 无需改码 | 反向确认了本地选档表（审查型 = `tier-power`）；结论记此备查 |
+
+【2026-10-08 后续】上面「review 只跑一次」不搬的理由引的是**当时**的三层审查（「修完重跑该层」）。
+审查策略当天改版成两层：**std 测**（带工具）仍**每完成一块**跑，**power 判**（无工具、材料靠主
+agent 贴）只在**重大变化 / 写完一个大部分**时派。增量低门槛审查这条设计没变，所以不搬的结论
+**仍然成立**，只是理由要按新节名读：「## 审查（两层：std 测，power 判）」。
 | `package.json` / `ONBOARDING.md` / `README.md` / `CHANGELOG.md` | ❌ 不适用 | 上游发版说明 |
 | `.gitignore`：本地交接文档不进公开仓库 | ❌ 不适用 | 本地相反：HANDOFF 文档是仓库的一部分且被 `UPSTREAM-SYNC.md` 引用 |
 
@@ -100,5 +105,9 @@
 | `team/RULES.md`：「review 只跑一次」扩成「只跑一次，且只在收尾时跑」（多步任务不每步 review，中途自查） | ❌ 不搬 | 与本地三层审查「**每完成一部分** → 跑第 1 层」（`team/RULES.md:307`）的有意设计**同一方向**的冲突 —— 本地分层的意义就是增量低门槛审查，v1.13.5 那轮已对「review 只跑一次」做过同样的不搬判定；是否改审查策略属团队决策，不由同步任务代做 |
 | `scripts/test-extension.mjs`：+6 行断言护住上面的新措辞 | ❌ 不适用 | 护的是 pi 注入段里不搬的纪律，纪律不搬断言随之不搬 |
 | `CHANGELOG.md` / `ONBOARDING.md` / `README.md` / `package.json`（→ 1.14.1） | ❌ 不适用 | 上游发版说明与安装文档 |
+
+【2026-10-08 后续】同上一节：新策略把**贵的那一边**（power 判）挪到了「重大变化 / 写完一个
+大部分」，方向与上游「只在收尾时跑」接近了一半 —— 但 std 测仍每块跑，所以「多步任务不每步
+review」这条**仍不搬**。下次同步遇到这条时以 `team/RULES.md` 的现行节为准，别照这段旧理由复述。
 
 结论：**无可搬条目**，只更新基线（本仓库无能力变更，版本号与 CHANGELOG 不动）。

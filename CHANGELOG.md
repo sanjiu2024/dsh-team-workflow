@@ -8,6 +8,34 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [1.17.0]
+
+**审查改成两层：std 测，power 判 —— 审查档一个工具都没有**（REQ-012）。
+
+原来的「三层审查」是同一个模型换三个视角，但两层 power 都能自己读文件、自己跑命令 ——
+它们会顺着仓库扫到超时（上游 42 次实测，最慢一次 108 轮、80 次 `grep` + 72 次 `read`，
+跑满 30 分钟被砍掉）。现在改成按**产物**分工：
+
+- **测**（`subagent_std`，带工具）：跑测试、跑反向实验（拆掉一条修复必须变红）、逐条核实、
+  grep 全部调用方。**每完成一块就跑。** 碰信任边界的改动一律派它 —— 一行也能出事故。
+- **判**（`subagent_power`，**无工具**）：只凭你贴进 prompt 的材料挑毛病。**只在重大变化
+  或写完一个大部分时派。** 它的产物是判断不是验证，每条发现得自己用工具核实。
+
+配置层强制「无工具」，不是提示词里说说：`team/agent-settings.json` 新增
+`subagents.toolLessTiers`，`preset install` 给列在里面的档位生成
+`toolFilter: { allow: [] }` —— dsh 会把过滤掉的工具**从子代理的提示里去掉、调用直接拒**
+（`dsh-subagent` 的 `ctx.tools.restrict`，能力由 `subagent-spawn-in-process` 提供）。
+所以 power 那份 prompt 必须**把 diff 贴进去**：它读不到文件。
+
+- `team/RULES.md` 的「## 审查（三层）」整节重写为「## 审查（两层：std 测，power 判）」：
+  分工表、两边各自怎么派（两份派单模板）、什么时候派、修复与轮次、略过、成本提醒；
+  选档表与角色声明表同步（审查型 = 无工具、测试型 = 带工具）。
+- `lib/preset-gen.js` 按 `toolLessTiers` 生成 `toolFilter`；
+  `scripts/selftest-preset-gen.mjs` 断言 power 那条行有 `toolFilter: allow: []`、
+  std/max 没有（拿真 `standard.patch.yml` 也验一遍）。
+- `README.md` 的审查那两处跟着改；`docs/UPSTREAM-SYNC.md` 里两处「不搬上游『review 只跑一次』」
+  的理由引的是已废的三层策略，各加一段【2026-10-08 后续】说明结论不变、理由按新节名读。
+
 ## [1.16.0]
 
 **小队成员不再走 subagent：小队自己驱动它的循环**（REQ-011）。

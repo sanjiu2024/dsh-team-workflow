@@ -43,6 +43,9 @@ function findStandardPreset() {
 		"C:/Users/Administrator/AppData/Roaming/dsh-tauri/dependencies/dsh/node_modules/@deepseek-ai",
 		path.join(os.homedir(), ".dsh", "profiles", "tauri", "node_modules", "@deepseek-ai"),
 	].filter(Boolean);
+	// 只找**老布局**（`agent.cordis.yml`）：第 3 节用的是 pi 时代的 `generateTeamPreset`，
+	// 把 rc.2 的 `standard.patch.yml` 喂给它只会报「结构变了」。rc.2 那条路走第 2 节
+	// 的 `generateRc2TeamPreset`（拿真底稿跑，含撤销自检）。
 	for (const root of roots) {
 		const file = path.join(root, "dsh-agent-presets", "presets", "standard", "agent.cordis.yml");
 		if (fs.existsSync(file)) return file;
@@ -195,6 +198,24 @@ function findStandardPreset() {
 	assert.match(g.text, /当前模式：团队模式。/, "persona 少了模式标识");
 	assert.match(g.text, /thresholdRatio: 0\.25/, "阈值没写进去");
 	assert.match(g.text, /retainRatio: 0\.05/, "保留比例没写进去");
+	// 档位工具行 + 审查档剥掉工具：三档都挂上，只有 toolLessTiers 里的那条带 toolFilter
+	const withToolLess = generateRc2TeamPreset(RC2_FIXTURE, {
+		settings: {
+			...rc2Settings,
+			subagents: {
+				provider: "new-api",
+				tierTools: { std: "tier-std", power: "tier-power", max: "tier-max" },
+				toolLessTiers: ["power"],
+			},
+		},
+		overlay: {},
+	});
+	const rows = withToolLess.text.split("              - id: tool-subagent-");
+	const rowOf = (tier) => rows.find((row) => row.startsWith(`${tier}\n`)) ?? "";
+	assert.match(rowOf("power"), /toolFilter:\n\s+allow: \[\]/, "power 档没被剥掉工具");
+	assert.doesNotMatch(rowOf("std"), /toolFilter/, "std 要带工具（跑测试是它的活）");
+	assert.doesNotMatch(rowOf("max"), /toolFilter/, "max 要带工具（质疑方案得能自己看）");
+	assert.equal(withToolLess.changed, 5, "三档工具行 + 阈值那几处");
 
 	// 生效值必须能回读（/thrift show 靠它）：5 个键一个都不能少
 	assert.deepEqual(
@@ -269,13 +290,23 @@ function findStandardPreset() {
 		? path.join(process.env.DSH_MODULES, "dsh-web-app", "presets", "standard.patch.yml")
 		: undefined;
 	if (realPatch && fs.existsSync(realPatch)) {
+		// 这一节拿**真的** team/agent-settings.json 跑（不是夹具）：这样「把
+		// toolLessTiers 删掉」会让下面那条断言变红 —— 测的是真配置，不是测我自己抄的副本。
 		const real = generateRc2TeamPreset(fs.readFileSync(realPatch, "utf8"), {
-			settings: rc2Settings,
+			settings: JSON.parse(fs.readFileSync(path.join(ROOT, "team", "agent-settings.json"), "utf8")),
 			overlay: {},
 		});
 		assert.match(real.text, /^    - id: preset-team$/m, "对出厂原文件生成失败");
 		assert.equal(typeof readEffectiveThrift(real.text), "object", "对出厂原文件生成后回读不出生效值");
-		console.log("✓ rc.x 生成器对出厂原文件也成立");
+		// 审查档（power）必须**一个工具都没有**：团队规范里审查只凭材料判断、不许自己探索。
+		// 这是配置层的落地，不是提示词里说说 —— dsh 会把过滤掉的工具从子代理的提示里去掉、
+		// 调用直接拒（ctx.tools.restrict）。
+		const rows = real.text.split("              - id: tool-subagent-");
+		const rowOf = (tier) => rows.find((row) => row.startsWith(`${tier}\n`)) ?? "";
+		assert.match(rowOf("power"), /toolFilter:\n\s+allow: \[\]/, "power 档没被剥掉工具");
+		assert.doesNotMatch(rowOf("std"), /toolFilter/, "std 要带工具（跑测试是它的活）");
+		assert.doesNotMatch(rowOf("max"), /toolFilter/, "max 要带工具（质疑方案得能自己看）");
+		console.log("✓ rc.x 生成器对出厂原文件也成立（含：审查档无工具）");
 	} else {
 		console.log("… 跳过「对出厂原文件」那一步：把 DSH_MODULES 指到 .../node_modules/@deepseek-ai 可开启");
 	}

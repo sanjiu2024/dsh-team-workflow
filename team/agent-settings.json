@@ -2,7 +2,7 @@
   "_说明": "团队共享的 pi 全局设置补丁（落到 ~/.pi/agent/settings.json）。扩展只补缺：成员已经自己设过的键一律不动，也不删任何东西。以 _ 开头的键只是给人看的，不会写进设置。放这里的应该是「全员必须一致」的设置项 —— subagents 里的模型名指向团队网关的档位别名（tier-*），不是真实模型名：网关那边换后端模型时，这里和成员机器都不用改。成员如果不用这个网关，把对应项删掉再发版。",
   "_defaultModel 为什么要写": "defaultModel 必须是**裸模型 id**（配 defaultProvider 消歧）。写成 `new-api/tier-std` 这种 provider/id 形式时 dsh 解析不到，会**静默回退到模型列表的第一个**——曾因此让默认档落到每账户每天只有 100 次请求的免费档上（2026-09-23）。这里给新成员补一份正确的默认值；已有成员写错的那种形式由扩展的一次性迁移改回来。注意 provider id 是 `new-api`（带连字符），不是上游 pi 那套的 `newapi`。",
   "_compaction 为什么要动": "dsh 自带的压缩留作保险，不删。enabled: true 必须显式写 —— dsh-web-app 在 host 层把 compaction-basic / command-compact / tool-result-pruner 三行都 disabled 了，预设里不显式开就等于完全没有压缩。\n\n【2026-10-05 更正：这三个键不是 dsh 的配置键】contextWindow / reserveTokens / keepRecentTokens 只是本包 preset-gen 用来**推算** thresholdRatio / retainRatio 的材料；dsh 0.2.0-rc.x 里上下文窗口由模型配置 owned，压缩侧对应的是 headroomTokens（默认 65536）。原来那段「缺 contextWindow 会退回 128000、把 ratio 算成 0.9 → 阈值 460,800 → 一次都不触发」是 pi 时代的语义，在 rc.x 已不成立 —— 留作背景，别照它去改 dsh 的配置。真正写进预设、被 dsh 读的只有 thresholdRatio / retainRatio / auto（映射见 lib/preset-gen.js，断言见 scripts/selftest-preset-gen.mjs）；往预设里手写别的键 rc.x 会直接抛错、整个 dsh 起不来。\n\ncompactThresholdRatio 的历史与现状：**2026-10-08 之前是 0.25**（128K）—— 当时按真实 floor 序列模拟，0.25 约省 35%、0.3 约省 32%，目的是压低地板省 cacheRead。**2026-10-08 用户要求「不要在 128K 就压」，改成 0.70**（512000 × 0.70 = 358,400）。上界有两个，都不能越：① scripts/selftest-preset-gen.mjs 断言阈值 ≤ 400,000（460,800 那次「阈值够不着、压缩永不触发」的回归）；② compaction-basic 的 pressureBudget = 窗口 − 输出预留 − headroomTokens（默认 65536），tier-max 预留 64000 → 382,464。0.70 在两者之内，三个档位算出的触发点一致。\n代价（**已知并接受**）：REQ-003 §6 当年否决这条路的理由就是它 —— 地板平均要爬到更高才有动作，cacheRead 约翻倍。压得晚 = 每一步重发的上下文更大。\n\n**这个值必须大于 magic-context 的 execute_threshold_percentage（现为 65%），且是它的兜底。** 2026-09-29 实测过反向的坑：mc 默认 65%（主动线 63%）时若 dsh 在 25% 就压，dsh 会先把地板压回低位 → mc 的 63% 结构性不可达 → mc 一次都没出手（shouldFire=true 出现 0 次）、26 个 drop 永远不执行。当时的对策是把 mc 压到 20%、dsh 保持 25%；**2026-10-08 起改为 dsh 70% / mc 65%（mc 回到默认），那套 20% 的补偿（history_budget_percentage 0.45）一并撤销回默认 0.15。** 两者差 5 个百分点（≈26K token）留作余量，避免同时动手白烧一次压缩调用。\n改这个值时，同时改 team/mc-config.template.jsonc —— scripts/selftest-mc-config.mjs 会断言 「mc 阈值 < dsh 阈值 且余量 ≥2 个百分点」，对不上直接红。详见 docs/requirements/REQ-003-mc与dsh压缩阈值冲突.md（含 2026-10-08 修订节）。",
-  "_subagents 为什么要改": "dsh 的子代理没有「角色」概念（角色是 prompt 第一行声明的），rc.2 也不读 pi 那套 agentOverrides —— 2026-10-05 实测全树零命中，那份配置在 dsh 下是死的，档位映射等于没生效。所以改成钉在工具行上：preset install 按 tierTools 给每一档挂一条独立的 subagent 工具行（agentOptions 里写死 provider+model），调用哪个工具就等于选了哪一档。tierTools 的键就是工具名后缀（std → subagent_std）。disableThinking 是 pi 侧的键，留着不影响 dsh。",
+  "_subagents 为什么要改": "dsh 的子代理没有「角色」概念（角色是 prompt 第一行声明的），rc.2 也不读 pi 那套 agentOverrides —— 2026-10-05 实测全树零命中，那份配置在 dsh 下是死的，档位映射等于没生效。所以改成钉在工具行上：preset install 按 tierTools 给每一档挂一条独立的 subagent 工具行（agentOptions 里写死 provider+model），调用哪个工具就等于选了哪一档。tierTools 的键就是工具名后缀（std → subagent_std）。disableThinking 是 pi 侧的键，留着不影响 dsh。\\n\\n【2026-10-08 追加：审查档不给工具】toolLessTiers 里的档位（现在是 power）会生成 `toolFilter: { allow: [] }` —— 那个档位的子代理**一个工具都没有**：过滤掉的工具从它的提示里消失、调用直接被拒（dsh-subagent 的 ctx.tools.restrict，能力由 spawn-in-process 提供）。这是团队规范「审查只凭材料判断、不许自己探索」在配置层的落地：无边界探索会把审查跑成上百轮（上游 42 次实测最慢 108 轮、80 次 grep + 72 次 read，跑满 30 分钟被超时砍掉）。跑测试/验证的活给 std（它带工具），power 只出判断。",
   "defaultProvider": "new-api",
   "defaultModel": "tier-std",
   "compaction": {
@@ -19,6 +19,9 @@
       "std": "tier-std",
       "power": "tier-power",
       "max": "tier-max"
-    }
+    },
+    "toolLessTiers": [
+      "power"
+    ]
   }
 }

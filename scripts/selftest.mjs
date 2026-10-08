@@ -632,7 +632,7 @@ assert.ok(bareCtx._sections.some((s) => s.name === "team:baseline"), "没 web �
 	assert.ok(typeof description === "string" && description.length > 0, "description 是必需的，缺了 dsh 会静默忽略");
 	assert.ok(description.length <= 500, "description 超过 500 字符会被目录截断");
 	// 内容不能被清空：四段关口必须在（这是「工作流」的实质）
-	for (const mark of ["## 1. 理清需求", "## 2. 写计划前", "## 3. 实现", "## 4. 三层审查", "## 5. 验收"]) {
+	for (const mark of ["## 1. 理清需求", "## 2. 写计划前", "## 3. 实现", "## 4. 审查（两层：std 测，power 判）", "## 5. 验收"]) {
 		assert.ok(raw.includes(mark), `workflow skill 丢了关口段：${mark}`);
 	}
 }
