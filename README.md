@@ -112,7 +112,7 @@ dsh-team preset install [--default]   # 生成 + 挂载；--default 顺带设成
 | 子代理 worktree | `tools.register`（4 个 `worktree_*` 工具） | 写代码的子代理各在独立 worktree 干活，写完合回主分支。dsh 原生没有工作区隔离，本工具包外补足。见 [docs/requirements/REQ-001-worktree隔离.md](docs/requirements/REQ-001-worktree隔离.md) |
 | 操控电脑 | `tools.register`（7 个工具）+ 常驻 PowerShell 守护进程 | 截屏看屏幕（图片直回模型）、鼠标点击/移动/滚动、打字/按键。操控期锁鼠标（WH_MOUSE_LL 钩子拦真实输入、放 AI 注入；Ctrl+Alt+L 紧急解锁）。**默认启用**（`enabled:false` 可关），审批为会话级（批准时弹窗会写明连带放行）；守护进程 spool 可被 bash 直写 = 与 bash 同属既有信任边界。见 [docs/requirements/REQ-002-computer操控电脑.md](docs/requirements/REQ-002-computer操控电脑.md) |
 | 定时任务 | `tools.register`（4 个 `scheduler_*`）+ HTTP 路由 + Web 面板 | 到点在**全新会话**里无人值守跑一段 prompt（8 种计划）。**默认关闭**，`dsh-team scheduler enable` 开。是本包唯一碰 dsh 内部 API 的模块，靠 `ctx.inject` 条件激活。见「## 定时任务调度器」 |
-| 小队 | `tools.register`（6 个 `squad_*`）+ HTTP 路由 + Web 面板 | 主 agent 建多个小队，小队 = 目标 + 成员名册 + 共享黑板；成员自己就能写黑板、改自己那一行。状态只在 dsh 进程内存里（不落盘、重启即失效）。见「## 小队（squad）」 |
+| 小队 | `tools.register`（6 个 `squad_*`）+ HTTP 路由 + Web 面板 | 主 agent 建多个小队，小队 = 目标 + 成员名册 + 共享黑板。成员是**小队自己驱动的循环**（不是子 agent，不出现在会话列表里），各自钉在一棵 worktree 里干活。状态只在 dsh 进程内存里（不落盘、重启即失效）。见「## 小队（squad）」 |
 | 三层审查 | `team/RULES.md`（注入系统提示） | 每完成一部分跑第 1 层（正确性，`tier-std`）；全部做完三层全跑（+ 整体性、安全/破坏性）。见 [team/RULES.md](team/RULES.md) 的「## 审查（三层）」 |
 | 技能 | `skills/*/SKILL.md` | 复用 dsh 原生 skill 系统，含 `/review`（用户可调用）、`/workflow`（需求→调研→实现→审查→提交的全流程） |
 
@@ -477,27 +477,51 @@ dsh 的客户端模块只做 `readFileSync` + 原样 HTTP，没有转译器，�
 
 ## 小队（squad）
 
-主 agent 能建**多个小队**，每个小队 = 一个目标 + 一份成员名册 + 一块共享黑板。成员仍然是
-普通的子 agent（还是 `subagent_std` / `subagent_power` / `subagent_max` 创建，小队不建会话、
-不选档位），小队负责把「谁在队里、在干什么、推到哪一步」记下来。
+主 agent 能建**多个小队**，每个小队 = 一个目标 + 一份成员名册 + 一块共享黑板。**主 agent 只当
+协调者**：派活、看进展、决定合不合分支，自己不动手。
+
+**成员不是 dsh 的 agent**（REQ-011）。小队自己驱动成员的循环：自己发 `ctx.llm.stream`、
+自己执行工具（`lib/squad-loop.js` + `lib/squad-tools.js`）。所以成员不出现在会话列表里、
+调不到 dsh 的工具、也**不占主 agent 的上下文** —— 这正是它和 `subagent_*` 的区别。
 
 ```text
-squad_new     建队（名字 + 目标）                     只有建队的会话能做
-squad_add     登记成员；给 agent_id 就绑定，不给=待派   只有建队的会话能做
-squad_update  改状态（待派/在跑/完成/卡住）、补 id、记结论  成员只能改自己那一行
-squad_board   往共享黑板追加一句                       成员能写自己队的那块
-squad_status  看一个小队或全部
-squad_close   收队（名册与黑板留着，只读）               只有建队的会话能做
+squad_new     建队（名字 + 目标）
+squad_spawn   派一个成员，**当场在后台跑起来**（多派几个就是真并行）
+squad_update  手动覆盖成员那一行（状态 / 结论 / 角色 / 任务 / worktree）
+squad_board   往共享黑板追加一条（你以「主 agent」的身份写）
+squad_status  看一个小队或全部（成员那一行 + 黑板最近几条）
+squad_close   收队：**当场掐掉还在跑的成员**，名册与黑板留着（只读）
 ```
 
-为什么要有它：派子 agent 现在是「一次性」的，而多个子 agent 之间**不能互相说话**
-（dsh 的 `send_message` 只允许父↔子），各自的发现只能都回到主 agent 的对话里靠它转述 ——
-主 agent 的上下文成了唯一的共享内存，一压缩细节就没了。小队把目标、名册、进展变成
-结构化的三样东西。
+**6 个工具只有建队的会话能调**：成员没有调用方身份（它不是一个 dsh 会话），所以没有
+「成员视角」。成员往黑板写东西用它自己的 `board` 工具，作者名由服务端判定 —— 不给参数，
+少一个能撒谎的入口。成员的**收工结论会自动记进黑板**，主 agent 通常只需要读。
 
-**成员身份是认证的**：按 `exec.agent.id` 反查（它 == 子会话 id），不是让成员自报名字。
-所以成员碰不到别的小队，外人也看不到别人的队 —— 连队名都不会出现在它的输出里。
-`from`（黑板作者）由服务端判定，不给参数，少一个能撒谎的入口。
+成员的工具有 7 个：`read` / `write` / `edit` / `grep` / `glob` / `bash` / `board`（`bash` 关掉就是 6 个）。前 6 个的
+文件操作全部钉在成员的 worktree 里（路径越界直接拒），`bash` 走 dsh 的 shell 服务并显式带上
+沙箱策略（`workspaceRoot` = 那棵 worktree）。成员跑在 `team/extensions/squad.json` 的
+`provider` / `model` 上（默认 `new-api` / `tier-std`），`squad_spawn` 可以按成员传 `model` 换档；
+循环有护栏（最多 `maxSteps` 步、单步最多 8 个工具调用、单条工具结果截断），到顶就记「卡住」，
+不会无限烧。
+
+**两条代价，写在这里以免被当成 bug**：
+
+- **成员没有审批通道。** dsh 的审批挂在「一个开着的真 Session 的 turn」上，成员没有。
+  被沙箱拦下就是做不成 —— 成员的提示词里明确要求它把这件事写进结论、不要绕。
+- **本机 `danger-full-access` 下，沙箱不构成额外保护。** dsh 在那一档**直接跳过 confine**
+  （`dsh-bash-sandbox` 的 `mode === 'danger-full-access'` 分支），所以 `bash` 的实际边界
+  只剩「命令自己写的是什么」—— 成员能 `rm -rf`、能读工作区外面的文件、能起外部程序，
+  **和主 agent 自己跑 bash 是同一个权限**。唯一还成立的那层保护是 dsh 子进程的**凭据 scrub**
+  （`dsh-subprocess` 的 `scrubbedParentEnv`：子进程环境里 `*KEY*` / `*PASSWORD*` / `*SECRET*` /
+  `*TOKEN*` / `DSH_*` 全部抹掉，`env` 里读不到 key）。
+
+  **要真隔离就把 `team/extensions/squad.json` 的 `bash` 设为 `false`** —— 成员的工具表里
+  不再有 `bash`，只剩钉在工作区里的 `read`/`write`/`edit`/`grep`/`glob`/`board`。
+  那是本包唯一能提供的真隔离（**提示词不是隔离**）。默认 `true`，因为要跑测试/构建的成员
+  离了它基本干不了活。
+
+  同理，**默认配置下成员的 worktree 不是安全边界**：`bash` 能读写外面。别把成员的根指到
+  放着密钥的目录 —— 成员读到的内容会进它的上下文，也就发给了模型 provider。
 
 **状态只在当前 dsh 进程的内存里**：不落盘、重启即失效、别的进程看不到。因此**没有**
 `dsh-team squad` 这类 CLI 子命令 —— 那只会是个永远空的表。视图是 Web GUI 面板。
@@ -506,11 +530,15 @@ squad_close   收队（名册与黑板留着，只读）               只有建
 
 侧栏多一个「小队」入口，主面板是一列小队卡片（队名 / 是否已收队 / `N/M 完成` / 黑板条数 /
 `owner` 会话 id / 目标），**点一张展开一张**：展开后才显示成员与黑板。成员一行显示
-角色 · 状态 · 任务 · worktree 绝对路径 · 结论，外加一个**「进入会话」**按钮直达它的子会话；
-黑板倒序显示最近 50 条（带作者与时间）。5 秒轮询一次，卸载时清掉定时器。
+角色 · 状态 · 任务 · worktree 绝对路径 · 结论 · 转录条数，外加一个**「看转录」**按钮 ——
+点开就地渲染这个成员循环的每一步（模型说了什么、调了哪个工具、结果是什么）。
 
-取数走宿主 HTTP 路由 `/api/team/squad/options`、`/api/team/squad/squads`，
-**只有 GET，没有写路由**：建队/加人/改状态/写黑板全走上面那 6 个工具。原因是路由拿不到
+为什么是「看转录」而不是「进入会话」：成员不是 dsh 会话，没有会话可进。转录是小队自己的
+数据，走只读路由取（`/transcript?owner=&squad=&member=`，三件套缺一不可 —— 小队名只在
+所有者的表里唯一）。转录**只读、不落盘**，每个成员最多留 200 条、单条正文最多 8000 字符（内存护栏）。
+
+取数走宿主 HTTP 路由 `/api/team/squad/options`、`/api/team/squad/squads`、`/api/team/squad/transcript`，
+**只有 GET，没有写路由**：建队/派成员/改状态/写黑板全走上面那 6 个工具。原因是路由拿不到
 认证过的调用者身份（`exec.agent.id` 只有在工具调用里才有），在路由上开写口等于把权限
 判据丢掉。每个请求先过与调度器面板同一道信任栅栏（回环 + 同源 + 非 `cross-site`，
 共用 `lib/api-http.js`），否则 403。
@@ -518,8 +546,13 @@ squad_close   收队（名册与黑板留着，只读）               只有建
 **面板显示的是这台 dsh 里全部小队**，不是「当前会话的队」—— `main` 槽是 keyed 的，
 拿不到 Session 绑定，所以服务端把 `owner` 一起发下来让客户端分组。同理不显示会话标题。
 
-天花板（完整清单见 REQ-009 §7）：成员之间**不能**直接对话（`squad_say` 没做，缺一个
-`createUserMessage` 的产物），只能靠黑板；面板只读；不设成员上限、不数 token、不做成本闸门。
+**信任边界：本机的其它进程也在里面。** 三个路由只校验「回环 socket + 同源 Host/Origin +
+非 `cross-site`」，**没有会话鉴权** —— 本机任何一个进程 `curl 127.0.0.1:3080/api/team/squad/squads`
+都能读到所有小队的目标、成员任务、worktree 路径与模型转录。这与调度器面板同一档（同一个
+`lib/api-http.js` 栅栏），并且是**只读**的：没有任何写路由，改状态一律走那 6 个工具。
+
+天花板（完整清单见 REQ-011 §7）：成员之间**不能**直接对话，只能靠黑板；面板只读；
+不设成员上限、不数 token、不做成本闸门；不自动建 worktree、不自动合并分支 —— 都由主 agent 决定。
 
 ## 依赖
 

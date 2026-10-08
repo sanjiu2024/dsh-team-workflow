@@ -8,6 +8,32 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [1.16.0]
+
+**小队成员不再走 subagent：小队自己驱动它的循环**（REQ-011）。
+
+成员不是 dsh 的 agent、不是会话：小队自己发 `ctx.llm.stream`、自己执行工具
+（`lib/squad-loop.js` + `lib/squad-tools.js`），转录自己存（进程内）。所以成员不出现在
+会话列表里、调不到 dsh 的工具、也不占主 agent 的上下文。面板里那个点不动的「进入会话」
+换成**只读的「看转录」**（新路由 `/api/team/squad/transcript`）—— 成员不是会话，没有会话可进。
+
+- 工具面：`squad_add` **删**（它唯一的用途是绑外部派出的子代理 id），换成 `squad_spawn`
+  —— 派成员就是**当场在后台跑起来**，多派几个就是真并行。`squad_close` 现在会当场掐掉
+  还在跑的成员（不会继续烧模型）；`session/disposed` 与插件 `dispose()` 同理。
+- 成员的工具 7 个（`read` / `write` / `edit` / `grep` / `glob` / `bash` / `board`），
+  前 6 个的文件操作钉在成员自己的 worktree 里（路径越界直接拒），`bash` 走 `ctx.shell`
+  并显式带 `sandboxPolicy.workspaceRoot`。循环有护栏：最多 `maxSteps` 步、单步最多 8 个
+  工具调用、单条结果截断、超限一律记「卡住」。
+- 两条代价如实写进 README 与 REQ-011 §6.4：**成员没有审批通道**（审批硬依赖真实 Session
+  的开着的 turn）；**本机 `danger-full-access` 下 dsh 直接跳过 confine**，所以沙箱不构成
+  额外保护，真正拦得住的是 fs 工具里的路径检查（`bash` 拦不住）。
+- 为什么必须自己实现工具：`ctx.tools.execute` 缺 `agent` 会在**错的 cwd** 里改文件，
+  而 dsh 全树没有插件自驱 loop 的先例（唯一驱动路径标 `@internal`）。
+- 自检：`scripts/selftest-squad.mjs` 第 5 段把整条循环真跑一遍（假模型流），第 8 段真渲染
+  只读转录；新增 `scripts/smoke-squad-llm.mjs`（**不进 `npm test`**，要真 dsh 树）拿真的
+  `BlockAssembler` / `createToolResultMessage` 把同一条路径再走一遍 —— 替身与真件分叉时它响。
+- 顺手修掉一个真 bug：`globToRegExp` 分几次替换导致 `**/*.js` 一条都匹配不上（见 REQ-011 §8）。
+
 ## [1.15.0]
 
 **压缩阈值抬到 70%：不再在 128K 就压**（`compactThresholdRatio` 0.25 → 0.7，mc 20% → 65%）。
