@@ -475,6 +475,10 @@ GUI 面板挂在 `sidebar.panellist` + `main`，是**手写的零构建客户端
 dsh 的客户端模块只做 `readFileSync` + 原样 HTTP，没有转译器，所以不写 JSX，
 也不 require 任何 baseline 之外的包，样式全内联。
 
+## 重复输出保护
+
+实时监测模型的思考与正文：同一段至少 **16 字符**连续重复 **4 次**时，自动中断当前 turn，避免循环继续消耗 token。判定是纯字面周期重复，不做语义判断；工具调用循环不在检测范围内。极少数正常引用或示例若恰好完全重复到此阈值，也会被中断。中断保留已生成的安全前缀和排队中的用户输入。可在 `team/extensions/repeat-guard.json` 用 `enabled: false` 关闭。
+
 ## 小队（squad）
 
 主 agent 能建**多个小队**，每个小队 = 一个目标 + 一份成员名册 + 一块共享黑板。**主 agent 只当

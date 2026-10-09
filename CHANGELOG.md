@@ -8,6 +8,32 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [1.18.0]
+
+**思考/正文连续重复输出时自动中断当前 turn**（REQ-013）。
+
+模型进入思考循环、或一直吐同一段字时，过去只能人工按停止 —— 在那之前它一直在烧 token。现在
+插件实时观察 LLM stream 的 `text-delta` / `reasoning-delta`：同一段 **至少 16 字符**连续重复
+**4 次**就取消当前 Agent turn（`{kind:"hook", reason}`，`keepInbox:true` —— 只停这一轮，不清
+掉排队中的用户输入）。
+
+- **怎么拿到实时 delta**：挂 `llm/stream` waterfall（`lib/repeat-guard.js`）。这是本包第二个
+  用它的模块（第一个是 rtk/thrift 的注释里说的「只能替换回调结果」），但这里只读不改：
+  loop-built request 深冻结，我们只旁路 chunk。
+- **怎么中断**：请求带 `sessionId`，用 `ctx.agents.get(sessionId)` 取活 Agent，再
+  `agent.cancel(...)` —— agent-loop 每个 chunk 前查 turn signal，取消后写出 interrupted
+  safe-prefix 并结束该 attempt。**不用 `session/event` 冒充实时检测**（那是已提交消息）。
+- **阈值**：`lib/repeat-guard-core.js` 的 `REPEAT_MIN_PERIOD=16` / `REPEAT_COUNT=4` /
+  `REPEAT_MAX_PERIOD=128` / 尾窗 `512` code units。先取 8×4，power 审查指出字面判定会误中断
+  恰好重复的正常文本，用户改成 **16×4**（更保守，真循环仍抓得住）。
+- **只看字面重复**：不做语义判断；`tool-call` delta 不参与（不检测工具调用循环）；text 与
+  reasoning 分 block 独立计数，不混合。
+- **边界**：命中即停，命中那一段不送进对话（保留已生成的安全前缀）；无活 Agent 的 hand-built
+  请求原样旁路；`team/extensions/repeat-guard.json` 可 `enabled: false` 关掉。
+- 自检 `scripts/selftest-repeat-guard.mjs`（进 `npm test`）：阈值边界（15 字符不中 / 16 中）、
+  跨 delta、text/reasoning 与不同 block 不混合、tool-call 不触发、无 Agent 原样透传、
+  `hook` + `keepInbox` 取消、命中后不再下发；反向实验（`repeatPeriod` 恒 0）专项自检变红。
+
 ## [1.17.0]
 
 **审查改成两层：std 测，power 判 —— 审查档一个工具都没有**（REQ-012）。
