@@ -8,6 +8,28 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [1.18.1]
+
+**修：小队成员一启动就报「dsh-llm 没导出 BlockAssembler / createToolResultMessage」**（REQ-011）。
+
+真机第一次用小队就踩到：两个成员全卡在同一句「基础设施失败」。根因不是宿主缺导出
+（`import()` 出来明明有），而是**我们用错了加载方式**：
+
+- `ctx.loader.import("@deepseek-ai/dsh-llm")` 拿到的是命名空间（带 `__esModule`、`default`
+  是个函数、命名导出挂在命名空间上）；
+- `loader.unwrapExports` 按 `__esModule` 语义**把命名空间换成 default**
+  （`cordis-plugin-loader/lib/index.js:664`：`(e = e.default ?? e, !e.__esModule) ? e : e.default ?? e`），
+  于是命名导出全丢 —— 实测 `unwrapExports(ns).BlockAssembler === undefined`。
+
+修法：`lib/squad.js` 的 `loadKit` 三个来源按序找 —— **原始命名空间 → 它的 `default` → unwrap 结果**，
+拿到第一个是函数的；`unwrapExports` 抛错也不影响（try/catch 兜住）。
+
+**为什么之前的自检没抓住**：loader 桩是个裸对象（没有 `__esModule`、没有 `default`、没有
+`unwrapExports`），那句 `unwrap(...)` 恰好原样返回它 —— 桩和真契约不是一回事，bug 全绿。
+现在桩照真形状造（带 `__esModule` + `default` + 逐字复刻的 `unwrapExports`），并加了一条断言
+把桩的形状钉住（防止将来被「简化」回去）；反向实验：把 loadKit 改回「只信 unwrapExports」→
+`scripts/selftest-squad.mjs` 5 项变红，还原后全绿。
+
 ## [1.18.0]
 
 **思考/正文连续重复输出时自动中断当前 turn**（REQ-013）。

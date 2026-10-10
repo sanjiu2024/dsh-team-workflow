@@ -440,7 +440,22 @@ function fakeCtx({
 			callback(scope);
 		},
 		// `loader.import` 取宿主的 dsh-llm 导出（`BlockAssembler` / `createToolResultMessage`）。
-		loader: { import: async () => ({ BlockAssembler: FakeAssembler, createToolResultMessage: fakeToolResult }) },
+		//
+		// **桩必须照真形状造**（2026-10-09 的教训）：dsh-llm 的命名空间带 `__esModule`、
+		// default 是个函数、命名导出在命名空间上；而 `loader.unwrapExports` 会按 `__esModule`
+		// 语义**换成 default**，于是命名导出全丢（`cordis-plugin-loader/lib/index.js:664`）。
+		// 老桩是个没有 `__esModule`/`default`/`unwrapExports` 的裸对象，`lib/squad.js` 里那句
+		// `unwrap(...)` 恰好原样返回它 —— 于是「成员一启动就报没导出」这个真 bug 在自检里全绿。
+		loader: {
+			import: async () => ({
+				__esModule: true,
+				default: function dshLlmPlugin() {},
+				BlockAssembler: FakeAssembler,
+				createToolResultMessage: fakeToolResult,
+			}),
+			// 与 cordis-plugin-loader 的实现逐字同形（不要「简化」成返回入参）
+			unwrapExports: (e) => ((typeof e === "function" || (e = e.default ?? e, !e.__esModule)) ? e : e.default ?? e),
+		},
 		// ── 服务只走 `get()`（REQ-011 §5 那条教训：桩必须对着真契约写） ──
 		// `llm.stream` 是成员的模型入口；`shell` 给 bash；`sandboxPolicy.resolve()` 给 bash 提供
 		// 策略（生产里 workspaceRoot 会被换成成员的 worktree）。
@@ -821,6 +836,22 @@ await checkAsync("循环·装配：拿不到 BlockAssembler（loader 没给）�
 	const result = await runLoop({ kit: {} });
 	assert.equal(result.status, "卡住");
 	assert.match(result.reason, /BlockAssembler/);
+});
+
+// 这条钉住 loader 桩本身的形状。真 dsh 的 `unwrapExports` 会把带 `__esModule` 的命名空间
+// 换成 default（default 是个函数）→ 命名导出全丢；`lib/squad.js` 的 loadKit 因此必须
+// 「命名空间 → default → unwrap 结果」都找。要是有人把下面的桩改回朴素对象，
+// 上面那条 fix 就又会静默失效 —— 所以这里断言桩确实复刻了那个陷阱。
+check("loader 桩照真形状：unwrapExports(命名空间) 会丢命名导出，loadKit 仍能从命名空间拿到", () => {
+	const ns = {
+		__esModule: true,
+		default: function dshLlmPlugin() {},
+		BlockAssembler: FakeAssembler,
+		createToolResultMessage: fakeToolResult,
+	};
+	const unwrap = (e) => ((typeof e === "function" || (e = e.default ?? e, !e.__esModule)) ? e : e.default ?? e);
+	assert.equal(typeof unwrap(ns).BlockAssembler, "undefined", "桩没复刻出「unwrap 丢命名导出」这个陷阱，那 bug 就测不出来了");
+	assert.equal(typeof ns.BlockAssembler, "function", "命名导出必须挂在命名空间上（真 dsh-llm 就是这样）");
 });
 
 check("循环·用量：token 累加、usageLine 只报有值的字段", () => {
