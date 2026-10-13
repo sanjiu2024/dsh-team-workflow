@@ -530,6 +530,10 @@ await checkAsync("工具：建队 → spawn（真跑成员循环）→ 结论自
 	const one = squad.state.get("main-1").get("登录改造");
 	const member = one.members.get("实现-A");
 	assert.equal(member.running !== undefined, true, "派完当场就在跑（后台，不 await）");
+	// 等它把 kit 加载完并发出第一个请求。**别去掉这个 tick**：加载器多一层 await
+	// （共享的 lib/dsh-exports.js）就会让「spawn 一返回就有请求」这个假设失效 ——
+	// 2026-10-09 就这么红过一次，那是测试太脆，不是产品错。
+	await tick();
 	assert.deepEqual(seen[0].messages[0].content[0].text.includes("改代码"), true, "任务正文要进第一条 user 消息");
 
 	await settle();

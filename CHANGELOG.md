@@ -8,6 +8,39 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [1.19.0]
+
+**思考空转护栏 + 中断后自动接提示**（REQ-014）—— 补上 REQ-013 抓不到的那类循环。
+
+REQ-013 只认逐字重复（16 字符 × 4）。真机上观察到的循环是**换个说法反复绕同一个结论**，字面不同
+就漏过去了。宿主侧查过：**没有任何循环检测**（`AgentLoop.Config` 只有 `maxParallelToolCalls` 与
+`agents[]`，唯一超时是工具级的 `TOOL_TIMEOUT`），所以只能自己做。加两层：
+
+- **C · 思考体量护栏**：一次流式调用里 `reasoning` 累计超过 `maxReasoningChars`（默认 20000）就判
+  空转 —— 抓「一直产新句子但毫无进展」。`text`/`tool-call` 不计入；不做时间型护栏（慢 provider
+  与循环 provider 在时间上分不开，会误杀「慢但有效」的深度思考）。
+- **D · 中断后自动接提示**：命中任一层时先 `cancel`，再 `followup` 一句
+  「检测到你在思考里绕圈（原因），已经中断这一轮。请直接给结论，或换一个策略」——
+  把「静默掐掉」变成「掐掉并说明原因」，模型有机会自己出来（取消后投递的唤醒输入排在下一轮，
+  `dsh-agent/lib/types/runtime-types.d.ts:176-181`）。提示按会话限次（默认 3），用完只静默中断，
+  免得变成「提示 → 又绕 → 再提示」的新循环。
+
+- **只拦 AgentLoop 自己发起的请求**：压缩（`dsh-compaction-basic:319,323`）与会话标题
+  （`dsh-session-title-llm:212,226`）**带同一个 `sessionId`** 走 `llm/stream` —— 只按 sessionId
+  认领 Agent 就会拿辅助调用的输出去取消**真人那一轮**、还往对话里塞一条提示。门禁 =
+  `options.purpose` 同步快筛 + `isAgentLoopRequest`（`dsh-llm/lib/index.js:386`，标记点唯一：
+  `dsh-agent-loop/lib/index.js:1269`）。这条是 std 测逮到的，没有它这版是坏的。
+- 新增 `lib/dsh-exports.js`：把 REQ-011 §8.1 那个 `unwrapExports` 陷阱（按 `__esModule` 把命名
+  空间换成 default、丢掉命名导出）收成一处，`squad.js` 与 `repeat-guard.js` 共用 —— 别再各写一份。
+- `team/extensions/repeat-guard.json` 增 `maxReasoningChars` / `nudge` / `maxNudgesPerSession`。
+- 自检：`scripts/selftest-repeat-guard.mjs` 增 C/D 断言（含**走出厂默认值**那两条 —— 只传显式
+  limits 的测试抓不到默认值被改坏，我第一次就是这么漏的）；D 层**打在生产闭包上**
+  （`installRepeatGuard` + 假 `ctx.loader`），不再用本地复刻件 —— 上一版把 `maxNudgesPerSession`
+  默认值改成 99 测试照样全绿。六条反向实验各自变红（默认值、`purpose` 快筛、`isAgentLoopRequest`
+  门禁、预算退回、预算占位时机、`followup`）。
+- `scripts/selftest-squad.mjs`：改用共享加载器后多了一层 await，`seen[0]` 那条断言补 `tick()`
+  （测试太脆，不是产品错）。
+
 ## [1.18.1]
 
 **修：小队成员一启动就报「dsh-llm 没导出 BlockAssembler / createToolResultMessage」**（REQ-011）。

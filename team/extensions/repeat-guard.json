@@ -1,4 +1,7 @@
 {
-  "_说明": "重复输出自动中断（REQ-013）。只看实时 text/reasoning delta 的连续字面重复，不检测工具调用循环。阈值固定为至少 16 字符周期连续出现 4 次（2026-10-09 用户按误触发权衡选的值）。",
-  "enabled": true
+  "_说明": "思考/正文循环保护（REQ-013 + REQ-014）。两层都只看实时 delta，不检测工具调用循环：① 字面重复 —— 同一段 ≥16 字符连续出现 4 次；② 思考体量 —— 一次流式调用里 reasoning 累计超过 maxReasoningChars 判为空转（宿主没有 step/思考上限，见 REQ-014 §5）。命中后取消当前 turn，并在预算内补一句提示（nudge）让模型自己换策略。",
+  "enabled": true,
+  "maxReasoningChars": 20000,
+  "nudge": true,
+  "maxNudgesPerSession": 3
 }
