@@ -145,6 +145,12 @@ assert.ok(
 	baselineText.includes(`当前基线版本：dsh-team-workflow v${pkgVersion}`),
 	`注入文本必须带版本行「v${pkgVersion}」（来自 package.json）`,
 );
+// 「项目文档」标准（上游 pi-workflow v1.18.0 移植，见 docs/UPSTREAM-SYNC.md）—— 断言串取该段
+// 独有短语：「文档」二字在别处也出现，只用它抓不住整段删除。
+assert.ok(
+	baselineText.includes("分不清过期文档") && baselineText.includes("单一真相源"),
+	"「项目文档」标准段丢失（上游 v1.18.0 移植，见 docs/UPSTREAM-SYNC.md）",
+);
 // 写计划前先派调研 —— 防止这一段被无意删掉（它是计划质量的前置闸门）。
 assert.ok(
 	baselineText.includes("写计划前：先派调研回来") && baselineText.includes("从查到的事实出发"),

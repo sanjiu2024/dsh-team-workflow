@@ -13,7 +13,7 @@
 
 - 上游仓库：`https://github.com/kurumi1ksllq/pi-workflow`
 - 分支：`main`
-- 已同步到：`fe323b0ee136c563a66593e9d5d355372fe8ef03`（v1.14.1，2026-09-29）
+- 已同步到：`96120e02a27b6f665701ca2426bcc355486fc886`（v1.20.0，2026-10-13）
 
 下次比对范围就是 `<上面这个 SHA>..origin/main`。
 
@@ -41,6 +41,7 @@
 | `team/extensions/context-thrift.json` | `team/extensions/context-thrift.json` | 只剩阈值；裁剪本体在 dsh 原生 compaction |
 | `team/extensions/pi-rtk-optimizer.json` | `team/extensions/rtk.json` | rtk 输出压缩 |
 | `skills/00-core/*` | `skills/*/SKILL.md` | 技能文本 |
+| `prompts/*.md` | （无落点） | pi 的「用户敲 `/review`、`/init` 展开」机制；dsh 命令桥只回显、不产模型消息，改写成 skill 属新开发。只搬正文标准（见下「项目文档」） |
 | `team/models.template.json` | `team/models.template.json` | 网关 provider 模板 |
 
 ## 处理记录
@@ -111,3 +112,21 @@ agent 贴）只在**重大变化 / 写完一个大部分**时派。增量低门�
 review」这条**仍不搬**。下次同步遇到这条时以 `team/RULES.md` 的现行节为准，别照这段旧理由复述。
 
 结论：**无可搬条目**，只更新基线（本仓库无能力变更，版本号与 CHANGELOG 不动）。
+
+### v1.14.1 → v1.20.0（2026-10-13）
+
+上游范围 13 个提交（`fe323b0` → `96120e0`，上游 v1.14.1 → v1.20.0）：
+
+| 上游变更 | 判断 | 处理 |
+| --- | --- | --- |
+| `team/RULES.md`（e195cc7）：新增「项目文档」团队标准 —— 必备 `README.md`/`CHANGELOG.md`/`AGENTS.md`，常漏的 `docs/` 下设计/工程/状态/接口/运维；给 AI 读的硬要求（确切命令、带状态日期、设计写取舍、禁区单列、单一真相源） | ✅ 适用 | **已移植**到 `team/RULES.md`（新增「## 项目文档」一节）。末尾补一句与本地需求文档的分工（需求边界仍走 `docs/requirements/REQ-NNN-*.md`，跨需求的架构取舍进 `docs/设计.md`），免与「## 需求与设计文档」冲突；`scripts/selftest.mjs` 同上游做法补断言护住该段 |
+| `prompts/init.md`（c6bf066 新增、e195cc7 扩写）+ `docs/prompts.md`：`/init` 通读项目、按标准补齐并升版整套文档（「重新理解 + 合并」，绝不覆盖重写） | ❌ 不搬 | pi 的 `prompts/*.md` → 用户敲 `/init` 展开机制；dsh 命令桥只回显、不产模型消息，落成本地 skill 是**新开发不是同步**（同 v1.14.0 轮 `/audit` 的判定）。正文还引用了本包没有的 `templates/project-AGENTS.md`。已往对照表加行 |
+| `team/RULES.md`（ac1a926）：补「收尾」的定义（同项目连续迭代算一段，中间不派 reviewer） | ❌ 不搬 | 与本地两层审查「std 测**每完成一块**（低门槛增量审查）」的有意设计冲突 —— 与该主题前三轮（v1.13.3 / v1.13.5 / v1.14.1 的「review 只跑一次」）同一判定 |
+| `team/agent-settings.json`（96120e0）：reviewer/researcher 降 `tier-std`、oracle 降 `tier-std`，理由是「tier-power/tier-max 渠道暂时停用」 | ❌ 不搬 | ① 那是**上游网关**渠道停用的事实，本地网关不同，无证据同样受限（同 v1.13.5 轮 `reserveTokens` 的判定思路）；② 改动落在 `agentOverrides` 上，**dsh 不读它**（本地档位钉在 `subagents.tierTools` 的工具行上，`team/agent-settings.json` 注释已写明）；③ 降档会直接废掉本地「power 判」这一层 |
+| `team/extensions/pi-rtk-optimizer.json` → `team/extensions/pi-context-prune.json`（4c27b25）：上游删掉 rtk 优化器（`tools/rtk.exe` 是 PE 专有、非跨平台）、换纯 npm 的 `pi-context-prune@2.1.0` | ❌ 不搬 | 上游动机是「要把 pi 迁到 Linux 云端」，跨平台不是本地问题，本地 rtk 压缩照旧在跑（`team/extensions/rtk.json`）；`pi-context-prune` 是 pi 扩展（裁剪靠 pi 请求侧），dsh 侧有原生 tool-result-pruner |
+| `extensions/handoff.ts` + `scripts/test-handoff-command.mjs` / `probe-handoff-command.mjs` / `simulate-member.sh`：`/handoff` 会话交接命令 | ❌ 不搬 | pi 扩展（`pi.registerCommand` + 会话切换 API）；同 `/audit` 判定 —— 落到 dsh 得另写一套命令，属新开发 |
+| `team/packages.json` / `package.json`：`pi-subagents` 0.75.0 → 0.78.0（修 pi 1.2.0 后台子代理 chord 报错）、`rpiv-ask-user-question`/`rpiv-todo` 2.12.0；移除 `pi-simplify` | ❌ 不适用 | pi 专属包清单（dsh 的子代理是原生的，无 chord 这类宿主依赖问题） |
+| `extensions/team-baseline.ts`（4c27b25）：扩展配置落点覆盖表 `EXT_CONFIG_TARGETS`（扩展不读默认落点，写错位置 = **静默不生效**） | ❌ 不适用 | pi 扩展往成员 `~/.pi` 写配置的实现；本地不把模板落盘到成员机器 |
+| `ANNOUNCEMENT.md`（67ce94a 新增）/ `ONBOARDING.md` / `README.md` / `CHANGELOG.md` / `scripts/release.sh` / `docs/audit-report.md` / `docs/extensions.md` / `scripts/test-extension.mjs` / `test-audit-command.mjs` / `c68ff34` 的 `E:/hermes` → `E:/Project-hub` | ❌ 不适用 | 上游发版说明、安装文档、pi 扩展测试与上游本机路径 |
+
+结论：**一条能力落地**（项目文档标准，适配后移植 + 自检断言），版本 1.19.1 → 1.20.0。
