@@ -8,6 +8,33 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [1.20.1]
+
+**修：包内 12 个 skill 一个都没生效**（2026-10-15 在 dsh 0.2.0-rc.2 上实测定位）。
+
+`cordis.patch.yml` 挂 skills 那行原来是 `fileURLToPath(baseUrl + 'skills/')`，旁边注释还写着
+「`baseUrl` 由 loader 解析为该 bundle 包所在目录」—— **这句话在这一版 dsh 上是错的**。
+把那行 `baseUrl` 的求值结果写进文件实测得到：
+
+```text
+插件 patch 里 baseUrl = file:///C:/Users/<用户>/.dsh/profiles/desktop/     ← profile 目录，不是包目录
+```
+
+于是它指向 `<profile>/skills/` —— 一个不存在的目录，provider 扫不到任何技能。而
+`dsh-skill-filesystem` 遇到扫不出东西**只打一行 warn 就继续**，所以从外面看是
+「插件装好了、`dsh-team status` 也说 skills 12 个，模型却一个都看不到」。
+
+- 改成从 baseUrl 解析本包 `package.json` 再取 dirname —— dsh-base 里挂
+  `dsh-agent-preset/skills` 那行用的就是这个写法。它在 baseUrl 是「包目录」或「profile 目录」
+  两种语义下都成立，所以将来 dsh 修好这个语义也不会再坏一次。
+- 顺带记下定位路径，免得下次重走：`!!js` 的求值作用域是 `with (ctx)`
+  （`cordis-plugin-loader/lib/index.js:233`），读的是**该 patch 所在层**的 baseUrl；
+  profile 补丁里它确实等于 profile 目录（所以在 profile 层写 `baseUrl + 'x/'` 是对的），
+  但 bundle patch 里同样是 profile 目录，**不是包目录**。
+- **自检没抓到它**：`scripts/selftest.mjs` 只验证 skill 文件的 frontmatter 合规，
+  没有任何断言去验证「provider 真能发现它们」—— 12 个全丢的情况下自检照样全绿。
+  这次是靠把技能目录打出来对（改成 12 个探针式验证）才看见的。
+
 ## [1.20.0]
 
 **从上游 pi-workflow 搬「项目文档」团队标准**（上游 v1.18.0，同步任务 v1.14.1 → v1.20.0）。

@@ -6,8 +6,14 @@
 #   3. 挂载插件本体
 #      （团队规范注入 / 审计日志 / 上下文节流 / rtk 输出压缩 / lens / 联网搜索 / CLI 命令）
 #
-# `baseUrl` 由 loader 解析为该 bundle 包所在目录的 file:// URL，
-# 所以下面按包根拼 skills/。折叠标量避免超长行。
+# 定位包内 skills/ 为什么是 createRequire 而不是 `baseUrl + 'skills/'`：
+# `baseUrl` 在 bundle patch 里**不是**该包所在目录。2026-10-15 实测（把 baseUrl 写进文件
+# 求出来的）：插件 patch 里它是 `file:///C:/Users/<用户>/.dsh/profiles/desktop/` —— 也就是
+# **profile 目录**。于是 `baseUrl + 'skills/'` 指到 profile 下并不存在的 skills/，provider
+# 一个技能都发现不了，而且**全程静默**（只有一行 warn，12 个 skill 就这么一直没生效）。
+# 改成从 baseUrl 解析本包 package.json 再取 dirname，是 dsh 自己同一用途的写法
+# （dsh-base 里挂 dsh-agent-preset/skills 那行）；它在 baseUrl 为包目录或 profile 目录
+# 两种语义下都成立，所以不会随 dsh 修这个语义而再坏一次。
 #
 # 为什么第 2 条能改到已有行：profile 的补丁是按 bundle 顺序逐层叠的
 # （dsh-app-boot 的 composeEntries），同一 id 后面的层覆盖前面的。
@@ -25,8 +31,10 @@
         providerName: dsh-team-workflow
         customSkillDirs:
           - !!js >-
-              process.getBuiltinModule('node:url')
-              .fileURLToPath(baseUrl + 'skills/')
+              process.getBuiltinModule('node:path').join(
+              process.getBuiltinModule('node:path').dirname(
+              process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('dsh-team-workflow/package.json')),
+              'skills')
 
     - id: dsh-team-workflow
       name: dsh-team-workflow
