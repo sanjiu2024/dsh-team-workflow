@@ -8,6 +8,34 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [1.19.1]
+
+**修：调度器起不来（1.18.1 漏掉的第二份拷贝）+ Windows 上自检必崩**（2026-10-15 实测）。
+
+### 调度器执行器抛 `SCHEDULER_RUNTIME_EXPORT_MISSING: createUserMessage`
+
+1.18.1 修的是小队那处 `unwrapExports` 陷阱，`lib/scheduler.js` 里**同一份拷贝漏了**：它的
+`modules()` 仍在 `loader.unwrapExports(m) ?? m` 上取 `createUserMessage` / `setApprovalPolicy` /
+`setSandboxMode`，而 `unwrapExports` 按 `__esModule` 语义把命名空间换成 `default`（dsh-llm 的
+default 是函数、命名导出挂在命名空间上），三个全被读成 undefined。真机现象：任务建得出来、
+到点 **4ms 就失败**，`runs.json` 里记
+`执行器异常：SCHEDULER_RUNTIME_EXPORT_MISSING: createUserMessage`。
+
+- 改成 `makeHostLoader(scope)`（`lib/dsh-exports.js`）—— 与小队同一处，不再各写一份。
+- **为什么自检没抓到**：`scripts/selftest-scheduler.mjs` 的假 loader 把 `unwrapExports` 写成
+  恒等 `(m) => m`，正好绕开真实语义 —— **测试替身把 bug 掩盖了**，全绿照样漏。
+
+### `rootFile` 不认绝对路径 → Windows 上 `selftest.mjs` 整个进程崩掉
+
+`new URL("C:\\x", "file:///")` 把 `C:` 当 URL scheme 抛 `ERR_INVALID_URL_SCHEME`；POSIX 上
+绝对路径恰好合法，所以这条只在 Windows 上炸。而 `scripts/selftest.mjs` 自己就用绝对路径探针
+走 `makeLayered`（注释写明「用绝对路径探针文件走同一条路」），于是自检在最后一节崩掉、连断言
+都跑不到 ⇒ 契约 `docs/AUTOMATIONS.md` 第 6 步的门禁在 Windows 上永远红，同步任务永远回滚、
+什么都搬不进来。
+
+- `rootFile` 对绝对路径原样返回（`path.isAbsolute` 短路）。修完该自检由**崩溃**变成
+  `✓ 自检通过`。
+
 ## [1.19.0]
 
 **思考空转护栏 + 中断后自动接提示**（REQ-014）—— 补上 REQ-013 抓不到的那类循环。
