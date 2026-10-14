@@ -1,0 +1,17 @@
+# 统一行尾：文本一律 LF。
+#
+# 为什么必须显式钉住：Git for Windows 安装时默认 core.autocrlf=true，检出会把 LF 换成
+# CRLF —— 而 scripts/selftest.mjs 的 skill frontmatter 断言是 /^---\n/（只认 LF），
+# 于是在 Windows 上刚 clone 出来跑自检就红（报「workflow skill 缺 frontmatter」）；
+# 若 dsh 的 skill frontmatter 解析器同样只认 LF，clone 安装的人还会静默丢掉 skill。
+#
+# 批处理显式 -text：cmd.exe 对 LF 结尾的 goto/label 有已知坑，不能跟着一刀切。
+* text=auto eol=lf
+*.cmd -text
+*.bat -text
+
+# 二进制（text=auto 本就能识别，这里写死避免误判）
+*.exe -text
+*.ico -text
+*.png -text
+*.tgz -text
