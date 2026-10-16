@@ -1593,6 +1593,12 @@ function createReact() {
 			};
 			return [hooks[index], set];
 		},
+		useRef(initial) {
+			// 真 React 里 useRef 的对象跨渲染保持同一个 —— 替身也得这样（不然节流状态每帧清零）
+			const index = cursor++;
+			if (!(index in hooks)) hooks[index] = { current: initial };
+			return hooks[index];
+		},
 		useCallback(fn, deps) {
 			const index = cursor++;
 			const prev = hooks[index];
@@ -3430,7 +3436,7 @@ await checkAsync("B1+B2：转录落 .log 全文、待投与续聊历史跨重启
 	store.flush();
 
 	// B1：.log 是全文（JSON 里那份被压到 100 条）
-	const logFile = store.transcriptFile("/tmp/ws-b1", "查-A");
+	const logFile = store.transcriptFile("/tmp/ws-b1", "队", "查-A");
 	assert.equal(fs.existsSync(logFile), true, ".log 要真的落下来");
 	const lines = fs.readFileSync(logFile, "utf8").split("\n").filter((l) => l.trim() !== "");
 	assert.equal(lines.length, 150, "全文 150 条一条不许少");
@@ -3711,6 +3717,222 @@ await checkAsync("C2 面板：成本行渲染出来；/cost 挂了也不拖垮�
 			assert.match(text, /今天|小队/, "名册照常渲染");
 		},
 	);
+});
+
+
+// ── REQ-016 · 2.0.2：独立审查报回来的 5 条 + 2 条没覆盖的边界 ──────────────────
+
+await checkAsync("等待中的成员被重派：waitingFor 必须清掉（否则那次跑完被「等别人」分支吞掉）", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-rewait-"));
+	const answer = "干完了\n## 交付物\n第二次的产出\n## 证据\n跑了 npm test\n## 没做的\n无\n## 卡点\n无";
+	const { squad, call, settle } = install({ stream: scriptedStream([{ text: answer }]), config: { persist: false } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "甲", role: "实现", task: "干活", worktree: wt }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "乙", role: "实现", task: "另一个", worktree: wt }, "main-1");
+	await settle();
+	const members = squad.state.get("main-1").get("队").members;
+	const boardBefore = squad.state.get("main-1").get("队").board.length;
+	// 造一个「等待中」的甲（它的被等者乙早就收工了）
+	members.get("甲").status = "等待";
+	members.get("甲").waitingFor = "乙";
+	members.get("甲").waitNote = "等它的产出";
+	// 重派：起新的一轮 → 这一轮跑完必须按「完成」收尾（不是又退回「等待」）
+	await call("squad_spawn", { squad: "队", member: "甲", role: "实现", task: "再来一次", worktree: wt }, "main-1");
+	await settle();
+	assert.equal(members.get("甲").waitingFor, undefined, "起新一轮就该把等待标记清掉");
+	assert.equal(members.get("甲").status, "完成", `重派跑完该是「完成」，实际 ${members.get("甲").status}：${members.get("甲").note}`);
+	assert.equal(members.get("甲").report?.parsed, true, "回报要照常解析（被吞掉的话这里是空的）");
+	assert.equal(members.get("甲").report.deliverables, "第二次的产出");
+	assert.ok(squad.state.get("main-1").get("队").board.length > boardBefore, "收工要照常写黑板");
+});
+
+await checkAsync("唤醒是**扫描式**的：被等者早已收工、等者当时还在收尾 → 之后也要被捞起来", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-scanwake-"));
+	const { squad, call, settle } = install({ stream: scriptedStream([{ text: "干完了" }]), config: { persist: false } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "乙", role: "实现", task: "先干完", worktree: wt }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "甲", role: "实现", task: "等乙", worktree: wt }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "丙", role: "实现", task: "打酱油", worktree: wt }, "main-1");
+	await settle();
+	const members = squad.state.get("main-1").get("队").members;
+	// 造出那个竞态的**事后状态**：甲在等一个早已收工的乙，而甲自己还有个（过期的）running 句柄
+	members.get("甲").status = "等待";
+	members.get("甲").waitingFor = "乙";
+	members.get("甲").running = { abort: { abort() {} }, startedAt: 1 };
+	// 让别人再收工一次（扫描发生在**任何**成员的 finally 里）
+	await call("squad_spawn", { squad: "队", member: "丁", role: "实现", task: "再跑一个", worktree: wt }, "main-1");
+	await settle();
+	assert.equal(members.get("甲").status, "等待", "它自己还挂着 running（正在收尾）→ 这时不该被起第二条");
+	assert.equal(members.get("甲").waitingFor, "乙", "没被唤醒就不许把标记清掉（清了就永远醒不来）");
+	// 它的收尾终于跑完（running 被清）→ 下一次扫描必须把它捞起来
+	members.get("甲").running = undefined;
+	await call("squad_spawn", { squad: "队", member: "戊", role: "实现", task: "再来一个", worktree: wt }, "main-1");
+	await settle();
+	assert.equal(members.get("甲").waitingFor, undefined, "被等者已收工 → 它该被捞起来");
+	assert.notEqual(members.get("甲").status, "等待", `不该再停在等待，实际 ${members.get("甲").status}`);
+});
+
+await checkAsync("并发上限：收工补位之后**同时在跑数**也不许超过 maxRunning（审查的探针就是这个）", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-cap-"));
+	let release;
+	const gate = new Promise((resolve) => {
+		release = resolve;
+	});
+	const stream = (options) => {
+		if (JSON.stringify(options.messages).includes("占着")) {
+			return (async function* gated() {
+				await gate;
+				yield* scriptedStream([{ text: "A 干完了" }])(options);
+			})();
+		}
+		return (async function* gatedToo() {
+			// B/C 也卡住：这样「同时在跑几个」是稳定的，不会因为谁先跑完而看不出问题
+			await new Promise((r) => setTimeout(r, 5));
+			yield* scriptedStream([{ text: "干完了" }])(options);
+		})();
+	};
+	const { squad, call, settle } = install({ stream, config: { persist: false, maxRunning: 1 } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "A", role: "实现", task: "占着", worktree: wt }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "B", role: "实现", task: "排队一", worktree: wt }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "C", role: "实现", task: "排队二", worktree: wt }, "main-1");
+	const members = squad.state.get("main-1").get("队").members;
+	const runningNow = () => [...members.values()].filter((m) => m.running !== undefined).length;
+	assert.equal(runningNow(), 1, "开局只有 A 在跑");
+	release();
+	// 边跑边看：任何一刻都不许超过 1
+	for (let i = 0; i < 12; i += 1) {
+		await new Promise((r) => setTimeout(r, 3));
+		assert.ok(runningNow() <= 1, `同时在跑 ${runningNow()} 个（上限 1）—— 补位的边界算错了`);
+	}
+	await settle();
+	assert.equal(runningNow(), 0);
+	assert.equal(members.get("B").status, "完成");
+	assert.equal(members.get("C").status, "完成");
+});
+
+await checkAsync("B1：两个队有同名成员时，转录各落各的（不许串队）", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "squad-b1-two-"));
+	const store = createSquadStore({ dir, log: () => {}, debounceMs: 1 });
+	const mk = (squadName, text) => ({
+		name: squadName,
+		objective: "o",
+		board: [],
+		members: new Map([["查-A", { label: "查-A", role: "侦察", task: "t", status: "完成", transcript: [{ role: "assistant", text }] }]]),
+	});
+	store.save("/tmp/ws-b1-two", () => [mk("甲队", "甲队的转录"), mk("乙队", "乙队的转录")]);
+	store.flush();
+	const loaded = store.load("/tmp/ws-b1-two");
+	const byName = new Map(loaded.map((s) => [s.name, s]));
+	assert.equal(byName.get("甲队").members[0].transcript[0].text, "甲队的转录");
+	assert.equal(byName.get("乙队").members[0].transcript[0].text, "乙队的转录", "同名成员不许读到对方的转录");
+	assert.notEqual(store.transcriptFile("/tmp/ws-b1-two", "甲队", "查-A"), store.transcriptFile("/tmp/ws-b1-two", "乙队", "查-A"));
+	store.dispose();
+});
+
+await checkAsync("B3：黑板满了之后新写的条目也要推（指纹不能只数条数）", async () => {
+	const { ctx, record } = fakeCtx();
+	const squad = installSquad(ctx, { config: { ...SQUAD_DEFAULTS, boardLimit: 3 } });
+	const handler = record.routes[0].handler;
+	newSquad(squad.state, "s1", { name: "队", objective: "o" });
+	const one = squad.state.get("s1").get("队");
+	const frames = [];
+	const listeners = new Map();
+	const res = {
+		writeHead() {},
+		write(chunk) {
+			frames.push(String(chunk));
+		},
+		end() {},
+		on(event, fn) {
+			listeners.set(event, fn);
+		},
+	};
+	const req = new EventEmitter();
+	req.method = "GET";
+	req.url = `${SQUAD_ROUTE_PREFIX}/events`;
+	req.socket = { remoteAddress: "127.0.0.1" };
+	req.headers = { host: "localhost:3080" };
+	await withFakeTimers(async (timers) => {
+		await handler(req, res);
+		assert.equal(frames.length, 1);
+		const [tick] = timers.created;
+		// 把黑板填满（3 条，正好到上限）
+		for (let i = 1; i <= 3; i += 1) one.board.push({ at: i, from: "A", text: `第 ${i} 条` });
+		tick.callback();
+		assert.equal(frames.length, 2, "填满的过程要推");
+		// 满盘之后再加一条：length 不变（挤掉最旧的），只有首尾 at 变了
+		one.board.shift();
+		one.board.push({ at: 4, from: "A", text: "第 4 条" });
+		assert.equal(one.board.length, 3, "长度确实没变（这就是只数条数会漏的原因）");
+		tick.callback();
+		assert.equal(frames.length, 3, "黑板满了之后新写的也要推");
+		assert.match(frames[2], /第 4 条/);
+		listeners.get("close")();
+	});
+	squad.dispose();
+});
+
+await checkAsync("C2 面板：SSE 推送时成本行也跟着刷（节流，不是每帧都拉）", async () => {
+	const rt = createReact();
+	const { exports } = loadClient(rt.React);
+	const { ctx, record } = fakeClientCtx();
+	const opened = [];
+	class FakeEventSource {
+		constructor(url) {
+			this.url = url;
+			this.listeners = new Map();
+			opened.push(this);
+		}
+		addEventListener(name, fn) {
+			this.listeners.set(name, fn);
+		}
+		close() {}
+		emit(name, payload) {
+			this.listeners.get(name)?.({ data: JSON.stringify(payload) });
+		}
+	}
+	const realES = globalThis.EventSource;
+	const realNow = Date.now;
+	globalThis.EventSource = FakeEventSource;
+	const urls = [];
+	let now = realNow();
+	Date.now = () => now;
+	try {
+		await withFetch(
+			async (url) => {
+				urls.push(url);
+				if (url.endsWith("/squads")) return reply(200, SQUAD_FIXTURE)();
+				if (url.endsWith("/cost")) return reply(200, { ok: true, date: "2026-10-16", audit: null, squads: { totals: { calls: 0, total: 0 }, members: [] } })();
+				return reply(200, { ok: true, boardLimit: 500 })();
+			},
+			async () => {
+				exports.apply(ctx);
+				await settle();
+				const page = record.registrations.find((r) => r.options.name === "main" && r.options.key === "team-squad");
+				await withFakeTimers(async () => {
+					rt.render(page.component);
+					await settle();
+					const before = urls.filter((u) => u.endsWith("/cost")).length;
+					assert.equal(before, 1, "开页拉一次成本");
+					// 第一帧：离上次不到 10 秒 → 节流，不重复拉
+					opened[0].emit("squads", { ok: true, squads: [], count: 0 });
+					await settle();
+					assert.equal(urls.filter((u) => u.endsWith("/cost")).length, 1, "10 秒内不许重复拉（审计日志几 MB）");
+					// 过了节流窗口 → 再推一帧就该拉
+					now += 11_000;
+					opened[0].emit("squads", { ok: true, squads: [], count: 0 });
+					await settle();
+					assert.equal(urls.filter((u) => u.endsWith("/cost")).length, 2, "过了窗口就该刷成本（否则成本行停在开页那一刻）");
+					rt.cleanup();
+				});
+			},
+		);
+	} finally {
+		Date.now = realNow;
+		if (realES === undefined) delete globalThis.EventSource;
+		else globalThis.EventSource = realES;
+	}
 });
 
 // ── 汇总 ──────────────────────────────────────────────────────────────────
