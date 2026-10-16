@@ -73,6 +73,12 @@ function createReact() {
 			};
 			return [hooks[index], set];
 		},
+		useRef(initial) {
+			// 真 React 里 useRef 的对象跨渲染保持同一个 —— 替身也得这样
+			const index = cursor++;
+			if (!(index in hooks)) hooks[index] = { current: initial };
+			return hooks[index];
+		},
 		useCallback(fn, deps) {
 			const index = cursor++;
 			const prev = hooks[index];
