@@ -3951,6 +3951,86 @@ await checkAsync("B1：2.0.1 落的老布局 .log（不带队名）升级后照�
 	store.dispose();
 });
 
+
+await checkAsync("B1：两队同名成员时**不许**认老布局 .log（认了就是把串队放回来，还会写回盘）", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "squad-b1-ambig-"));
+	const store = createSquadStore({ dir, log: () => {}, debounceMs: 1 });
+	// 两队的**新路径** .log 各 3 条（自己的），老布局那份是甲队的 5 条
+	const writeLog = (file, prefix, n) => {
+		fs.mkdirSync(path.dirname(file), { recursive: true });
+		fs.writeFileSync(file, Array.from({ length: n }, (_, i) => JSON.stringify({ at: i, role: "assistant", text: `${prefix} ${i}` })).join("\n") + "\n", "utf8");
+	};
+	const member = (label, text) => ({ label, role: "侦察", task: "t", status: "完成", transcript: [{ role: "assistant", text }] });
+	// 先落一份 JSON（每队只留 1 条摘要），再手写各自的全文与那份老文件
+	store.save("/tmp/ws-b1-ambig", () => [
+		{ name: "甲队", objective: "o", members: new Map([["查-A", member("查-A", "甲队摘要")]]), board: [] },
+		{ name: "乙队", objective: "o", members: new Map([["查-A", member("查-A", "乙队摘要")]]), board: [] },
+	]);
+	store.flush();
+	const tdirReal = path.join(dir, fs.readdirSync(dir).find((f) => f.endsWith(".transcripts")));
+	writeLog(path.join(tdirReal, "甲队", "查-A.log"), "甲队 第", 3);
+	fs.rmSync(path.join(tdirReal, "乙队"), { recursive: true, force: true });
+	// 乙队的**新路径**文件删掉：这就是升级现场（它升级后还没落过盘；`flush` 已经写过一份，
+	// 所以要真删，不然老文件永远轮不到、这个断言就白写了）——
+	// 这时若还去认那份不带队名的老文件，读回来的就是**甲队的内容**
+	writeLog(path.join(tdirReal, "查-A.log"), "老布局 甲队的", 5); // 2.0.1 时代那份（不带队名）
+	const loaded = store.load("/tmp/ws-b1-ambig");
+	const byName = new Map(loaded.map((sq) => [sq.name, sq]));
+	assert.equal(byName.get("甲队").members[0].transcript[0].text, "甲队 第 0", "甲队读自己那份新文件");
+	assert.equal(byName.get("乙队").members[0].transcript[0].text, "乙队摘要", "**乙队宁可用自己的 JSON 摘要，也不许读甲队那份老文件**");
+	// 写回盘也不许把甲队的内容灌进乙队（老布局读进来之后 save 会写进新路径）
+	store.save("/tmp/ws-b1-ambig", () => loaded);
+	store.flush();
+	const back = fs.readFileSync(path.join(tdirReal, "乙队", "查-A.log"), "utf8").split("\n").filter(Boolean);
+	assert.equal(JSON.parse(back[0]).text, "乙队摘要", "写回盘也不许串队");
+	store.dispose();
+});
+
+await checkAsync("A6：「不在跑」不等于「已收工」—— 链式等待时不许发假唤醒", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-chain-"));
+	const { squad, call, settle } = install({ stream: scriptedStream([{ text: "干完了" }]), config: { persist: false } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	for (const label of ["甲", "乙", "丙", "丁"]) {
+		await call("squad_spawn", { squad: "队", member: label, role: "实现", task: `${label} 的活`, worktree: wt }, "main-1");
+	}
+	await settle();
+	const members = squad.state.get("main-1").get("队").members;
+	// 造出链式等待的事后状态：甲在等乙，而乙自己转去等丙（乙是「等待」，不是「收工」）
+	members.get("甲").status = "等待";
+	members.get("甲").waitingFor = "乙";
+	members.get("乙").status = "等待";
+	members.get("乙").waitingFor = "丙";
+	// 让别人收工一次 → 触发扫描
+	await call("squad_spawn", { squad: "队", member: "戊", role: "实现", task: "打酱油", worktree: wt }, "main-1");
+	await settle();
+	assert.equal(members.get("甲").status, "等待", "乙只是停着等，甲不许被唤醒");
+	assert.equal(members.get("甲").waitingFor, "乙", "也不许把甲的等待标记清掉（清了乙真收工时它就不醒了）");
+	// 乙真收工了 → 甲才该醒
+	members.get("乙").status = "完成";
+	members.get("乙").waitingFor = undefined;
+	await call("squad_spawn", { squad: "队", member: "己", role: "实现", task: "再来一个", worktree: wt }, "main-1");
+	await settle();
+	assert.equal(members.get("甲").waitingFor, undefined, "乙真收工 → 甲该被唤醒");
+	assert.notEqual(members.get("甲").status, "等待");
+});
+
+await checkAsync("A6：续聊命中「等待」中的成员，返回文本必须说明等待被作废", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-sendwait-"));
+	const { squad, call, settle } = install({ stream: scriptedStream([{ text: "干完了" }]), config: { persist: false } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "甲", role: "实现", task: "等", worktree: wt }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "乙", role: "实现", task: "被等", worktree: wt }, "main-1");
+	await settle();
+	const members = squad.state.get("main-1").get("队").members;
+	members.get("甲").status = "等待";
+	members.get("甲").waitingFor = "乙";
+	const sent = await call("squad_send", { squad: "队", member: "甲", text: "插一句" }, "main-1");
+	// `call()` 对 `text()` 输出的工具直接给字符串（不是 `{text}`）
+	assert.match(sent, /本来在等「乙」/, `要说清等待被作废，实际：${sent}`);
+	assert.equal(members.get("甲").waitingFor, undefined);
+	await settle();
+});
+
 // ── 汇总 ──────────────────────────────────────────────────────────────────
 
 if (failures > 0) {
