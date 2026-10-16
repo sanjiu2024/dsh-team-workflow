@@ -8,6 +8,33 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.0.7]
+
+**第六轮独立 std 测**报回 1 个 P1 + 4 个 P2（这轮它把「停掉 / 唤醒 / 等待」整台状态机都过了一遍）。
+
+- **P1 · 停掉之后位子不腾、重派被拒**：`squad_stop` 写完「卡住」但 `running` 还挂着（只有 finally 清）
+  → ① 立刻重派被拒「还在跑」；② **流不认 abort 时那个成员永久占着并发位**，排队的成员一步都跑不了
+  （实测 `attempts=0`）。修：`squad_stop` 给句柄打 `aborted`，`runningCount` 不数它、`startMember`
+  与 `squad_spawn` 两道守卫都放行 —— 位子**当场**腾出来。代价是两轮可能重叠，所以
+  `finally` 里**把身份校验加回来**（`member.running?.abort === outer` 才清；上一轮独立测说过
+  「谁让 stop 立刻腾位子，就得把它加回来」—— 正是这里）。
+- **P2 · `squad_update(status:"等待")` 能造出死态**：没有 `waitingFor` 的「等待」没人会叫醒，
+  而 `squad_stop` 当时也停不掉（判据要求 `waitingFor`）。修：`等待` 只许 `requestWait` 写，
+  `squad_update` 拒掉并指路「要它别等就用 `squad_stop`」。
+- **P2 · 排队中的成员停不掉**：`squad_stop` 回「没在跑（状态：排队）」，之后 `drainQueue` 照样
+  把它点着（实测 `attempts=1`）。修：把「排队」纳入可停范围。
+- **P2 · 停「等待中」写的 `stopNote` 没人消费**：那条分支没有 promise 在跑，只会留个脏字段。
+  修：`stopNote` 只给有 `running` 的那种写（它会被本轮 `.then` 消费），`note` 两种都写。
+- **P2 · override 不过校验器**：`makeLayered` 把 `override` 在**校验之后**直接展开，于是
+  `retries:-1` 一路走进成员循环 —— loop 一次都不跑、`result` 是 `undefined`，成员以
+  「基础设施失败：Cannot read properties of undefined」收场。修：`override` 过同一套校验器，
+  不合法的回落默认值并 `warn`（不认识的 key 照旧透传）。
+
+另外把 `squad_stop` 的描述补全：位子当场腾、等待/排队也停得掉、**停一个会叫醒等它的那些成员**
+（对它们来说「卡住」就是收工）—— 所以「要都别动」应该用 `squad_close`。
+
+七条反向实验各自变红（含恢复后的身份校验）。
+
 ## [2.0.6]
 
 **第五轮独立 std 测**报回 1 个 P1（**2.0.5 新引入的**）+ 1 个 P2（更早就存在）。

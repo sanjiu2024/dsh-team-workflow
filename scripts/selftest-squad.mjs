@@ -4135,6 +4135,83 @@ await checkAsync("A1：被停掉的成员，流的产出不许把终态盖成「
 	assert.ok(String(members.get("甲").note ?? "").includes("不要了"), `结论栏要写清为什么停，实际：${members.get("甲").note}`);
 });
 
+
+await checkAsync("A1：停掉之后**立刻**腾位子 —— 排队者马上补位，而且马上能重派", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-slotfree-"));
+	let release;
+	let release2;
+	const gate = new Promise((resolve) => {
+		release = resolve;
+	});
+	const gate2 = new Promise((resolve) => {
+		release2 = resolve;
+	});
+	// 故意做一个**不认 abort** 的流：被掐停之后它照样卡着（这是 P1 的最坏情况）。
+	// 两道**独立**闸门：第一轮卡 gate、重派那轮卡 gate2 —— 这样才看得出旧那轮的 finally
+	// 有没有把新句柄清掉。
+	const stream = (options) => (async function* deaf() {
+		const text = JSON.stringify(options.messages);
+		if (text.includes("占着一")) await gate;
+		if (text.includes("占着二")) await gate2;
+		yield* scriptedStream([{ text: "干完了" }])(options);
+	})();
+	const { squad, call, settle } = install({ stream, config: { persist: false, maxRunning: 1 } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "A", role: "实现", task: "占着一", worktree: wt }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "B", role: "实现", task: "排队", worktree: wt }, "main-1");
+	await new Promise((r) => setTimeout(r, 30));
+	const members = squad.state.get("main-1").get("队").members;
+	assert.equal(members.get("B").status, "排队", "上限 1，B 该排着");
+	await call("squad_stop", { squad: "队", member: "A", reason: "换人" }, "main-1");
+	assert.equal(members.get("B").status, "在跑", "A 被停掉就该立刻腾出位子（流不认 abort 也不许堵住队列）");
+	// 立刻重派 A：不许再说「还在跑」
+	const again = await call("squad_spawn", { squad: "队", member: "A", role: "实现", task: "占着二", worktree: wt }, "main-1");
+	assert.ok(!/还在跑/.test(String(again)), `停掉之后该能重派，实际：${again}`);
+	// 重派的 A 再卡一道**自己的**闸门：旧那轮的 finally 跑完时，不许把新句柄清掉
+	await new Promise((r) => setTimeout(r, 20));
+	assert.equal(members.get("A").running !== undefined, true, "重派的 A 该真在跑");
+	release();
+	await new Promise((r) => setTimeout(r, 30));
+	// 旧那轮（卡在第一个闸门上）这时才收尾 —— 它的 finally 不许清掉新一轮的 controller
+	assert.equal(members.get("A").running !== undefined, true, "旧那轮的 finally 不许把新一轮的句柄清掉（清了就再也停不掉它）");
+	assert.equal(members.get("A").running.aborted, undefined, "新句柄不该带着旧那轮的 aborted 标记");
+	release2();
+	await settle();
+	// A 重派过了，所以它的终态是这一轮的（「完成」）—— 这里只看 B 有没有被堵住
+	assert.equal(members.get("B").status, "完成", "B 要能正常跑完（不许被不认 abort 的 A 堵住）");
+});
+
+await checkAsync("A1：手改状态不许造出「等待」死态；排队中的成员停得掉", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-queuestop-"));
+	const { squad, call, settle } = install({ stream: scriptedStream([{ text: "干完了" }]), config: { persist: false, maxRunning: 1 } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "A", role: "实现", task: "先跑", worktree: wt }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "B", role: "实现", task: "排队", worktree: wt }, "main-1");
+	const members = squad.state.get("main-1").get("队").members;
+	// `squad_update` 手改「等待」→ 会造出一个没有 waitingFor 的死态（没人叫醒、stop 也停不掉）
+	const bad = await call("squad_update", { squad: "队", member: "B", status: "等待" }, "main-1");
+	assert.match(String(bad), /\[失败\]/, `手改「等待」该被拒，实际：${bad}`);
+	assert.equal(members.get("B").status, "排队");
+	// 排队中的成员也要停得掉，而且之后不许被点着
+	const stopText = await call("squad_stop", { squad: "队", member: "B", reason: "不要了" }, "main-1");
+	assert.match(String(stopText), /已停掉/, `排队中的成员该停得掉，实际：${stopText}`);
+	assert.equal(members.get("B").status, "卡住");
+	assert.equal(members.get("B").stopNote, undefined, "「排队」这条没有 promise 消费 stopNote，不许留脏字段");
+	assert.match(String(members.get("B").note), /不要了/);
+	await settle();
+	assert.equal(members.get("B").status, "卡住", "停掉的排队成员不许被 drainQueue 点着");
+	assert.equal(members.get("B").attempts ?? 0, 0, "它一步都不该跑");
+});
+
+await checkAsync("E1：override 也要过校验器（`retries:-1` 不许一路走进循环）", async () => {
+	const { ctx } = fakeCtx();
+	const { makeLayered, squadConfig } = await import(new URL("lib/index.js", ROOT).href);
+	const built = squadConfig(makeLayered(ctx), { retries: -1, maxSteps: 7 });
+	assert.equal(built.retries, SQUAD_DEFAULTS.retries, `非法的 override 要回落默认值，实际 ${built.retries}`);
+	assert.equal(built.maxSteps, 7, "合法的 override 照旧生效");
+	assert.equal(SQUAD_FIELDS.retries(-1), undefined, "（前提：-1 本来就被校验器拒）");
+});
+
 // ── 汇总 ──────────────────────────────────────────────────────────────────
 
 if (failures > 0) {
