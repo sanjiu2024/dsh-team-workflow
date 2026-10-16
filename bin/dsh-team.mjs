@@ -52,6 +52,9 @@ import {
 	withPluginBundles,
 } from "../lib/profile-plugins.js";
 
+import { billForDay, formatBill, localDate } from "../lib/bill.js";
+import { readAllSquads, readSquadsForCwd, renderSquadRecords, squadStoreDir } from "../lib/squad-cli.js";
+
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PKG_NAME = "dsh-team-workflow";
 const ROW_ID = "dsh-team-workflow";
@@ -1065,6 +1068,10 @@ function cmdHelp() {
   dsh-team patch [--status|--restore] [--dry-run]
                                       让思考链/工具行默认展开（改 dsh 安装树，可还原）
   dsh-team scheduler [status|enable|disable]
+  dsh-team bill    [--date YYYY-MM-DD] [--json]
+                                    某天的 token 账单（读审计日志；含小队那半）
+  dsh-team squad ls [--cwd <目录>] [--all]
+                                    看**落盘**的小队状态（不是活着的进程；实时在面板）
                                       定时任务调度器开关（默认关，改完重启 dsh）
   dsh-team plugins [--dry-run]        可选安装三个第三方插件（交互式逐项询问，默认都不装）
     --with-sidebar / --with-wallpaper / --with-pet
@@ -1418,6 +1425,80 @@ function cmdMcApply() {
  * 因为调度器是本包的一个模块，不是独立 bundle：默认关靠的是这份配置，
  * `installScheduler` 在 enabled !== true 时立刻返回，什么都不注册。
  */
+/**
+ * `dsh-team bill [--date YYYY-MM-DD] [--json]`（REQ-016 · C1）。
+ *
+ * 读**本包自己的审计日志**（`<DSH_HOME>/storages/audit-log/<日期>.jsonl` 的 `assistant_usage`
+ * 事件）—— 它自带 provider/model，所以按天按模型都是一次顺序读。小队那半读落盘的成员用量
+ * （按 `endedAt` 归属到天）。**审计关了就没有账单**，这里会明说，不拿别的东西凑数字。
+ */
+function cmdBill() {
+	const date = typeof flags.date === "string" ? flags.date : localDate(Date.now());
+	if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) fail(`--date 要写成 YYYY-MM-DD，收到的是「${date}」`);
+	// 小队那半：所有工作目录的落盘记录（命令行没有「当前小队」的概念，所以全读）
+	const squads = readAllSquads().flatMap((entry) => entry.records);
+	const report = billForDay(date, { home: dshHome, squads });
+	if (flags.json === true) {
+		console.log(
+			JSON.stringify(
+				{
+					date: report.date,
+					file: report.file,
+					audit: report.audit
+						? {
+								totals: report.audit.totals,
+								sessions: report.audit.sessions,
+								bad: report.audit.bad,
+								first: report.audit.first ?? null,
+								last: report.audit.last ?? null,
+								byModel: Object.fromEntries(report.audit.byModel),
+							}
+						: null,
+					squads: { totals: report.squads.totals, members: report.squads.members },
+				},
+				null,
+				1,
+			),
+		);
+		return;
+	}
+	console.log(formatBill(report));
+}
+
+/**
+ * `dsh-team squad ls [--cwd <目录>] [--all]`（REQ-016 · B6）。
+ *
+ * 看的是**落盘**的小队（`<DSH_HOME>/team-workflow/squads/`），不是某个进程里活着的那些 ——
+ * 实时的那份在 Web 面板。只读：不写盘、不隔离文件。
+ */
+function cmdSquad(sub) {
+	if (sub !== "ls") fail("用法：dsh-team squad ls [--cwd <目录>] [--all]");
+	const dir = squadStoreDir(dshHome);
+	if (flags.all === true) {
+		const all = readAllSquads({ home: dshHome });
+		const total = all.reduce((n, entry) => n + entry.records.length, 0);
+		if (total === 0) {
+			console.log(`没有任何落盘的小队（${dir}）`);
+			return;
+		}
+		for (const entry of all) {
+			if (entry.records.length === 0) continue;
+			console.log(`\n— ${entry.cwd || "(没记工作目录)"}  ·  ${path.relative(dshHome, entry.file)}`);
+			console.log(renderSquadRecords(entry.records));
+		}
+		return;
+	}
+	const cwd = typeof flags.cwd === "string" ? path.resolve(flags.cwd) : process.cwd();
+	const { file, records } = readSquadsForCwd(cwd, { home: dshHome });
+	if (records.length === 0) {
+		console.log(`这个工作目录没有落盘的小队：${cwd}`);
+		console.log(`  （看的是 ${file}）`);
+		console.log("  小队状态是进程内的：命令行看不到另一个进程里活着的队，实时的那份在 Web 面板。");
+		return;
+	}
+	console.log(renderSquadRecords(records));
+}
+
 function cmdScheduler(mode) {
 	const file = path.join(PKG_ROOT, "team", "extensions", "scheduler.json");
 	if (!fs.existsSync(file)) fail(`找不到 ${file}`);
@@ -1466,6 +1547,12 @@ function cmdScheduler(mode) {
 
 const [command, sub] = positional;
 switch (command) {
+	case "bill":
+		cmdBill();
+		break;
+	case "squad":
+		cmdSquad(sub);
+		break;
 	case "install":
 		await cmdInstall();
 		break;

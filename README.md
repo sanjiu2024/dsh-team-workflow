@@ -29,6 +29,8 @@ dsh-team thrift apply                # 把 ~/.dsh/team-workflow/thrift.json 写�
 dsh-team preset install              # 生成「团队模式」预设（rc.x 下是个 bundle，见下）
 dsh-team preset install --default    # 顺带把它设成新会话的默认预设
 dsh-team plugins                     # 可选装三个第三方插件（交互式逐项问，默认都不装）
+dsh-team bill                        # 今天的 token 账单（--date YYYY-MM-DD / --json）
+dsh-team squad ls                    # 看**落盘**的小队状态（--cwd <目录> / --all）
 dsh-team patch                       # 思考链/工具行默认展开（改安装树，--restore 可还原）
 dsh-team patch --status              # 只看看打没打（认得出 dsh 新旧两种组件形态）
 dsh-team uninstall                   # 卸载
@@ -627,7 +629,7 @@ squad_close   收队：**当场掐掉还在跑的成员**，名册与黑板留�
 npm test
 ```
 
-19 个自检，每个都用假 ctx 跑真实逻辑：系统提示段顺序、四个命令、审计落盘与脱敏、节流统计、
+23 个自检，每个都用假 ctx 跑真实逻辑：系统提示段顺序、四个命令、审计落盘与脱敏、节流统计、
 异常隔离、magic-context 折叠、thrift 阈值换算与预设生成、context7、lens 工具集、会话交接、
 会话消息形状、linux 命令工具、启动自动更新、worktree 沙箱、工具参数 schema、操控电脑守护进程、
 mc 与 dsh 的压缩阈值不变式、定时任务调度器、可选第三方插件的安装判据。

@@ -8,6 +8,41 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.0.0-rc.2]
+
+**REQ-016 · C1 `dsh-team bill` + B6 `dsh-team squad ls`**（19 项里的两项，都在 CLI 这一侧）。
+
+### C1 · `dsh-team bill`
+
+- `dsh-team bill [--date YYYY-MM-DD] [--json]`：某天的 token 账单，**按模型**拆开。
+- 数据源是**本包自己的审计日志**（`<DSH_HOME>/storages/audit-log/<本地日>.jsonl` 的 `assistant_usage`
+  事件）—— 它自带 `provider`/`model`/`ts`，所以按天按模型都是一次顺序读，**不用解压会话文件**
+  （那边 100MiB / 59751 帧，全量扫一遍 2.7 秒）。
+- **实测对账**：`bill --date 2026-10-15` 算出 input 5,417,230 / output 1,226,172 / cacheRead 194,059,648
+  / total **200,703,050**，与之前用会话文件逐帧解压算的**逐项相等**（调用次数差 13：审计按事件计、
+  会话按消息计）。
+- **小队那半**：读落盘的成员用量，按 `endedAt` 归属到天；没有时间戳的**不计** —— 宁可少算不瞎算。
+- 三个边界写在输出里：只统计本机、审计关了就没账单（明说，不拿别的东西凑）、**没有钱**。
+- `addUsage` 只认**真数字**（与 `lib/squad-loop.js` 同一口径）：字符串 `"12"` 不算 ——
+  否则一份手改过的日志能让账单凭空多一笔。
+
+### B6 · `dsh-team squad ls`
+
+- `dsh-team squad ls [--cwd <目录>] [--all]`：看**落盘**的小队（`<DSH_HOME>/team-workflow/squads/`）。
+- **只读**：走 `createSquadStore({ quarantine: false })` —— 默认的 store 会把版本不认识的文件改名
+  隔离（插件加载时那是对的），但「看一眼」不该改用户的盘；有断言锁着这一点。
+- 渲染复用 `snapshotAll` / `renderSnapshot`（与 `squad_status` 同一套），免得两处格式漂移。
+- 语义说清楚：命令行看不到另一个进程里**活着**的队 —— 实时的那份在 Web 面板。
+
+### 其它
+
+- `npm test` 链上第 23 个套件：新增 `scripts/selftest-cli.mjs`（13 条断言，含**真跑子命令**那一段 ——
+  纯函数全绿但 `case` 没接上时，只有真跑才看得出来）。
+- README 命令清单补上这两个子命令；自检条数 19 → 23。
+
+验证：`npm test` EXIT=0；五条反向实验各自变红（账单不筛事件 / 小队用量不按日期 / CLI 用默认 store
+会改名 / bin 不接 `bill` / `localDate` 用 UTC）。
+
 ## [2.0.0-rc.1]
 
 **REQ-016 块 1 · 配置底座**（19 项里的 E1 + D3）。后面四块继续以 `2.0.0-rc.N` 发，全部落完落 `2.0.0`。
