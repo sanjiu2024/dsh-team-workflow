@@ -17,7 +17,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 const ROOT = new URL("../", import.meta.url);
-const { BASH_DEFAULTS, BashSession, clipTail, installBashLinux, renderRun, resolveTimeout, resolveWorkdir, runOnce, shellArgv, shellQuote } = await import(
+const { BASH_DEFAULTS, BashSession, appendClipped, clipTail, installBashLinux, renderRun, resolveTimeout, resolveWorkdir, runOnce, shellArgv, shellQuote } = await import(
 	new URL("lib/bash-linux.js", ROOT).href
 );
 
@@ -60,6 +60,26 @@ check("clipTail 不超限时原样返回", () => {
 	assert.equal(r.text, "短输出");
 	assert.equal(r.totalBytes, Buffer.byteLength("短输出", "utf8"));
 });
+
+// appendClipped：小块不能把截断标记挤掉（2026-10-16 flaky 的根因）
+// 旧实现是「块数组 + 超预算 shift 掉最旧的块」，而那块**正是带标记的那块** ——
+// 实测 2MB stderr 只剩 211 字节且没有标记：截断被静默了。
+check("appendClipped：先大后小，截断标记必须还在（真 bug 回归）", () => {
+	const first = appendClipped("", "x".repeat(5000), 2048);
+	assert.match(first, /输出过长/, "第一块超预算就该有标记");
+	assert.ok(first.length < 5000, "要真的掐过");
+	const second = appendClipped(first, "y".repeat(211), 2048);
+	assert.match(second, /输出过长/, `小块把标记挤掉了：${JSON.stringify(second.slice(0, 60))}`);
+	assert.ok(second.endsWith("y"), "尾部（最新输出）要保留");
+	assert.ok(Buffer.byteLength(second, "utf8") <= 2048 + 200, `标记之外不该超预算：${Buffer.byteLength(second, "utf8")}`);
+});
+
+check("appendClipped：不超预算时原样拼接、不加标记", () => {
+	assert.equal(appendClipped("ab", "cd", 100), "abcd");
+	assert.equal(appendClipped("", "", 100), "");
+	assert.doesNotMatch(appendClipped("ab", "cd", 100), /输出过长/);
+});
+
 check("clipTail 按字节算、不劈开多字节字符", () => {
 	// 全中文：每字 3 字节。上限 30 字节 → 不能出现半个字（乱码）
 	const got = clipTail("中文".repeat(50), 30);
@@ -390,6 +410,19 @@ console.log("done");
 	const agent2 = { session: { header: { cwd } } };
 	await registered.get("bash_open").execute({}, { agent: agent2 });
 	check("不同 agent 的持久会话互相独立", () => assert.equal(handle.sessions(), 2));
+	// 静默截断回归（2026-10-16）：持久会话的缓冲超过 4MB 上限时，丢头必须说出来。
+	// 旧实现是直接 `slice(-hardCap)` —— 模型看到的是「从中间开始」的正文，且毫无提示。
+	const huge = await registered.get("bash_send").execute(
+		{ command: "head -c 4500000 /dev/zero | tr '\\0' 'x'; printf done" },
+		{ agent },
+	);
+	check("持久会话的大输出也必须带截断说明（模型不能以为看到了全部）", () => {
+		// 会话内部缓冲超 4MB 会丢头，但 `bash_send` 工具层会把结果掐到 limit 并**写明** ——
+		// 这层说明是模型唯一的依靠，所以锁在这里（2026-10-16 查这条时确认过：
+		// 会话内部再补一句说明是没用的，必然被这层掐掉）。
+		assert.match(huge.text, /输出过长，只留结尾 \d+ \/ \d+ 字符/, `长度 ${huge.text.length}，开头 ${JSON.stringify(huge.text.slice(0, 40))}`);
+		assert.ok(huge.text.endsWith("done"), "尾部要保留");
+	});
 	// P2 回归：shell 自己退出（命令里写了 exit）时该把它从 Map 里摘掉，
 	// 否则 Map 会强引用已死的 agent 与子进程句柄，进程长活 + agent 多了就缓慢累积。
 	await registered.get("bash_send").execute({ command: "exit 0" }, { agent: agent2 });
