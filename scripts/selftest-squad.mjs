@@ -2960,6 +2960,115 @@ await checkAsync("A6 在等的成员停得掉；被主 agent 改过状态的不�
 	assert.equal(members.get("丙").usage.inputTokens, 10, `被改过状态的不许被重新跑起来，实际用量 ${members.get("丙").usage.inputTokens}`);
 });
 
+await checkAsync("收队之后不再补位/不再叫醒；重派一个在跑的成员会被拒（且不改它的状态）", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-closed-"));
+	const { squad, call } = install({ stream: hangingStream, config: { persist: false, maxRunning: 1 } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "挂着", role: "实现", task: "挂着别动", worktree: wt }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "排着", role: "实现", task: "排着", worktree: wt }, "main-1");
+	const members = squad.state.get("main-1").get("队").members;
+	assert.equal(members.get("排着").status, "排队");
+	// 重派一个**正在跑**的成员：必须被拒，而且不许把它的状态改成「卡住」（它明明在跑）
+	const again = await call("squad_spawn", { squad: "队", member: "挂着", role: "实现", task: "再来一次", worktree: wt }, "main-1");
+	// `squad_spawn` 这条路**本来就有**护栏（工具描述里那句是真的）；`startMember` 里的那道是
+	// 给别的调用方（`squad_review` 复用同名审查成员等）兜底的 —— 两条都在
+	assert.match(again, /还在跑/, `描述里承诺过要拒：${again}`);
+	assert.equal(members.get("挂着").status, "在跑", "被拒的重派不许改它在跑的状态");
+	assert.equal(members.get("挂着").running !== undefined, true, "旧的那个 AbortController 不能被覆盖掉");
+	// 再加一个「等着挂着」的：收队之后它也**不许被叫醒**
+	members.set("等着", {
+		label: "等着",
+		role: "实现",
+		task: "等挂着",
+		worktree: wt,
+		status: "等待",
+		waitingFor: "挂着",
+		usage: {},
+		attempts: 0,
+		transcript: [],
+		inbox: [],
+	});
+	// 收队：掐掉在跑的，**排队的、等着的都不许被放出去**（否则「收队」当场又烧起来）
+	assert.match(await call("squad_close", { squad: "队", reason: "不要了" }, "main-1"), /掐掉/);
+	await members.get("挂着").promise;
+	assert.equal(members.get("挂着").status, "卡住");
+	assert.equal(members.get("排着").status, "排队", "收队之后不许再补位");
+	assert.equal(members.get("排着").running, undefined);
+	assert.equal(members.get("等着").status, "等待", "收队之后不许再叫醒谁");
+	assert.equal(members.get("等着").running, undefined);
+	assert.equal(members.get("等着").usage.inputTokens, undefined, "没被叫醒就不该有用量");
+});
+
+await checkAsync("startMember 护栏：复用同名审查成员时，正在跑的那个不会被起第二条循环", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-rev-guard-"));
+	const { squad, call, settle } = install({
+		stream: (options) => (JSON.stringify(options.messages).includes("挂着别动") ? hangingStream(options) : scriptedStream([{ text: "干完了" }])(options)),
+		config: { persist: false },
+	});
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "审-X", role: "审查", task: "挂着别动", worktree: wt }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "写-A", role: "实现", task: "改代码", worktree: wt }, "main-1");
+	const members = squad.state.get("main-1").get("队").members;
+	await members.get("写-A").promise;
+	const before = members.get("审-X").running;
+	assert.ok(before !== undefined, "审-X 该在跑");
+	// 审-X 正在跑，却又要它当审查者 → 必须被拒，且**不许**换掉它的 AbortController
+	const out = await call("squad_review", { squad: "队", member: "写-A", reviewer: "审-X" }, "main-1");
+	assert.match(out, /正在跑|还在跑/, `该拒：${out}`);
+	assert.equal(members.get("审-X").running, before, "旧的 AbortController 不许被覆盖（覆盖了就停不掉它了）");
+	assert.equal(members.get("审-X").status, "在跑", "被拒不许改它的状态");
+	// 收尾：停掉它（不留挂着的东西）
+	await call("squad_stop", { squad: "队", member: "审-X", reason: "收尾" }, "main-1");
+	await members.get("审-X").promise;
+	await settle();
+});
+
+check("A4：roleTools 的空数组是「零工具」，不是「没配」（fail-open 要挡住）", () => {
+	assert.deepEqual(SQUAD_FIELDS.roleTools({ 侦察: [] }), { 侦察: [] }, "空数组是合法配置");
+	// 归一之后给「零工具」的角色必须真的一个都拿不到（含 bash）
+	const zero = memberToolsFor({ bash: true, allow: [] });
+	assert.deepEqual(zero.tools, [], "空白名单 = 零工具");
+	assert.equal(zero.schemas.length, 0);
+	// 没配（undefined）才是「不限制」
+	assert.equal(memberToolsFor({ bash: true, allow: undefined }).tools.length, MEMBER_TOOL_COUNT);
+});
+
+await checkAsync("A4：配了 roleTools 的角色真的拿不到工具（走 roleToolsFor 那条路，不是直接调 memberToolsFor）", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-rt-zero-"));
+	const seen = [];
+	const { call, settle } = install({
+		stream: scriptedStream([{ text: "干完了" }, { text: "干完了" }], seen),
+		config: { persist: false, roleTools: { 侦察: [] } },
+	});
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "查", role: "侦察", task: "查", worktree: wt }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "写", role: "实现", task: "写", worktree: wt }, "main-1");
+	await settle();
+	assert.equal(seen[0].tools.length, 0, `配了空数组的角色必须零工具，实际拿到 ${seen[0].tools.length} 个`);
+	// 提示词也必须说实话：零工具时不能还写着「工具就 14 个」（成员会去调不存在的工具）。
+	// 这条踩过：`memberSystemPrompt` 原来把空数组回落成全部工具。
+	assert.match(seen[0].system, /没有任何工具/, "提示词里也要说实话");
+	assert.doesNotMatch(seen[0].system, /工具就 \d+ 个/, "零工具时不许再列工具数");
+	assert.equal(seen[1].tools.length, MEMBER_TOOL_COUNT, "没配的角色照旧不受限");
+});
+
+check("队级用量：成员口径不一致时也要算全（有的报 totalTokens、有的只报分项）", () => {
+	const squad = {
+		name: "队",
+		objective: "o",
+		createdAt: 1,
+		board: [],
+		acceptance: [],
+		members: new Map([
+			["A", { label: "A", role: "实现", task: "t", status: "完成", usage: { totalTokens: 100 } }],
+			["B", { label: "B", role: "实现", task: "t", status: "完成", usage: { inputTokens: 10, outputTokens: 5 } }],
+		]),
+	};
+	const view = snapshot(new Map([["o", new Map([["队", squad]])]]), "o").squads[0];
+	assert.equal(view.usage.totalTokens, 115, `队级合计要按成员折算：100 + (10+5)，实际 ${view.usage.totalTokens}`);
+	assert.equal(view.usage.inputTokens, 10, "分项照旧求和");
+});
+
 check("A3：重启时「排队」判「卡住」并说明不会自动补位", () => {
 	const revived = reviveSquad({ name: "n", members: [{ label: "Q", role: "实现", status: "排队" }] }, { statuses: MEMBER_STATUS });
 	assert.equal(revived.members.get("Q").status, "卡住");
