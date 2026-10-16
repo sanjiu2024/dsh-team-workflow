@@ -34,7 +34,7 @@
 四道闸门、五个协作工具、落盘三件套、面板实时推送。
 
 **块 1 · 配置底座**
-- `team/extensions/squad.json` 升 v2（分组：`defaults` / `limits` / `sandbox` / `roles` / `templates`）。
+- `team/extensions/squad.json` 升 v2：**三个分组** `defaults` / `limits` / `sandbox`，`roles` 与 `templates` 在顶层。
   **v1 形状照常读**（分组与扁平键同时接受，分组优先），不认识的键会说出来 —— 静默回落是最难查的一类。
 - **角色 → 档位**（`roles`）：`squad_spawn` 不传 `model` 时按角色查（「审查」与「审查型」同一条）。
   成员把实际用的档位记在自己身上，续聊与重启后沿用 —— 不然「审查型配了 tier-power、续聊掉回 tier-std」没人查得出来。
