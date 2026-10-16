@@ -1,6 +1,12 @@
 {
   "configVersion": 2,
   "_说明": [
+    "limits.tokenBudget / memberTokenBudget：token 上限（0 = 不限）。超了成员在**步边界**当场收工，",
+    "  状态判「卡住」并写明原因 —— 是「被预算掐掉」，不是「干完了」。",
+    "limits.maxRunning：同时最多几个成员在跑（0 = 不限）。满了再派就**排队**（名册先建好、不跑），",
+    "  有人收工自动补位。排队的人重启后不会自动补位（会判「卡住」并说明）。",
+    "sandbox.roleTools：角色 → 允许用的工具名（空表 = 不限制）。与 sandbox.bash 是**与**的关系。",
+    "  例：{\"侦察\": [\"read\",\"grep\",\"glob\",\"web_search\",\"web_fetch\",\"board\",\"say\"]} 让侦察型只读不写。",
     "配置文件形状：**v2**（2.0 起）。键分了组 —— defaults{provider,model} / limits{maxSteps,retries,memberTimeoutMinutes} / sandbox{bash}。",
     "  旧形状（v1，9 个扁平键）照常能读：归一在读入时做，**不写回文件**，只在日志里提示一句。",
     "roles：角色 → 档位。squad_spawn 没传 model 时按角色查这张表（「审查」与「审查型」落到同一条）。",
@@ -81,10 +87,14 @@
   "limits": {
     "maxSteps": 30,
     "retries": 1,
-    "memberTimeoutMinutes": 20
+    "memberTimeoutMinutes": 20,
+    "tokenBudget": 0,
+    "memberTokenBudget": 0,
+    "maxRunning": 0
   },
   "sandbox": {
-    "bash": true
+    "bash": true,
+    "roleTools": {}
   },
   "roles": {
     "侦察": "tier-std",

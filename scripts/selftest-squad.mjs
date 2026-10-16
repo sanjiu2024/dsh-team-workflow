@@ -33,7 +33,7 @@ import * as path from "node:path";
  * REQ-015 起小队工具 8 个（多了 squad_send / squad_say）、成员工具 12 个
  * （多了 say / web_search / web_fetch / worktree_new / worktree_list）。
  */
-const SQUAD_TOOL_COUNT = 8;
+const SQUAD_TOOL_COUNT = 9;
 const MEMBER_TOOL_COUNT = 12;
 
 const ROOT = new URL("../", import.meta.url);
@@ -152,7 +152,8 @@ check("加成员：worktree 必填、建行即「在跑」；队内名字唯一�
 check("改成员那一行：状态只认三个词，角色/任务/worktree 可改，成员名不可改", () => {
 	const { state, squad } = fixture();
 	addMember(state, squad, { label: "实现-A", role: "实现", task: "改代码", worktree: "/tmp/wt-a" });
-	assert.deepEqual(MEMBER_STATUS, ["在跑", "完成", "卡住"], "状态词表是面板与工具的共同契约（没有「待派」——建行即开跑）");
+	// REQ-016 A3 起多了「排队」：并发满了的名册行先建好、不跑，有人收工自动补位
+	assert.deepEqual(MEMBER_STATUS, ["在跑", "排队", "完成", "卡住"], "状态词表是面板与工具的共同契约（没有「待派」——建行即开跑）");
 
 	assert.equal(updateMember(squad, "实现-A", { status: "完成" }).ok, true);
 	assert.equal(squad.members.get("实现-A").status, "完成");
@@ -536,7 +537,7 @@ await checkAsync("工具：建队 → spawn（真跑成员循环）→ 结论自
 	assert.equal(record.tools.length, SQUAD_TOOL_COUNT);
 	assert.deepEqual(
 		record.tools.map((t) => t.name).sort(),
-		["squad_board", "squad_close", "squad_new", "squad_say", "squad_send", "squad_spawn", "squad_status", "squad_update"],
+		["squad_board", "squad_close", "squad_new", "squad_say", "squad_send", "squad_spawn", "squad_status", "squad_stop", "squad_update"],
 	);
 
 	assert.match(await call("squad_new", { name: "登录改造", objective: "把登录改成 OAuth" }, "main-1"), /已建小队「登录改造」/);
@@ -2541,7 +2542,7 @@ check("复审·P2：SQUAD_FIELDS.roles 有坏条目就整体拒（借 readJsonCo
 	assert.deepEqual(SQUAD_FIELDS.roles({ " 审查 ": " tier-power " }), { 审查: "tier-power" }, "键值都要去空白");
 	assert.equal(SQUAD_FIELDS.roles({ 审查: 42 }), undefined, "坏值整体拒（不能静默清成空表）");
 	assert.equal(SQUAD_FIELDS.roles({ "": "x" }), undefined, "空键整体拒");
-	assert.equal(SQUAD_FIELDS.roles({}), undefined);
+	assert.deepEqual(SQUAD_FIELDS.roles({}), {}, "空表是合法的（= 都用默认档）");
 	assert.equal(SQUAD_FIELDS.roles([]), undefined);
 	assert.equal(SQUAD_FIELDS.roles("x"), undefined);
 });
@@ -2672,6 +2673,150 @@ check("复审·P2：squadConfig 真把 v2 分组读进来了（漏传归一会�
 	const real = squadConfig(layered, undefined);
 	assert.equal(real.maxSteps, SQUAD_DEFAULTS.maxSteps);
 	assert.equal(real.roles.审查, "tier-power");
+});
+
+
+// ── REQ-016 块 2：可控性（A1 停止 / A2 预算 / A3 并发 / A4 角色白名单）────────
+
+await checkAsync("A1 squad_stop：只掐那一个成员，同队其他人不受影响，原因留在结论栏", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-a1-"));
+	// 「挂着别动」那个挂住不返回，「干完」那个正常收工 —— 用任务正文区分
+	const stream = (options) =>
+		JSON.stringify(options.messages).includes("挂着别动") ? hangingStream(options) : scriptedStream([{ text: "我干完了" }])(options);
+	const { squad, call, settle } = install({ stream, config: { persist: false } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "挂一", role: "实现", task: "挂着别动一", worktree: wt }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "挂二", role: "实现", task: "挂着别动二", worktree: wt }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "干", role: "实现", task: "干完它", worktree: wt }, "main-1");
+	// ⚠️ 这里**不能**用 `settle()`：它会 await 那两个永远不返回的成员 → 自检当场死锁
+	// （我第一次就是这么写的，跑了两分钟没结束）。只等正常的那个。
+	const members = squad.state.get("main-1").get("队").members;
+	await members.get("干").promise;
+	assert.equal(members.get("挂一").status, "在跑", "挂着的那个还在跑");
+	assert.equal(members.get("挂二").status, "在跑", "**必须留第二个还在跑的** —— 否则「只掐一个」和「掐整队」在测试里看不出区别（R2 反向实验第一次就是这么漏的）");
+	assert.equal(members.get("干").status, "完成", "第三个已经收工");
+	const attempts = members.get("挂一").attempts;
+	assert.match(await call("squad_stop", { squad: "队", member: "挂一", reason: "跑偏了" }, "main-1"), /已停掉「挂一」/);
+	await members.get("挂一").promise;
+	assert.equal(members.get("挂一").status, "卡住");
+	assert.match(members.get("挂一").note, /跑偏了/, `停它的原因要留住，实际：${members.get("挂一").note}`);
+	assert.equal(members.get("挂一").attempts, attempts, "停掉不是重试");
+	assert.equal(members.get("挂二").status, "在跑", "同队其他人不受影响（整队掐法会在这里露馅）");
+	assert.equal(members.get("干").status, "完成", "已收工的更不该被牵连");
+	// 收尾：把第二个也停掉，免得自检挂在它身上
+	await call("squad_stop", { squad: "队", member: "挂二", reason: "收尾" }, "main-1");
+	await members.get("挂二").promise;
+	// 边界：没在跑的、不存在的、已收队的
+	assert.match(await call("squad_stop", { squad: "队", member: "干" }, "main-1"), /现在没在跑/);
+	assert.match(await call("squad_stop", { squad: "队", member: "没有" }, "main-1"), /没有成员/);
+	await call("squad_close", { squad: "队", reason: "收工" }, "main-1");
+	assert.match(await call("squad_stop", { squad: "队", member: "干" }, "main-1"), /收队/);
+});
+
+await checkAsync("A2 token 预算：到步边界收工（判「卡住」并写明是预算），不限时不拦", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-a2-"));
+	// 假流每步报 input 10 + output 5 = 15：预算 25 → 跑完 2 步、第 3 步边界收工。
+	// ⚠️ 每步都要带一个工具调用 —— 没有工具调用时循环判定「它答完了」，第 1 步就收工，
+	// 预算根本轮不到（我第一次就是这么写的，结果成员「完成」了）。
+	const busy = (text) => ({ text, calls: [{ id: "c", name: "board", arguments: `{"text":"${text}"}` }] });
+	const { squad, call, settle } = install({
+		stream: scriptedStream([busy("一"), busy("二"), busy("三"), busy("四")]),
+		config: { persist: false, memberTokenBudget: 25 },
+	});
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "A", role: "实现", task: "干活", worktree: wt }, "main-1");
+	await settle();
+	const member = squad.state.get("main-1").get("队").members.get("A");
+	assert.equal(member.status, "卡住", "被预算掐掉不是「完成」");
+	assert.match(member.note, /token 预算/, `要写明原因，实际：${member.note}`);
+	assert.equal(member.attempts, 1, "预算用尽不是 infra，不该重试");
+	// 假流不给 totalTokens，所以账是按各项算的（预算判定走的也是「优先 totalTokens，没有就把各项加起来」）
+	assert.equal(member.usage.inputTokens, 20, "跑了两步：input 10×2");
+	assert.equal(member.usage.outputTokens, 10, "output 5×2");
+	// 小队级上限走同一条路
+	const bySquad = install({ stream: scriptedStream([busy("一"), busy("二")]), config: { persist: false, tokenBudget: 10 } });
+	await bySquad.call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await bySquad.call("squad_spawn", { squad: "队", member: "A", role: "实现", task: "干活", worktree: wt }, "main-1");
+	await bySquad.settle();
+	assert.match(bySquad.squad.state.get("main-1").get("队").members.get("A").note, /token 预算/);
+	// 不限（0）时照常跑完
+	const free = install({ stream: scriptedStream([{ text: "干完了" }]), config: { persist: false } });
+	await free.call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await free.call("squad_spawn", { squad: "队", member: "A", role: "实现", task: "干活", worktree: wt }, "main-1");
+	await free.settle();
+	assert.equal(free.squad.state.get("main-1").get("队").members.get("A").status, "完成");
+});
+
+await checkAsync("A3 并发上限：满了就排队，有人收工自动补位（挂 then 会堵死队列）", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-a3-"));
+	const seen = [];
+	const { squad, call, settle } = install({
+		stream: scriptedStream([{ text: "干完了" }], seen),
+		config: { persist: false, maxRunning: 2 },
+	});
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	const outs = [];
+	for (const name of ["A", "B", "C", "D"]) {
+		outs.push(await call("squad_spawn", { squad: "队", member: name, role: "实现", task: "干活", worktree: wt }, "main-1"));
+	}
+	assert.match(outs[2], /排进/, `第三个该排队：${outs[2]}`);
+	assert.match(outs[3], /排进/);
+	const members = squad.state.get("main-1").get("队").members;
+	const byStatus = (s) => [...members.values()].filter((m) => m.status === s).length;
+	assert.equal(byStatus("在跑"), 2, `同一时刻最多 2 个在跑，实际 ${byStatus("在跑")}`);
+	assert.equal(byStatus("排队"), 2);
+	// 补位是异步的（在 finally 里）——多等几轮把队排空
+	for (let i = 0; i < 8; i += 1) await settle();
+	assert.equal(byStatus("完成"), 4, `四个都该跑完：${[...members.values()].map((m) => `${m.label}=${m.status}`).join(" ")}`);
+	assert.equal(seen.length >= 4, true, `四个成员都真跑过（实际 ${seen.length} 次调用）`);
+});
+
+await checkAsync("A4 角色工具白名单：给了就收窄，与 bash 闸门是「与」", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-a4-"));
+	const seen = [];
+	const { call, settle } = install({
+		stream: scriptedStream([{ text: "侦察完" }, { text: "实现完" }], seen),
+		config: { persist: false, roleTools: { 侦察: ["read", "grep", "glob", "board"] } },
+	});
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "查", role: "侦察", task: "查", worktree: wt }, "main-1");
+	await settle();
+	assert.deepEqual(seen[0].tools.map((t) => t.name).sort(), ["board", "glob", "grep", "read"], "白名单要真的收窄发给 provider 的工具表");
+	assert.doesNotMatch(seen[0].system, /write|bash/, "提示词里也不能出现被收窄掉的工具（漏一处 = 说给不到其实能调）");
+	// 没配白名单的角色照旧拿全部
+	await call("squad_spawn", { squad: "队", member: "写", role: "实现", task: "写", worktree: wt }, "main-1");
+	await settle();
+	assert.equal(seen[1].tools.length, MEMBER_TOOL_COUNT, "没配的角色不该被收窄");
+	// 「与」：白名单里写了 bash，但全局 bash 关着 → 还是没有
+	const offSeen = [];
+	const off = install({
+		stream: scriptedStream([{ text: "x" }], offSeen),
+		config: { persist: false, bash: false, roleTools: { 侦察: ["read", "bash"] } },
+	});
+	await off.call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await off.call("squad_spawn", { squad: "队", member: "查", role: "侦察", task: "查", worktree: wt }, "main-1");
+	await off.settle();
+	assert.deepEqual(offSeen[0].tools.map((t) => t.name), ["read"], "bash 全局关着，白名单也救不回来（两个闸门是「与」）");
+});
+
+check("A3/A4：配置校验器 —— 空表合法、坏条目整体拒、越界值拒", () => {
+	assert.deepEqual(SQUAD_FIELDS.roleTools({}), {}, "空表 = 不限制，是合法值");
+	assert.deepEqual(SQUAD_FIELDS.roleTools({ 侦察: ["read", " grep "] }), { 侦察: ["read", "grep"] }, "工具名要去空白");
+	assert.equal(SQUAD_FIELDS.roleTools({ 侦察: ["read", ""] }), undefined, "有坏条目整体拒（别静默清）");
+	assert.equal(SQUAD_FIELDS.roleTools({ 侦察: "read" }), undefined, "不是数组就拒");
+	assert.equal(SQUAD_FIELDS.roleTools([]), undefined);
+	assert.equal(SQUAD_FIELDS.tokenBudget(0), 0, "0 = 不限，合法");
+	assert.equal(SQUAD_FIELDS.tokenBudget(-1), undefined);
+	assert.equal(SQUAD_FIELDS.tokenBudget(1.5), undefined);
+	assert.equal(SQUAD_FIELDS.maxRunning(0), 0);
+	assert.equal(SQUAD_FIELDS.maxRunning(51), undefined, "上限 50，别让人配出个荒唐值");
+	assert.equal(SQUAD_FIELDS.maxRunning("2"), undefined);
+});
+
+check("A3：重启时「排队」判「卡住」并说明不会自动补位", () => {
+	const revived = reviveSquad({ name: "n", members: [{ label: "Q", role: "实现", status: "排队" }] }, { statuses: MEMBER_STATUS });
+	assert.equal(revived.members.get("Q").status, "卡住");
+	assert.match(revived.members.get("Q").note, /排队/, "要说清为什么，以及怎么办");
 });
 
 // ── 汇总 ──────────────────────────────────────────────────────────────────

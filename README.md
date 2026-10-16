@@ -521,6 +521,23 @@ dsh 的客户端模块只做 `readFileSync` + 原样 HTTP，没有转译器，�
 耗尽**不**重试（那是模型真在绕圈，重试等于继续烧钱）；单次尝试有墙钟上限（默认 20 分钟），
 到点 abort 并判「卡住」。
 
+**烧钱有四道闸门**（2.0 起，都在 `team/extensions/squad.json`，`0` = 不限）：
+
+| 闸门 | 键 | 行为 |
+| --- | --- | --- |
+| 步数 | `limits.maxSteps` | 到顶判「卡住」（不重试） |
+| 墙钟 | `limits.memberTimeoutMinutes` | 单次尝试到点 abort |
+| **token** | `limits.tokenBudget` / `limits.memberTokenBudget` | **在步边界判**，超了判「卡住」并写明是预算 —— 取两者更紧的那个 |
+| **并发** | `limits.maxRunning` | 超了的成员**排队**（名册先建好、不跑），有人收工自动补位 |
+
+`squad_stop` 停的是**一个**人：同队其他人照跑，排队的人照常补位（`squad_close` 才是收整队）。
+被停掉的成员判「卡住」，停止原因写进结论栏。
+
+**角色能限定工具**：`sandbox.roleTools` 是「角色 → 允许用的工具名」，空表 = 不限制。例如
+`{"侦察": ["read", "grep", "glob", "web_search", "web_fetch", "board", "say"]}` 让侦察型只读不写。
+它与 `sandbox.bash` 是**「与」**的关系（白名单里写了 `bash`、全局关着也拿不到）。
+**这不是沙箱**：最终强度仍由宿主策略决定，`danger-full-access` 下等于没有。
+
 成员的工具是 12 个：`read` / `write` / `edit` / `grep` / `glob` / `bash` / `board` / `say` /
 `web_search` / `web_fetch` / `worktree_new` / `worktree_list`。**没有** `worktree_merge` /
 `worktree_drop` —— 合并与丢弃永远由主 agent 决定。
@@ -535,10 +552,11 @@ squad_spawn   派一个成员，**当场在后台跑起来**（多派几个就�
 squad_update  手动覆盖成员那一行（状态 / 结论 / 角色 / 任务 / worktree）
 squad_board   往共享黑板追加一条（你以「主 agent」的身份写）
 squad_status  看一个小队或全部（成员那一行 + 黑板最近几条）
+squad_stop    停掉**一个**成员（不连坐整队）：掐掉它这次，判「卡住」并记下原因
 squad_close   收队：**当场掐掉还在跑的成员**，名册与黑板留着（只读）
 ```
 
-**6 个工具只有建队的会话能调**：成员没有调用方身份（它不是一个 dsh 会话），所以没有
+**这 9 个工具只有建队的会话能调**：成员没有调用方身份（它不是一个 dsh 会话），所以没有
 「成员视角」。成员往黑板写东西用它自己的 `board` 工具，作者名由服务端判定 —— 不给参数，
 少一个能撒谎的入口。成员的**收工结论会自动记进黑板**，主 agent 通常只需要读。
 

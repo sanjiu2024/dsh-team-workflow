@@ -8,6 +8,28 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.0.0-rc.4]
+
+**REQ-016 块 2 · 小队可控性（A1/A2/A3/A4）** —— 小队不再「一跑就收不住」。九条反向实验各自变红。
+
+- **A1 `squad_stop`（新工具，第 9 个）**：只掐**一个**成员，同队其他人照跑、排队的照常补位。
+  停止原因先存 `member.stopNote` 再落盘 —— 循环收尾会用「被中止」覆盖 `note`，
+  不存的话工具答应「写了原因」而实际被吃掉。不能用整队的 `abortMembers`（那是收队/拆除用的）。
+- **A2 token 预算熔断**：`limits.tokenBudget`（小队级）与 `limits.memberTokenBudget`（成员级），
+  取更紧的那个，**在步边界判** —— 只在收工判的话一步就能超出去一大截。超了判「卡住」
+  并写明是预算（不是「完成」：活没干完），也**不重试**（重试等于继续烧）。
+  用量口径抽成 `usageTotalOf()`：优先 provider 给的 `totalTokens`，没有就把各项加起来 ——
+  不假设 provider 一定给总量（第一版只认 `totalTokens`，provider 不给就永远不触发）。
+- **A3 并发上限与排队**：`limits.maxRunning`，超了的成员进「排队」状态（名册先建好、不跑），
+  有人收工自动补位。补位挂在成员 promise 的 **`finally`** —— 挂 `then` 的话异常路径不补位，
+  队列永久堵死。重启时「排队」判「卡住」并说明「重启后不会自动补位，再 spawn 一次」。
+- **A4 角色工具白名单**：`sandbox.roleTools`（角色 → 允许的工具名，空表 = 不限制）。
+  收窄点只有 `memberToolsFor({bash, allow})` **一处**，工具表/提示词都从它派生。
+  与 `sandbox.bash` 是**「与」**的关系。**这不是沙箱** —— 最终强度仍由宿主策略决定
+  （`danger-full-access` 下等于没有），这条天花板已补进 REQ-015 §7。
+- 出厂配置补 5 个键（`limits.tokenBudget` / `memberTokenBudget` / `maxRunning`、
+  `sandbox.roleTools`）+ 说明；面板给「排队」配了颜色；`README` 同步（工具表、四道闸门）。
+
 ## [2.0.0-rc.3]
 
 **修块 1 复审报回来的 1 个 P1 + 5 个 P2**（独立 std 测，2026-10-16）。八条反向实验各自变红。
