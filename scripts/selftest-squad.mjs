@@ -2508,6 +2508,172 @@ check("D3：档位跟着成员落盘、重启后还在（续聊不掉档）", ()
 	assert.equal(compacted.members[0].model, "tier-power");
 });
 
+
+/** 造一个最小的队（走真 API：createState + newSquad + addMember），给下面几条断言用 */
+const makeSquad = ({ members = [] } = {}) => {
+	const state = createState();
+	const created = newSquad(state, "owner-1", { name: "队", objective: "目标" });
+	assert.equal(created.ok, true, created.detail);
+	for (const m of members) {
+		const added = addMember(state, created.squad, { label: m.label, role: m.role ?? "实现", task: "t", worktree: "/tmp/wt" });
+		assert.equal(added.ok, true, added.detail);
+	}
+	return { state, squad: created.squad };
+};
+
+// ── REQ-016 复审修复（2026-10-16 std 测报回来的 1×P1 + 5×P2）──────────────────
+
+check("复审·P2：updateMember 真能改档位（原来这条零断言 —— 拆掉实现自检仍全绿）", () => {
+	const { squad } = makeSquad({ members: [{ label: "A", role: "实现" }] });
+	const r = updateMember(squad, "A", { model: "tier-max", provider: "new-api" });
+	assert.equal(r.ok, true, r.detail);
+	assert.equal(squad.members.get("A").model, "tier-max");
+	assert.equal(squad.members.get("A").provider, "new-api");
+	// modelFromRole 也跟着走
+	updateMember(squad, "A", { modelFromRole: true });
+	assert.equal(squad.members.get("A").modelFromRole, true);
+	updateMember(squad, "A", { modelFromRole: false });
+	assert.equal(squad.members.get("A").modelFromRole, false);
+});
+
+check("复审·P2：SQUAD_FIELDS.roles 有坏条目就整体拒（借 readJsonConfig 的提示说出来）", () => {
+	assert.deepEqual(SQUAD_FIELDS.roles({ 审查: "tier-power" }), { 审查: "tier-power" });
+	assert.deepEqual(SQUAD_FIELDS.roles({ " 审查 ": " tier-power " }), { 审查: "tier-power" }, "键值都要去空白");
+	assert.equal(SQUAD_FIELDS.roles({ 审查: 42 }), undefined, "坏值整体拒（不能静默清成空表）");
+	assert.equal(SQUAD_FIELDS.roles({ "": "x" }), undefined, "空键整体拒");
+	assert.equal(SQUAD_FIELDS.roles({}), undefined);
+	assert.equal(SQUAD_FIELDS.roles([]), undefined);
+	assert.equal(SQUAD_FIELDS.roles("x"), undefined);
+});
+
+check("复审·P2：squadView 带出成员的档位（原来这条零断言）", () => {
+	const { squad } = makeSquad({ members: [{ label: "A", role: "审查" }] });
+	squad.members.get("A").model = "tier-power";
+	const view = snapshotAll(new Map([["o", new Map([[squad.name, squad]])]]));
+	assert.equal(view.squads[0].members[0].model, "tier-power");
+	squad.members.get("A").model = undefined;
+	const view2 = snapshotAll(new Map([["o", new Map([[squad.name, squad]])]]));
+	assert.equal(view2.squads[0].members[0].model, null, "没档位就是 null，不是 undefined");
+});
+
+check("复审·P2：configVersion 写了不认识的版本，提示不能说「还是 v1 形状」", () => {
+	const said = [];
+	flattenSquadConfig({ configVersion: 3, defaults: { model: "m" } }, (m) => said.push(m));
+	assert.ok(
+		said.some((m) => /只认 2/.test(m)),
+		`要说清版本不认识：${JSON.stringify(said)}`,
+	);
+	assert.ok(!said.some((m) => /还是 v1 形状/.test(m)), "v3 不是「没写」，别撒谎");
+	const said2 = [];
+	flattenSquadConfig({ model: "m" }, (m) => said2.push(m));
+	assert.ok(said2.some((m) => /还是 v1 形状/.test(m)), "没写才说 v1 形状");
+});
+
+await checkAsync("复审·P1：spawn 重跑时 role 传空白 —— 角色与档位不能自相矛盾", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-p1-"));
+	const seen = [];
+	const { squad, call, settle } = install({
+		stream: scriptedStream([{ text: "一审" }, { text: "二审" }], seen),
+		config: { persist: false, roles: { 审查: "tier-power" } },
+	});
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "R", role: "审查", task: "审", worktree: wt }, "main-1");
+	await settle();
+	assert.equal(seen[0].model, "tier-power");
+	// 重跑：role 传空白 → 角色保持「审查」，档位也必须还是 tier-power
+	const out = await call("squad_spawn", { squad: "队", member: "R", role: "", task: "再审", worktree: wt }, "main-1");
+	await settle();
+	const member = squad.state.get("main-1").get("队").members.get("R");
+	assert.equal(member.role, "审查", "空白角色不该改掉原来的角色");
+	assert.equal(member.model, "tier-power", `角色与档位不能矛盾（输出：${out}）`);
+	assert.equal(seen[1].model, "tier-power");
+});
+
+await checkAsync("复审·P1：squad_update 改角色 → 按角色取的档位跟着变；显式指定过的不许被改", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-p1b-"));
+	const seen = [];
+	const { squad, call, settle } = install({
+		stream: scriptedStream([{ text: "一" }, { text: "二" }, { text: "三" }], seen),
+		config: { persist: false, roles: { 审查: "tier-power", 侦察: "tier-std" } },
+	});
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	// 按角色取档（modelFromRole = true）
+	await call("squad_spawn", { squad: "队", member: "R", role: "审查", task: "审", worktree: wt }, "main-1");
+	await settle();
+	const members = squad.state.get("main-1").get("队").members;
+	assert.equal(members.get("R").model, "tier-power");
+	await call("squad_update", { squad: "队", member: "R", role: "侦察" }, "main-1");
+	assert.equal(members.get("R").model, "tier-std", "改角色要跟着重算档位（否则「只影响下一次」是空话）");
+	// 续聊用新档位
+	await call("squad_send", { squad: "队", member: "R", text: "再来" }, "main-1");
+	await settle();
+	assert.equal(seen[1].model, "tier-std");
+	// 显式指定过档位的成员：改角色不许悄悄改掉它
+	await call("squad_spawn", { squad: "队", member: "X", role: "审查", model: "tier-max", task: "t", worktree: wt }, "main-1");
+	await settle();
+	assert.equal(members.get("X").model, "tier-max");
+	assert.equal(members.get("X").modelFromRole, false);
+	await call("squad_update", { squad: "队", member: "X", role: "侦察" }, "main-1");
+	assert.equal(members.get("X").model, "tier-max", "显式指定的档位不许被角色表改掉");
+});
+
+await checkAsync("复审·P2：老落盘成员（没有 model）续聊要查角色表，不能掉到默认档", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-p2-"));
+	const seen = [];
+	const { squad, call, settle } = install({
+		stream: scriptedStream([{ text: "一" }, { text: "二" }], seen),
+		config: { persist: false, roles: { 审查: "tier-power" } },
+	});
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "R", role: "审查", task: "审", worktree: wt }, "main-1");
+	await settle();
+	// 模拟 2.0 之前落盘的记录：没有 model/provider
+	const member = squad.state.get("main-1").get("队").members.get("R");
+	member.model = undefined;
+	member.provider = undefined;
+	await call("squad_send", { squad: "队", member: "R", text: "接着来" }, "main-1");
+	await settle();
+	assert.equal(seen[1].model, "tier-power", `老记录也要查角色表，实际 ${seen[1].model}`);
+});
+
+check("复审·P2：squadConfig 真把 v2 分组读进来了（漏传归一会被这条逮到）", async () => {
+	const { makeLayered, squadConfig } = await import(new URL("lib/index.js", ROOT).href);
+	const { ctx } = fakeCtx({ services: [] });
+	const layered = makeLayered(ctx);
+	// 用一份**值故意不等于默认值**的 v2 文件：否则「读进来了」与「回落默认值」结果一样，
+	// 断言就是假的 —— 第一次写这条时就踩了（出厂文件的值恰好都等于默认值，漏传归一照样全绿）。
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "squad-cfg3-"));
+	const file = path.join(dir, "squad.json");
+	fs.writeFileSync(
+		file,
+		JSON.stringify({
+			configVersion: 2,
+			enabled: false,
+			persist: false,
+			boardLimit: 42,
+			defaults: { provider: "p-x", model: "m-x" },
+			limits: { maxSteps: 7, retries: 4, memberTimeoutMinutes: 3 },
+			sandbox: { bash: false },
+			roles: { 审查: "tier-max" },
+		}),
+		"utf8",
+	);
+	const cfg = squadConfig(layered, undefined, file);
+	assert.equal(cfg.provider, "p-x", "v2 的 defaults.provider 要读进来");
+	assert.equal(cfg.model, "m-x", "v2 的 defaults.model 要读进来");
+	assert.equal(cfg.maxSteps, 7, "v2 的 limits.maxSteps 要读进来");
+	assert.equal(cfg.retries, 4);
+	assert.equal(cfg.memberTimeoutMinutes, 3);
+	assert.equal(cfg.bash, false, "v2 的 sandbox.bash 要读进来");
+	assert.equal(cfg.boardLimit, 42);
+	assert.equal(cfg.enabled, false);
+	assert.equal(cfg.roles.审查, "tier-max");
+	// 出厂文件走同一条路（这条只钉「真读了文件」）
+	const real = squadConfig(layered, undefined);
+	assert.equal(real.maxSteps, SQUAD_DEFAULTS.maxSteps);
+	assert.equal(real.roles.审查, "tier-power");
+});
+
 // ── 汇总 ──────────────────────────────────────────────────────────────────
 
 if (failures > 0) {

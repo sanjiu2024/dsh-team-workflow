@@ -346,7 +346,14 @@ assert.deepEqual(RTK_FIELDS.compactTools(["grep"]), ["grep"], "合法数组应�
 // —— 8. tools/post-execute 挂上了 ——
 
 assert.ok(ctx._handlers.has("tools/post-execute"), "没订阅 tools/post-execute");
-assert.ok(ctx._tools.some((t) => t.name === "lens_check"), "缺少 lens_check 工具");
+// pi-lens 是**可选**能力（`lib/lens.js` 的查找顺序就写着：显式配置 → vendor → ~/.pi → profile）。
+// 干净 clone 里 vendor/ 是 gitignore 的，~/.pi 也未必有 —— 那种情况下不该红，说一声跳过。
+{
+	const { resolveLens } = await import(new URL("../lib/lens.js", import.meta.url).href);
+	const found = resolveLens(new URL("../", import.meta.url));
+	if (found) assert.ok(ctx._tools.some((t) => t.name === "lens_check"), `装了 pi-lens（${found.dir}）却没注册 lens_check`);
+	else console.log("… 跳过 lens_check 断言：这台机器没装 pi-lens（vendor/ 或 ~/.pi 都没有）");
+}
 
 // —— 9. 版本号两处一致 ——
 // 发出去了才发现“改了包没记录”或者“记了没改包”的事发生过，所以在这里卡死。
