@@ -4214,6 +4214,157 @@ await checkAsync("E1：override 也要过校验器（`retries:-1` 不许一路�
 	assert.equal(SQUAD_FIELDS.retries(-1), undefined, "（前提：-1 本来就被校验器拒）");
 });
 
+
+await checkAsync("A1：两轮重叠时**新轮先收尾**，旧轮也不许盖回去（2.0.8 护栏的洞）", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-overlap2-"));
+	let r1;
+	let r3;
+	const g1 = new Promise((r) => {
+		r1 = r;
+	});
+	const g3 = new Promise((r) => {
+		r3 = r;
+	});
+	const stream = (options) => (async function* deaf() {
+		const text = JSON.stringify(options.messages);
+		if (text.includes("占着一")) {
+			await g1;
+			// 旧轮以**失败**收场（「卡住」），新轮是「完成」—— 状态不同，写回去才看得出来
+			throw new Error("旧轮炸了");
+		}
+		if (text.includes("占着三")) await g3;
+		yield* scriptedStream([{ text: "新轮的产出" }])(options);
+	})();
+	const { squad, call, settle } = install({ stream, config: { persist: false } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "A", role: "实现", task: "占着一", worktree: wt }, "main-1");
+	await new Promise((r) => setTimeout(r, 30));
+	const members = squad.state.get("main-1").get("队").members;
+	await call("squad_stop", { squad: "队", member: "A", reason: "换人" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "A", role: "实现", task: "占着三", worktree: wt }, "main-1");
+	// **新轮先跑完**（旧轮还卡在 g1 上）—— 这时 member.running 已被新轮 finally 清成 undefined
+	r3();
+	await new Promise((r) => setTimeout(r, 30));
+	assert.equal(members.get("A").status, "完成", "新轮该跑完了");
+	// 再放旧轮走：它已过期，一个字段都不许写。
+	// ⚠️ `settle()` 只等成员**当前那轮**的 promise —— 旧轮的收尾比它晚，所以要真等一会儿
+	r1();
+	await new Promise((r) => setTimeout(r, 50));
+	await settle();
+	assert.equal(members.get("A").status, "完成", `旧轮不许把新轮的终态盖掉，实际 ${members.get("A").status}`);
+	assert.ok(!String(members.get("A").note ?? "").includes("被 squad_stop 停掉"), `结论栏不许被旧轮盖，实际：${members.get("A").note}`);
+});
+
+await checkAsync("A6：被顶掉的旧轮，在飞的 `wait` 落地时不许写坏新一轮", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-stalewait-"));
+	let r1;
+	const g1 = new Promise((r) => {
+		r1 = r;
+	});
+	const stream = (options) => {
+		const text = JSON.stringify(options.messages);
+		if (text.includes("我先等乙")) {
+			return (async function* gatedWait() {
+				await g1; // 卡在**发工具调用之前**：这样 stop+重派之后它才落地
+				yield* scriptedStream([{ text: "我先等乙", calls: [{ id: "w", name: "wait", arguments: '{"member":"乙","note":"要它的产出"}' }] }])(options);
+			})();
+		}
+		return scriptedStream([{ text: "新一轮的独白" }])(options);
+	};
+	const { squad, call, settle } = install({ stream, config: { persist: false } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "乙", role: "实现", task: "被等", worktree: wt }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "甲", role: "实现", task: "我先等乙", worktree: wt }, "main-1");
+	await new Promise((r) => setTimeout(r, 30));
+	const members = squad.state.get("main-1").get("队").members;
+	await call("squad_stop", { squad: "队", member: "甲", reason: "换人" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "甲", role: "实现", task: "重来", worktree: wt }, "main-1");
+	// 放旧轮走：那个 `wait` 现在才落地 —— 它是过期请求，必须被拒。
+	// 同样要真等一会儿：旧轮的收尾/工具执行比 `settle()` 晚
+	r1();
+	await new Promise((r) => setTimeout(r, 50));
+	await settle();
+	assert.equal(members.get("甲").waitingFor, undefined, "过期的 wait 不许给新一轮挂上等待标记");
+	assert.notEqual(members.get("甲").status, "等待", `过期的 wait 不许把成员写成「等待」，实际 ${members.get("甲").status}`);
+	// 两轮：被停掉那轮 + 重派那轮。**第三轮**才是「过期 wait 又把它点着」的证据
+	assert.equal(members.get("甲").attempts ?? 0, 2, `不许被再点着跑一轮，实际跑了 ${members.get("甲").attempts} 次`);
+	const texts = members.get("甲").transcript.filter((e) => e.role === "assistant").map((e) => e.text ?? "");
+	assert.ok(!texts.some((t) => t.includes("我先等乙")), `旧轮的独白不许写进新一轮的转录，实际：${texts.join(" | ")}`);
+});
+
+await checkAsync("A1：被停掉但流还没收尾的成员，状态/快照里不许显示成「正在跑」", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-viewflag-"));
+	let release;
+	const gate = new Promise((r) => {
+		release = r;
+	});
+	const stream = (options) => (async function* deaf() {
+		if (JSON.stringify(options.messages).includes("占着")) await gate;
+		yield* scriptedStream([{ text: "干完了" }])(options);
+	})();
+	const { squad, call } = install({ stream, config: { persist: false } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "A", role: "实现", task: "占着", worktree: wt }, "main-1");
+	await new Promise((r) => setTimeout(r, 30));
+	await call("squad_stop", { squad: "队", member: "A", reason: "换人" }, "main-1");
+	const members = squad.state.get("main-1").get("队").members;
+	assert.equal(members.get("A").running !== undefined, true, "（前提）它的流还挂着没收尾");
+	const status = await call("squad_status", { squad: "队" }, "main-1");
+	assert.ok(!String(status).includes("（正在跑）"), `已停未收尾的成员不许显示成「正在跑」，实际：${status}`);
+	// 给它插话：它已经停了，所以只能进待投队列 —— 不能说「已投给正在跑的它」
+	const said = await call("squad_say", { squad: "队", member: "A", text: "顺带说一句" }, "main-1");
+	assert.ok(!String(said).includes("正在跑"), `已停未收尾的成员不许被当成「正在跑」，实际：${said}`);
+	// 视图那条路不用单独断言：`squad_status` 渲染的就是视图，上面那句已经把它盖住了
+	release();
+});
+
+await checkAsync("A1：手改状态只能判终态（排队/在跑/等待都拒）", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-updterm-"));
+	const { call, settle } = install({ stream: scriptedStream([{ text: "干完了" }]), config: { persist: false } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "A", role: "实现", task: "干活", worktree: wt }, "main-1");
+	await settle();
+	for (const bad of ["排队", "在跑", "等待"]) {
+		const text = await call("squad_update", { squad: "队", member: "A", status: bad }, "main-1");
+		assert.match(String(text), /\[失败\]/, `手改「${bad}」该被拒，实际：${text}`);
+	}
+	const ok = await call("squad_update", { squad: "队", member: "A", status: "卡住", note: "我替它判了" }, "main-1");
+	assert.ok(!/\[失败\]/.test(String(ok)), `判终态该放行，实际：${ok}`);
+});
+
+await checkAsync("A1：整队被掐（会话销毁）之后，排队的成员不许再被点着", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-disposedrain-"));
+	let release;
+	const gate = new Promise((r) => {
+		release = r;
+	});
+	const stream = (options) => (async function* deaf() {
+		if (JSON.stringify(options.messages).includes("占着")) await gate;
+		yield* scriptedStream([{ text: "干完了" }])(options);
+	})();
+	const { squad, call, record } = install({ stream, config: { persist: false, maxRunning: 1 } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "A", role: "实现", task: "占着", worktree: wt }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "B", role: "实现", task: "排队", worktree: wt }, "main-1");
+	await new Promise((r) => setTimeout(r, 30));
+	const members = squad.state.get("main-1").get("队").members;
+	assert.equal(members.get("B").status, "排队");
+	// 造一个「在等 A」的成员（C 排着队，手工把它置成等待态）
+	members.set("C", { label: "C", role: "实现", task: "等 A", status: "等待", waitingFor: "A", waitNote: "要它的产出", transcript: [], history: [], attempts: 0 });
+	// 会话销毁 → 整队被掐
+	record.events.find((e) => e.name === "session/disposed").callback({ id: "main-1" });
+	release();
+	await new Promise((r) => setTimeout(r, 40));
+	assert.equal(members.get("B").attempts ?? 0, 0, "整队被掐之后排队的成员一步都不许跑");
+	assert.equal(members.get("B").status, "排队", `它该还排着，实际 ${members.get("B").status}`);
+	// 等 A 的那个也不许被叫醒（A 被掐 = 「收工」会触发唤醒，但整队已经掐了）
+	const c = members.get("C");
+	if (c) {
+		assert.equal(c.attempts ?? 0, 0, "整队被掐之后等着的成员也不许被叫醒");
+		assert.equal(c.status, "等待");
+	}
+});
+
 // ── 汇总 ──────────────────────────────────────────────────────────────────
 
 if (failures > 0) {
