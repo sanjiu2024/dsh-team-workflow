@@ -75,7 +75,10 @@
     "（dsh 在那一档直接跳过 confine，REQ-011 §6.4），也就是成员能 rm -rf、能读凭据文件、",
     "能起外部程序 —— 这是成员唯一能「弄没东西」的工具。把它设为 false，成员就只剩钉在",
     "工作区里的 fs 工具（read / write / edit / grep / glob / board）：那才是本包能提供的",
-    "唯一真隔离（提示词不是隔离）。默认 true，因为要跑测试 / 构建的成员离了它基本干不了活。"
+    "唯一真隔离（提示词不是隔离）。默认 true，因为要跑测试 / 构建的成员离了它基本干不了活。",
+    "templates：小队模板（A9）—— 名字 → 成员骨架，squad_new({template}) 一键建队并派出去。",
+    "  每条要有 member / role / task / worktree；worktree 可以是相对小队 cwd 的路径（如 .dsh-worktrees/查-A）。",
+    "  目录还不存在的条目**不会被建进名册**（免得成员一上来就 fs 报错），回复里会列出来让你先 worktree_new。"
   ],
   "enabled": true,
   "persist": true,
@@ -101,5 +104,27 @@
     "调研": "tier-std",
     "实现": "tier-std",
     "审查": "tier-power"
+  },
+  "templates": {
+    "侦察+实现+审查": [
+      {
+        "member": "查-A",
+        "role": "侦察",
+        "task": "把要动的模块摸清：入口在哪、谁在调用、有哪些坑。只读不改，回报用 文件:行号。",
+        "worktree": ".dsh-worktrees/查-A"
+      },
+      {
+        "member": "写-A",
+        "role": "实现",
+        "task": "按目标改代码（改前先 grep 全部调用方，在共享处修一次）。跑测试，把实际输出写进回报。",
+        "worktree": ".dsh-worktrees/写-A"
+      },
+      {
+        "member": "审-A",
+        "role": "审查",
+        "task": "审「写-A」的产出（squad_review 会把它的回报与 worktree 给你）。逐条给 文件:行号 + 一句修法，只审不改。",
+        "worktree": ".dsh-worktrees/写-A"
+      }
+    ]
   }
 }

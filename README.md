@@ -533,35 +533,56 @@ dsh 的客户端模块只做 `readFileSync` + 原样 HTTP，没有转译器，�
 `squad_stop` 停的是**一个**人：同队其他人照跑，排队的人照常补位（`squad_close` 才是收整队）。
 被停掉的成员判「卡住」，停止原因写进结论栏。
 
+**验收清单**（`squad_new({acceptance: [...]})`）：每条一句话、**可执行**（「npm test 全绿」而不是
+「质量良好」）。成员干完自己勾（`check` 工具，只勾真验证过的），主 agent 也能勾/改（`squad_update`）。
+勾过的记「谁勾的 + 怎么验的」，`squad_status` 看得到进度 —— 验收进度不该只活在某个成员的转录里。
+
+**一键起队**：`squad_new({template: "侦察+实现+审查"})` 按 `team/extensions/squad.json` 的 `templates`
+建名册并派出去（超并发上限的排队）。模板每条要有 member / role / task / worktree（worktree 可以是
+相对小队 cwd 的路径）；目录还不存在的那条**不进名册**，回复里让你先 `worktree_new`。
+
+**成员按四段回报**：`## 交付物` / `## 证据` / `## 没做的` / `## 卡点`。小队收工时把它们摘出来
+（`squad_status`、黑板摘要、`squad_review` 都用它）。**模型自报不可靠**：认不出来就标「没按格式写」
++ 原文留着，不编、不假装有交付物。
+
+**成员能等队友**（`wait` 工具）：跨成员依赖不用主 agent 轮询。它这次被**当场掐停**、状态记「等待」，
+目标收工后小队把它叫回来（那时它看得到对方的结论与 worktree）。目标已经收工就不等、当场继续；
+等自己 / 等不存在的人 / 等成环（互相等）一律拒。
+
+**审查是个工具，不是规矩**：`squad_review({member})` 起一个审查型成员（角色表里「审查」那一档）
+去审指定成员的产出。被审者必须已收工。审查成员是**独立循环**、读不到被审者的转录，所以这个工具
+把它的回报、worktree、小队验收清单**塞进审查成员的 task**。结论挂回被审者那一行（「已被 X 审」）。
+
 **角色能限定工具**：`sandbox.roleTools` 是「角色 → 允许用的工具名」，空表 = 不限制。例如
 `{"侦察": ["read", "grep", "glob", "web_search", "web_fetch", "board", "say"]}` 让侦察型只读不写。
 它与 `sandbox.bash` 是**「与」**的关系（白名单里写了 `bash`、全局关着也拿不到）。
 **这不是沙箱**：最终强度仍由宿主策略决定，`danger-full-access` 下等于没有。
 
-成员的工具是 12 个：`read` / `write` / `edit` / `grep` / `glob` / `bash` / `board` / `say` /
-`web_search` / `web_fetch` / `worktree_new` / `worktree_list`。**没有** `worktree_merge` /
-`worktree_drop` —— 合并与丢弃永远由主 agent 决定。
+成员的工具是 14 个：`read` / `write` / `edit` / `grep` / `glob` / `bash` / `board` / `wait` /
+`check` / `say` / `web_search` / `web_fetch` / `worktree_new` / `worktree_list`。**没有**
+`worktree_merge` / `worktree_drop` —— 合并与丢弃永远由主 agent 决定。
 
 **成员不是 dsh 的 agent**（REQ-011）。小队自己驱动成员的循环：自己发 `ctx.llm.stream`、
 自己执行工具（`lib/squad-loop.js` + `lib/squad-tools.js`）。所以成员不出现在会话列表里、
 调不到 dsh 的工具、也**不占主 agent 的上下文** —— 这正是它和 `subagent_*` 的区别。
 
 ```text
-squad_new     建队（名字 + 目标）
+squad_new     建队（名字 + 目标 + 可选验收清单 / 模板一键起队）
 squad_spawn   派一个成员，**当场在后台跑起来**（多派几个就是真并行）
 squad_update  手动覆盖成员那一行（状态 / 结论 / 角色 / 任务 / worktree）
 squad_board   往共享黑板追加一条（你以「主 agent」的身份写）
 squad_status  看一个小队或全部（成员那一行 + 黑板最近几条）
 squad_stop    停掉**一个**成员（不连坐整队）：掐掉它这次，判「卡住」并记下原因
+squad_review  派一个审查型成员去审**指定成员的产出**（材料塞进它的 task）
 squad_close   收队：**当场掐掉还在跑的成员**，名册与黑板留着（只读）
 ```
 
-**这 9 个工具只有建队的会话能调**：成员没有调用方身份（它不是一个 dsh 会话），所以没有
+**这 10 个工具只有建队的会话能调**：成员没有调用方身份（它不是一个 dsh 会话），所以没有
 「成员视角」。成员往黑板写东西用它自己的 `board` 工具，作者名由服务端判定 —— 不给参数，
 少一个能撒谎的入口。成员的**收工结论会自动记进黑板**，主 agent 通常只需要读。
 
-成员的工具有 12 个（`bash` 关掉就是 11 个）：`read` / `write` / `edit` / `grep` / `glob` / `bash` /
-`board` / `say` / `web_search` / `web_fetch` / `worktree_new` / `worktree_list`。fs 工具的操作全部钉在
+成员的工具有 14 个（`bash` 关掉就是 13 个）：`read` / `write` / `edit` / `grep` / `glob` / `bash` /
+`board` / `wait` / `check` / `say` / `web_search` / `web_fetch` / `worktree_new` / `worktree_list`。fs 工具的操作全部钉在
 成员的 worktree 里（路径越界直接拒，且挡了符号链接），`bash` 走 dsh 的 shell 服务并显式带上沙箱策略
 （`workspaceRoot` = 那棵 worktree）。循环有护栏（最多 `maxSteps` 步、单步最多 8 个工具调用、
 单条工具结果截断），到顶就记「卡住」，不会无限烧。

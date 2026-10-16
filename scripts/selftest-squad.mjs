@@ -30,11 +30,12 @@ import * as path from "node:path";
 
 /**
  * 工具数写死在这里（**不**从模块里算）：从模块算出来就成了同义反复，加了工具测试照样绿。
- * REQ-015 起小队工具 8 个（多了 squad_send / squad_say）、成员工具 12 个
+ * REQ-015 起小队工具 8 个（多了 squad_send / squad_say）、成员工具 12 个；
+ * REQ-016 块 2 起小队工具 10 个（多了 squad_stop / squad_review）、成员工具 14 个（多了 wait / check）
  * （多了 say / web_search / web_fetch / worktree_new / worktree_list）。
  */
-const SQUAD_TOOL_COUNT = 9;
-const MEMBER_TOOL_COUNT = 12;
+const SQUAD_TOOL_COUNT = 10;
+const MEMBER_TOOL_COUNT = 14;
 
 const ROOT = new URL("../", import.meta.url);
 const {
@@ -58,12 +59,15 @@ const {
 	snapshot,
 	snapshotAll,
 	formatDuration,
+	markAcceptance,
+	normalizeAcceptance,
 	renderSnapshot,
 	roleModel,
 	updateMember,
 	usageLine,
 } = await import(new URL("lib/squad.js", ROOT).href);
 const { flattenSquadConfig } = await import(new URL("lib/squad-config.js", ROOT).href);
+const { formatReport, parseReport } = await import(new URL("lib/squad-report.js", ROOT).href);
 const { readJsonConfig } = await import(new URL("lib/util.js", ROOT).href);
 const { fileURLToPath } = await import("node:url");
 const { PERSIST_TRANSCRIPT_LIMIT, PERSIST_TRANSCRIPT_TEXT_MAX, compactSquad, compactTranscript, createSquadStore, reviveSquad, workspaceKey } = await import(
@@ -153,7 +157,8 @@ check("改成员那一行：状态只认三个词，角色/任务/worktree 可�
 	const { state, squad } = fixture();
 	addMember(state, squad, { label: "实现-A", role: "实现", task: "改代码", worktree: "/tmp/wt-a" });
 	// REQ-016 A3 起多了「排队」：并发满了的名册行先建好、不跑，有人收工自动补位
-	assert.deepEqual(MEMBER_STATUS, ["在跑", "排队", "完成", "卡住"], "状态词表是面板与工具的共同契约（没有「待派」——建行即开跑）");
+	// REQ-016 A3/A6 起多了「排队」与「等待」：都是**进程内**状态，重启后都判「卡住」
+	assert.deepEqual(MEMBER_STATUS, ["在跑", "排队", "等待", "完成", "卡住"], "状态词表是面板与工具的共同契约（没有「待派」——建行即开跑）");
 
 	assert.equal(updateMember(squad, "实现-A", { status: "完成" }).ok, true);
 	assert.equal(squad.members.get("实现-A").status, "完成");
@@ -502,10 +507,11 @@ const install = (options) => {
 	const { ctx, record } = fakeCtx(options);
 	const squad = installSquad(ctx, { config: { ...SQUAD_DEFAULTS, ...options?.config } });
 	const tools = Object.fromEntries(record.tools.map((t) => [t.name, t]));
-	const call = async (name, args, caller) => {
+	const call = async (name, args, caller, cwd) => {
 		const tool = tools[name];
 		assert.ok(tool !== undefined, `工具 ${name} 没注册`);
-		const value = await tool.execute(args, { agent: { id: caller } });
+		// cwd 可选：模板里相对路径要按小队 cwd 解析，不给就是 undefined（与旧行为一致）
+		const value = await tool.execute(args, { agent: { id: caller, session: { header: { cwd } } } });
 		assert.deepEqual(schemaViolations(tool.output.schema, value), [], `${name} 的返回值不符合 output.schema`);
 		return value.text;
 	};
@@ -537,7 +543,7 @@ await checkAsync("工具：建队 → spawn（真跑成员循环）→ 结论自
 	assert.equal(record.tools.length, SQUAD_TOOL_COUNT);
 	assert.deepEqual(
 		record.tools.map((t) => t.name).sort(),
-		["squad_board", "squad_close", "squad_new", "squad_say", "squad_send", "squad_spawn", "squad_status", "squad_stop", "squad_update"],
+		["squad_board", "squad_close", "squad_new", "squad_review", "squad_say", "squad_send", "squad_spawn", "squad_status", "squad_stop", "squad_update"],
 	);
 
 	assert.match(await call("squad_new", { name: "登录改造", objective: "把登录改成 OAuth" }, "main-1"), /已建小队「登录改造」/);
@@ -908,10 +914,10 @@ check("成员提示词：system 说清身份/边界/收工方式；任务里带�
 	assert.doesNotMatch(memberTaskText(fresh, { task: "t" }), /黑板/);
 });
 
-check("成员工具·工具表：12 个、schema 合法（描述/必填齐），护栏值都是正数", () => {
+check("成员工具·工具表：14 个、schema 合法（描述/必填齐），护栏值都是正数", () => {
 	assert.deepEqual(
 		MEMBER_TOOLS.map((t) => t.name),
-		["read", "write", "edit", "grep", "glob", "bash", "board", "say", "web_search", "web_fetch", "worktree_new", "worktree_list"],
+		["read", "write", "edit", "grep", "glob", "bash", "board", "wait", "check", "say", "web_search", "web_fetch", "worktree_new", "worktree_list"],
 	);
 	for (const t of MEMBER_TOOLS) {
 		assert.equal(typeof t.description, "string");
@@ -931,10 +937,10 @@ check("成员工具·工具表：12 个、schema 合法（描述/必填齐），
 
 	// bash 开关：关掉之后成员的工具表里**不能**再有 bash（那是唯一等于宿主权限的工具）
 	const noBash = memberToolsFor({ bash: false });
-	assert.deepEqual(noBash.tools.map((t) => t.name), ["read", "write", "edit", "grep", "glob", "board", "say", "web_search", "web_fetch", "worktree_new", "worktree_list"]);
+	assert.deepEqual(noBash.tools.map((t) => t.name), ["read", "write", "edit", "grep", "glob", "board", "wait", "check", "say", "web_search", "web_fetch", "worktree_new", "worktree_list"]);
 	assert.equal(noBash.schemas.some((t) => t.name === "bash"), false);
 	assert.equal(noBash.schemas.some((t) => "run" in t), false, "线上字段里不能有 run");
-	assert.equal(memberToolsFor().schemas.length, MEMBER_TOOL_COUNT, "默认就是全部 12 个");
+	assert.equal(memberToolsFor().schemas.length, MEMBER_TOOL_COUNT, "默认就是全部 14 个");
 
 	// 发给 provider 的那份：只有线上字段，且真能序列化（`run` 混进去就发不出去了）
 	assert.deepEqual(
@@ -1186,8 +1192,8 @@ check("装配：team/extensions/squad.json 的每个键都有校验器，且出�
 	for (const key of keys) {
 		assert.equal(typeof SQUAD_FIELDS[key], "function", `${key} 没有校验器`);
 		assert.notEqual(SQUAD_FIELDS[key](flat[key]), undefined, `${key} 的现值被自己的校验器拒了：${JSON.stringify(flat[key])}`);
-		// roles 是**分工**，出厂文件里给了一张表，而 SQUAD_DEFAULTS 故意是空表 —— 不比这一项
-		if (key === "roles") continue;
+		// roles 是**分工**、templates 是**分工模板**：出厂文件里给了真表，而 SQUAD_DEFAULTS 故意是空表 —— 不比这两项
+		if (key === "roles" || key === "templates") continue;
 		assert.deepEqual(SQUAD_DEFAULTS[key], flat[key], `${key} 的出厂值与 SQUAD_DEFAULTS 不一致`);
 	}
 	// 越界的值要拒（免得「能写进 JSON 就能生效」）
@@ -2817,6 +2823,307 @@ check("A3：重启时「排队」判「卡住」并说明不会自动补位", ()
 	const revived = reviveSquad({ name: "n", members: [{ label: "Q", role: "实现", status: "排队" }] }, { statuses: MEMBER_STATUS });
 	assert.equal(revived.members.get("Q").status, "卡住");
 	assert.match(revived.members.get("Q").note, /排队/, "要说清为什么，以及怎么办");
+});
+
+
+// ── REQ-016 块 3：协作（A6 等待 / A7 审查 / A8 回报 / A9 模板 / A10 验收）──────
+
+check("A8 回报解析：认四段小标题，认不出就说认不出（不编）", () => {
+	const full = parseReport("我干完了。\n\n## 交付物\n改了 src/a.js:42\n\n**证据**：npm test 全绿（EXIT=0）\n\n- 没做的：文档\n\n卡点：无");
+	assert.equal(full.parsed, true);
+	assert.equal(full.deliverables, "改了 src/a.js:42");
+	assert.equal(full.evidence, "npm test 全绿（EXIT=0）");
+	assert.equal(full.todo, "文档");
+	assert.equal(full.blockers, "无");
+	// 多行正文要留住
+	const multi = parseReport("交付物：\n第一行\n第二行\n证据：跑了 npm test");
+	assert.equal(multi.deliverables, "第一行\n第二行");
+	// 认不出来 → parsed:false + 原文留着（**不塞进「交付物」里**）
+	const none = parseReport("随便说两句就收工了");
+	assert.equal(none.parsed, false);
+	assert.equal(none.deliverables, "");
+	assert.equal(none.raw, "随便说两句就收工了");
+	// 空输入不炸
+	assert.equal(parseReport(undefined).parsed, false);
+	assert.equal(parseReport("   ").parsed, false);
+	// 摘要：没解析出来回原文第一行（宁可丑，也别显示成「什么都没做」）
+	assert.equal(formatReport(none), "随便说两句就收工了");
+	assert.match(formatReport(full), /^交付物：改了 src\/a\.js:42｜证据：/);
+});
+
+await checkAsync("A8+A10：成员按四段回报 + 自己勾验收（勾了就落盘、上黑板）", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-a8-"));
+	const answer = [
+		"干完了。",
+		"## 交付物",
+		"改了 src/a.js:42",
+		"## 证据",
+		"npm test 全绿（EXIT=0）",
+		"## 没做的",
+		"文档没写",
+		"## 卡点",
+		"无",
+	].join("\n");
+	const { squad, call, settle } = install({
+		stream: scriptedStream([{ text: "先勾一条", calls: [{ id: "c", name: "check", arguments: '{"item":"1","note":"跑了 npm test"}' }] }, { text: answer }]),
+		config: { persist: false },
+	});
+	assert.match(await call("squad_new", { name: "队", objective: "o", acceptance: ["npm test 全绿", "CHANGELOG 有记录"] }, "main-1"), /验收清单 2 条/);
+	const created = squad.state.get("main-1").get("队");
+	assert.equal(created.acceptance.length, 2);
+	assert.equal(created.acceptance[0].done, false);
+	await call("squad_spawn", { squad: "队", member: "A", role: "实现", task: "干活", worktree: wt }, "main-1");
+	await settle();
+	// 成员勾的那条：谁勾的记在谁头上，且上了黑板
+	assert.equal(created.acceptance[0].done, true);
+	assert.equal(created.acceptance[0].by, "A");
+	assert.equal(created.acceptance[0].note, "跑了 npm test");
+	assert.equal(created.acceptance[1].done, false, "没勾的不许被顺手勾上");
+	assert.equal(created.board.some((e) => e.text.includes("☑ 验收 1")), true, "勾了要上黑板（验收进度不该只活在转录里）");
+	// 收工回报解析出来并落进快照
+	const member = created.members.get("A");
+	assert.equal(member.report.parsed, true);
+	assert.equal(member.report.deliverables, "改了 src/a.js:42");
+	assert.equal(member.report.todo, "文档没写");
+	// 黑板写的是**摘要**（不是全文）
+	assert.equal(created.board.some((e) => e.text.includes("交付物：改了 src/a.js:42")), true);
+	// 状态行里看得到回报与验收进度
+	const shown = renderSnapshot(snapshot(squad.state, "main-1"));
+	assert.match(shown, /验收 1\/2/);
+	assert.match(shown, /交付物：改了 src\/a\.js:42/);
+	assert.match(shown, /没做的：文档没写/);
+});
+
+check("A10 验收清单：勾过的守住、坏输入拒、重启不丢", () => {
+	const squad = { name: "队", acceptance: [{ text: "npm test 全绿", done: false }, { text: "文档有记录", done: false }] };
+	const member = { label: "A" };
+	assert.match(markAcceptance(squad, member, "1", "跑了 npm test").text, /已勾第 1 条/);
+	assert.equal(squad.acceptance[0].by, "A");
+	assert.equal(squad.acceptance[0].done, true);
+	// 第二个人勾同一条 → 拒（谁验的不能被顶掉）
+	assert.match(markAcceptance(squad, { label: "B" }, "1", "").detail, /已经勾了（A）/);
+	// 按文字开头勾也认
+	assert.match(markAcceptance(squad, member, "文档", "").text, /已勾第 2 条/);
+	// 勾不存在的 → 拒，并把清单列出来
+	assert.match(markAcceptance(squad, member, "第 9 条", "").detail, /清单里没有这一条/);
+	assert.match(markAcceptance(squad, member, "999", "").detail, /清单里没有这一条/);
+	// 没有清单时要说清怎么加
+	assert.match(markAcceptance({ name: "队", acceptance: [] }, member, "1", "").detail, /没写验收清单/);
+	// 归一：字符串数组、对象数组都收；空条目/非数组/超量拒
+	assert.deepEqual(normalizeAcceptance(["a", "b"]).value.map((e) => e.text), ["a", "b"]);
+	assert.deepEqual(normalizeAcceptance([{ text: "a", done: true, by: "A" }]).value[0].done, true);
+	assert.equal(normalizeAcceptance("a").ok, false);
+	assert.equal(normalizeAcceptance(["a", "  "]).ok, false);
+	assert.equal(normalizeAcceptance(Array.from({ length: 13 }, (_, i) => `第 ${i} 条`)).ok, false, "最多 12 条");
+	assert.deepEqual(normalizeAcceptance(undefined).value, []);
+	// 重启：勾过的照旧是勾过的
+	const revived = reviveSquad(compactSquad({ name: "队", acceptance: [{ text: "a", done: true, by: "A", at: 1 }], members: new Map(), board: [] }), { statuses: MEMBER_STATUS });
+	assert.equal(revived.acceptance[0].done, true);
+	assert.equal(revived.acceptance[0].by, "A");
+	// 老文件（没有 acceptance 字段）读回空清单，不是 undefined
+	assert.deepEqual(reviveSquad({ name: "老队" }, { statuses: MEMBER_STATUS }).acceptance, []);
+});
+
+await checkAsync("A6 等待：成员自己挂起，目标收工后被叫回来（不做阻塞等待）", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-a6-"));
+	const seen = [];
+	let release;
+	const gate = new Promise((resolve) => {
+		release = resolve;
+	});
+	const report = (who) => `${who}干完了\n## 交付物\n${who}的产出\n## 证据\n跑了 npm test\n## 没做的\n无\n## 卡点\n无`;
+	const calls = new Map();
+	const stream = (options) => {
+		const who = JSON.stringify(options.messages).includes("等乙") ? "甲" : "乙";
+		const n = (calls.get(who) ?? 0) + 1;
+		calls.set(who, n);
+		if (who === "乙") {
+			// 乙**卡在闸门上**：必须让甲先跑到「等待」，否则「等一个已收工的人」走的是另一条路
+			return (async function* gated() {
+				await gate;
+				yield* scriptedStream([{ text: report("乙") }], seen)(options);
+			})();
+		}
+		if (n === 1) {
+			return scriptedStream(
+				[{ text: "我先等乙", calls: [{ id: "w", name: "wait", arguments: '{"member":"乙","note":"要它的产出"}' }] }],
+				seen,
+			)(options);
+		}
+		return scriptedStream([{ text: report("甲") }], seen)(options);
+	};
+	const { squad, call, settle } = install({ stream, config: { persist: false } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "乙", role: "实现", task: "先干完", worktree: wt }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "甲", role: "实现", task: "等乙的产出再干", worktree: wt }, "main-1");
+	const members = squad.state.get("main-1").get("队").members;
+	// 甲这次跑完 = 它挂上了等待（promise 在 abort 之后收尾）
+	await members.get("甲").promise;
+	assert.equal(members.get("甲").status, "等待", `甲该挂起等乙，实际 ${members.get("甲").status}`);
+	assert.match(members.get("甲").note, /在等「乙」收工/);
+	assert.equal(members.get("乙").status, "在跑", "乙还在跑（被闸门卡着）");
+	// **当场**停：挂起那一刻就不该再多跑一步（白烧一步 = 白烧一次上下文）
+	// 只看最终状态是看不出这件事的 —— 少了这条，把 stopSelf 拆掉自检照样全绿（R10 第一次就是这么漏的）。
+	assert.equal(members.get("甲").usage.inputTokens, 10, `挂起要当场停，实际跑了 ${members.get("甲").usage.inputTokens / 10} 步`);
+	assert.equal(members.get("甲").attempts, 1);
+	// 乙收工 → 甲被叫回来
+	release();
+	for (let i = 0; i < 8; i += 1) await settle();
+	assert.equal(members.get("乙").status, "完成");
+	assert.equal(members.get("甲").status, "完成", `甲该被叫醒并跑完，实际 ${members.get("甲").status}：${members.get("甲").note}`);
+	assert.equal(members.get("甲").waitingFor, undefined, "醒来之后不该还挂着等待");
+	// 醒来的那次任务里要有**乙的结论**（不然它醒了也不知道等到了什么）
+	const woke = seen.find((s) => JSON.stringify(s.messages).includes("你等的「乙」收工了"));
+	assert.ok(woke, "被叫回来的那次要带上被等者的结论");
+	assert.match(JSON.stringify(woke.messages), /乙的产出|乙 收工/);
+	assert.equal(members.get("甲").report.parsed, true, "被叫回来之后照常解析回报");
+});
+
+await checkAsync("A6 边界：等已收工的不用等；等自己/不存在/成环都拒（从真实成员跑里验）", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-a6b-"));
+	const seen = [];
+	const step = (text, member) => ({ text, calls: [{ id: "w", name: "wait", arguments: JSON.stringify({ member }) }] });
+	// ⚠️ 两个坑都在这里踩过：
+	//  ① 脚本要**按成员分发** —— 共享一份的话，先跑的那个成员会把本该另一个跑的步骤吃掉
+	//     （第一版：丙 把甲的五步全跑了，断言全落在错的人身上）；
+	//  ② 每个成员的脚本实例要**建一次**、别在分发函数里现建 —— 现建等于轮次计数每次都归零，
+	//     永远停在第一步（第二版：甲 等了 30 步被 maxSteps 判「卡住」）。
+	const jiaScript = scriptedStream(
+		[
+			step("等丙", "丙"), // 丙早就收工了 → 不该挂起，直接继续
+			step("等自己", "甲"),
+			step("等不存在的人", "查无此人"),
+			step("空参数", ""),
+			{ text: "干完了" },
+		],
+		seen,
+	);
+	const bingScript = scriptedStream([{ text: "丙先干完了" }], seen);
+	const stream = (options) => (JSON.stringify(options.messages).includes("各种等") ? jiaScript : bingScript)(options);
+	const { squad, call, settle } = install({ stream, config: { persist: false } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "丙", role: "实现", task: "先干完", worktree: wt }, "main-1");
+	await settle();
+	await call("squad_spawn", { squad: "队", member: "甲", role: "实现", task: "各种等", worktree: wt }, "main-1");
+	await settle();
+	const members = squad.state.get("main-1").get("队").members;
+	assert.equal(members.get("甲").status, "完成", `等一个已收工的人不该挂起（实际 ${members.get("甲").status}：${members.get("甲").note}）`);
+	assert.equal(members.get("甲").waitingFor, undefined);
+	// 负例：错误文本在请求的 messages 里（转录只存 assistant 正文，工具结果在消息流里）
+	const texts = JSON.stringify(seen);
+	assert.match(texts, /不能等自己/);
+	assert.match(texts, /没有成员「查无此人」/);
+	assert.match(texts, /不能为空/);
+	assert.match(texts, /已经收工了（完成）/, "等一个已收工的人要**当场**把它的结论给它，而不是挂起");
+	// 成环：丙等着甲，甲再去等丙 —— 两边都会永远等下去，必须拒。
+	// 单独起一个小队：这里要的是「甲**重新跑一次**去等丙」，用上面那套跑完的脚本够不着。
+	const cycSeen = [];
+	const cycBing = scriptedStream([{ text: "丙干完了" }], cycSeen);
+	const cycJia = scriptedStream([step("等丙", "丙"), { text: "干完了" }], cycSeen);
+	const cyc = install({
+		stream: (options) => (JSON.stringify(options.messages).includes("等丙") ? cycJia : cycBing)(options),
+		config: { persist: false },
+	});
+	await cyc.call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await cyc.call("squad_spawn", { squad: "队", member: "丙", role: "实现", task: "先干完", worktree: wt }, "main-1");
+	await cyc.settle();
+	const cycMembers = cyc.squad.state.get("main-1").get("队").members;
+	cycMembers.get("丙").waitingFor = "甲";
+	cycMembers.get("丙").status = "等待";
+	await cyc.call("squad_spawn", { squad: "队", member: "甲", role: "实现", task: "等丙", worktree: wt }, "main-1");
+	await cyc.settle();
+	assert.match(JSON.stringify(cycSeen), /会成环/, "环要当场拒掉（两边都等 = 两边都不动）");
+});
+
+await checkAsync("A7 squad_review：材料塞进审查成员的 task，结论挂回被审者那一行", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-a7-"));
+	const seen = [];
+	const done = "干完了\n## 交付物\n改了 src/a.js:42\n## 证据\nnpm test 全绿\n## 没做的\n文档\n## 卡点\n无";
+	const { squad, call, settle } = install({
+		stream: scriptedStream([{ text: done }, { text: "审完了\n## 交付物\nP1 src/a.js:42 没验空值\n## 证据\n读了 diff + 跑了 npm test\n## 没做的\n无\n## 卡点\n无" }], seen),
+		config: { persist: false },
+	});
+	await call("squad_new", { name: "队", objective: "o", acceptance: ["npm test 全绿"] }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "写-A", role: "实现", task: "改代码", worktree: wt }, "main-1");
+	await settle();
+	const members = squad.state.get("main-1").get("队").members;
+	assert.equal(members.get("写-A").status, "完成");
+	// 审查一个**还在跑的** → 拒（真挂一个，不用「刚好跑完」来假装）
+	const hangSeen = [];
+	const hangStream = (options) => (JSON.stringify(options.messages).includes("挂着别动") ? hangingStream(options) : scriptedStream([{ text: "干完了" }], hangSeen)(options));
+	const hanging = install({ stream: hangStream, config: { persist: false } });
+	await hanging.call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await hanging.call("squad_spawn", { squad: "队", member: "跑着的", role: "实现", task: "挂着别动", worktree: wt }, "main-1");
+	assert.match(await hanging.call("squad_review", { squad: "队", member: "跑着的" }, "main-1"), /还在跑/);
+	await hanging.call("squad_stop", { squad: "队", member: "跑着的", reason: "收尾" }, "main-1");
+	await hanging.settle();
+	const reviewOut = await call("squad_review", { squad: "队", member: "写-A", focus: "只看空值" }, "main-1");
+	assert.match(reviewOut, /已派「审-写-A」（审查）/);
+	await settle();
+	const reviewer = members.get("审-写-A");
+	assert.equal(reviewer.role, "审查");
+	assert.equal(reviewer.worktree, wt, "审查成员在被审者的 worktree 里看");
+	assert.equal(reviewer.reviews, "写-A");
+	// 材料真的进了它的 task（它读不到别人的转录）
+	const task = reviewer.task;
+	assert.match(task, /它自己的回报/);
+	assert.match(task, /改了 src\/a\.js:42/, "被审者自报的交付物要贴进去");
+	assert.match(task, /验收清单/, "小队验收清单要贴进去");
+	assert.match(task, /只看空值/, "focus 要贴进去");
+	assert.match(task, /只审这一个成员的产出/, "边界要写死（否则它会全仓探索）");
+	// 结论挂回被审者那一行
+	assert.equal(members.get("写-A").review.by, "审-写-A");
+	assert.equal(members.get("写-A").review.status, "完成");
+	// 审查者的**结论正文**在它的 report 里（`note` 只是「收工（1 步…）」这种原因）
+	assert.equal(members.get("写-A").review.report.parsed, true);
+	assert.match(members.get("写-A").review.report.deliverables, /P1 src\/a\.js:42/);
+	assert.match(renderSnapshot(snapshot(squad.state, "main-1")), /已被 审-写-A 审/);
+	// 审一个没做完的（判「卡住」的）→ 拒
+	assert.match(await hanging.call("squad_review", { squad: "队", member: "跑着的" }, "main-1"), /不是「完成」/);
+	assert.match(await call("squad_review", { squad: "队", member: "没有" }, "main-1"), /没有成员/);
+});
+
+await checkAsync("A9 模板：一键起队（目录不存在的不进名册，并说清下一步）", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "squad-a9-"));
+	const okA = path.join(root, "查-A");
+	const okB = path.join(root, "写-A");
+	fs.mkdirSync(okA);
+	fs.mkdirSync(okB);
+	const templates = {
+		"两人队": [
+			{ member: "查-A", role: "侦察", task: "摸清入口", worktree: okA },
+			{ member: "写-A", role: "实现", task: "改代码", worktree: "写-A" },
+		],
+		"缺目录": [{ member: "查-B", role: "侦察", task: "摸清", worktree: "还没建" }],
+	};
+	const { squad, call, settle } = install({
+		stream: scriptedStream([{ text: "干完了" }, { text: "我也干完了" }]),
+		config: { persist: false, templates },
+	});
+	const out = await call("squad_new", { name: "队", objective: "o", template: "两人队" }, "main-1", root);
+	assert.match(out, /已按模板「两人队」建队/);
+	assert.match(out, /派了 2 个成员/);
+	const members = squad.state.get("main-1").get("队").members;
+	assert.equal(members.size, 2);
+	assert.equal(members.get("查-A").worktree, okA, "绝对路径照旧");
+	assert.equal(members.get("写-A").worktree, okB, "相对路径按小队 cwd 解析");
+	await settle();
+	assert.equal(members.get("查-A").status, "完成");
+	assert.equal(members.get("写-A").status, "完成");
+	// 目录不存在的那条：不进名册，但要说清怎么办
+	const missingOut = await call("squad_new", { name: "队二", objective: "o", template: "缺目录" }, "main-1", root);
+	assert.match(missingOut, /没建的 1 条/);
+	assert.match(missingOut, /先 `worktree_new` 建好/);
+	assert.equal(squad.state.get("main-1").get("队二").members.size, 0);
+	// 模板名写错：队照样建出来，但要说清没这个模板
+	const badOut = await call("squad_new", { name: "队三", objective: "o", template: "没有这个" }, "main-1");
+	assert.match(badOut, /没有模板「没有这个」/);
+	assert.match(badOut, /两人队/);
+	// 配置校验：坏条目整表拒、空表合法
+	assert.deepEqual(SQUAD_FIELDS.templates({}), {}, "空表合法（= 一个模板都没配）");
+	assert.equal(SQUAD_FIELDS.templates({ T: [{ member: "A", role: "实现", task: "x" }] }), undefined, "缺 worktree 要整表拒");
+	assert.equal(SQUAD_FIELDS.templates({ T: [] }), undefined);
+	assert.equal(SQUAD_FIELDS.templates([]), undefined);
 });
 
 // ── 汇总 ──────────────────────────────────────────────────────────────────
