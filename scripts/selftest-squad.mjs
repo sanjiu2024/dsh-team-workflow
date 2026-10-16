@@ -3936,7 +3936,7 @@ await checkAsync("C2 面板：SSE 推送时成本行也跟着刷（节流，不�
 });
 
 
-await checkAsync("B1：2.0.1 落的老布局 .log（不带队名）升级后照样读得回来（升级不丢全文）", async () => {
+await checkAsync("B1：老布局 .log（不带队名）**一律不认** —— 宁可只剩 JSON 摘要，也不冒串队的险", async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "squad-b1-legacy-"));
 	const store = createSquadStore({ dir, log: () => {}, debounceMs: 1 });
 	const member = { label: "查-A", role: "侦察", task: "t", status: "完成", transcript: [{ role: "assistant", text: "尾巴一条" }] };
@@ -3947,7 +3947,9 @@ await checkAsync("B1：2.0.1 落的老布局 .log（不带队名）升级后照�
 	fs.rmSync(path.join(tdir, "队"), { recursive: true, force: true });
 	fs.writeFileSync(path.join(tdir, "查-A.log"), [1, 2, 3].map((i) => JSON.stringify({ at: i, role: "assistant", text: `旧全文${i}` })).join("\n") + "\n", "utf8");
 	const loaded = store.load("/tmp/ws-b1-legacy");
-	assert.equal(loaded[0].members[0].transcript.map((e) => e.text).join("|"), "旧全文1|旧全文2|旧全文3", "老布局的全文要能读回来");
+	// 老文件没有归属信息：`查_A`/`查 A` 消毒后同名、主人可能是已删的队 —— 认它就可能把别人的
+	// 转录读进来并写回盘。所以退回 JSON 摘要（丢全文，但不串队）。
+	assert.equal(loaded[0].members[0].transcript.map((e) => e.text).join("|"), "尾巴一条", "老布局不许再被认");
 	store.dispose();
 });
 
@@ -4029,6 +4031,63 @@ await checkAsync("A6：续聊命中「等待」中的成员，返回文本必须
 	assert.match(sent, /本来在等「乙」/, `要说清等待被作废，实际：${sent}`);
 	assert.equal(members.get("甲").waitingFor, undefined);
 	await settle();
+});
+
+
+await checkAsync("A1：停一个「在跑 + 挂着等待标记」的成员，停掉不许被静默撤销", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-stopwait-"));
+	let release;
+	const gate = new Promise((resolve) => {
+		release = resolve;
+	});
+	const stream = (options) => (async function* gated() {
+		if (JSON.stringify(options.messages).includes("占着")) await gate;
+		yield* scriptedStream([{ text: "干完了" }])(options);
+	})();
+	const { squad, call, settle } = install({ stream, config: { persist: false } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "甲", role: "实现", task: "占着", worktree: wt }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "乙", role: "实现", task: "被等", worktree: wt }, "main-1");
+	// ⚠️ 这里**不能** settle()：甲正卡在闸门上，settle 会一直等它（自检自己死锁，踩过）
+	await new Promise((r) => setTimeout(r, 30));
+	const members = squad.state.get("main-1").get("队").members;
+	assert.equal(members.get("甲").running !== undefined, true, "甲这会儿该真在跑");
+	// 造出那个瞬时状态：真在跑（running 有值）+ 挂着等待标记
+	members.get("甲").waitingFor = "乙";
+	const stopText = await call("squad_stop", { squad: "队", member: "甲", reason: "不要了" }, "main-1");
+	assert.match(stopText, /已停掉/, `停掉要有明确回复，实际：${stopText}`);
+	assert.equal(members.get("甲").status, "卡住", `停掉那一刻必须是「卡住」，实际 ${members.get("甲").status}`);
+	assert.equal(members.get("甲").waitingFor, undefined, "等待标记要被清掉（不然它还会被叫醒）");
+	assert.ok(String(members.get("甲").stopNote ?? "").includes("不要了"), "stopNote 不许被吞掉");
+	release();
+	await settle();
+	// 被等者收工也不许把它自己跑起来（闸门不认 abort，所以这一步只验「没有被唤醒再起一条」）
+	await call("squad_spawn", { squad: "队", member: "丙", role: "实现", task: "再跑一个", worktree: wt }, "main-1");
+	await settle();
+	assert.equal(members.get("甲").running, undefined, "被停掉的成员不许被唤醒再跑起来");
+	assert.equal(members.get("甲").waitingFor, undefined, "也不许重新挂上等待标记");
+});
+
+await checkAsync("A2：宿主没有 llm 时起成员失败，**不许**把它的等待标记弄丢", async () => {
+	const { squad, call } = install({ noLlm: true, config: { persist: false } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	// 直接造一个「等待中」的成员：没有 llm 就起不来，所以不走 squad_spawn
+	newSquad(squad.state, "main-1", { name: "队", objective: "o" });
+	const created = squad.state.get("main-1").get("队");
+	created.members.set("甲", {
+		label: "甲",
+		role: "实现",
+		task: "等",
+		status: "等待",
+		waitingFor: "乙",
+		waitNote: "等乙",
+		transcript: [],
+		history: [],
+	});
+	const text = await call("squad_spawn", { squad: "队", member: "甲", role: "实现", task: "重来", worktree: "/tmp" }, "main-1");
+	assert.match(text, /\[失败\]/, `没有 llm 该失败，实际：${text}`);
+	assert.equal(created.members.get("甲").waitingFor, "乙", "失败路径不许把等待标记清掉（清了它永久停在「等待」）");
+	assert.notEqual(created.members.get("甲").status, "在跑", "起不来就不该显示在跑");
 });
 
 // ── 汇总 ──────────────────────────────────────────────────────────────────
