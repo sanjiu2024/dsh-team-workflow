@@ -4090,6 +4090,51 @@ await checkAsync("A2：宿主没有 llm 时起成员失败，**不许**把它的
 	assert.notEqual(created.members.get("甲").status, "在跑", "起不来就不该显示在跑");
 });
 
+
+await checkAsync("A1：停一个「等待中」的成员之后重派，结论栏不许残留上一轮的「被停掉」", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-stopleak-"));
+	const { squad, call, settle } = install({ stream: scriptedStream([{ text: "干完了" }]), config: { persist: false } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "甲", role: "实现", task: "等", worktree: wt }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "乙", role: "实现", task: "被等", worktree: wt }, "main-1");
+	await settle();
+	const members = squad.state.get("main-1").get("队").members;
+	// 造一个「等待中」（没在跑）的成员，再停掉它 —— 这条分支的 `.then` 早就跑过了，
+	// 写下的 stopNote 没人消费，会漏给下一轮
+	members.get("甲").status = "等待";
+	members.get("甲").waitingFor = "乙";
+	await call("squad_stop", { squad: "队", member: "甲", reason: "不要了" }, "main-1");
+	assert.equal(members.get("甲").status, "卡住");
+	// 重派 → 正常跑完 → 结论栏必须是这一轮的，不许是上一轮的停掉原因
+	await call("squad_spawn", { squad: "队", member: "甲", role: "实现", task: "重来", worktree: wt }, "main-1");
+	await settle();
+	assert.equal(members.get("甲").status, "完成", `重派跑完该是「完成」，实际 ${members.get("甲").status}`);
+	assert.ok(!String(members.get("甲").note ?? "").includes("被 squad_stop 停掉"), `结论栏不许残留上一轮的停掉原因，实际：${members.get("甲").note}`);
+});
+
+await checkAsync("A1：被停掉的成员，流的产出不许把终态盖成「完成」（工具说卡住、状态就得是卡住）", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-stopstate-"));
+	let release;
+	const gate = new Promise((resolve) => {
+		release = resolve;
+	});
+	// 故意做一个**不认 abort** 的流：被掐停之后它照样把最后一段吐出来
+	const stream = (options) => (async function* gated() {
+		if (JSON.stringify(options.messages).includes("占着")) await gate;
+		yield* scriptedStream([{ text: "我还是把活干完了" }])(options);
+	})();
+	const { squad, call, settle } = install({ stream, config: { persist: false } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "甲", role: "实现", task: "占着", worktree: wt }, "main-1");
+	await new Promise((r) => setTimeout(r, 30));
+	const members = squad.state.get("main-1").get("队").members;
+	await call("squad_stop", { squad: "队", member: "甲", reason: "不要了" }, "main-1");
+	release();
+	await settle();
+	assert.equal(members.get("甲").status, "卡住", `被停掉的终态必须是「卡住」，实际 ${members.get("甲").status}`);
+	assert.ok(String(members.get("甲").note ?? "").includes("不要了"), `结论栏要写清为什么停，实际：${members.get("甲").note}`);
+});
+
 // ── 汇总 ──────────────────────────────────────────────────────────────────
 
 if (failures > 0) {
