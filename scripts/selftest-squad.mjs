@@ -59,10 +59,14 @@ const {
 	snapshotAll,
 	formatDuration,
 	renderSnapshot,
+	roleModel,
 	updateMember,
 	usageLine,
 } = await import(new URL("lib/squad.js", ROOT).href);
-const { PERSIST_TRANSCRIPT_LIMIT, PERSIST_TRANSCRIPT_TEXT_MAX, compactTranscript, createSquadStore, reviveSquad, workspaceKey } = await import(
+const { flattenSquadConfig } = await import(new URL("lib/squad-config.js", ROOT).href);
+const { readJsonConfig } = await import(new URL("lib/util.js", ROOT).href);
+const { fileURLToPath } = await import("node:url");
+const { PERSIST_TRANSCRIPT_LIMIT, PERSIST_TRANSCRIPT_TEXT_MAX, compactSquad, compactTranscript, createSquadStore, reviveSquad, workspaceKey } = await import(
 	new URL("lib/squad-store.js", ROOT).href
 );
 
@@ -1174,12 +1178,16 @@ check("装配：enabled 只认真布尔", () => {
 
 check("装配：team/extensions/squad.json 的每个键都有校验器，且出厂值与 SQUAD_DEFAULTS 对齐", () => {
 	const json = JSON.parse(fs.readFileSync(new URL("team/extensions/squad.json", ROOT), "utf8"));
-	const keys = Object.keys(json).filter((key) => !key.startsWith("_"));
+	// REQ-016 E1：文件升了 v2（分组），先归一再看 —— 意图不变（文件与 schema 必须对齐）
+	const flat = flattenSquadConfig(json, () => {});
+	const keys = Object.keys(flat).filter((key) => !key.startsWith("_"));
 	assert.deepEqual(keys.sort(), Object.keys(SQUAD_FIELDS).sort(), "配置文件的键与 SQUAD_FIELDS 要对齐（加了键就得两处一起加）");
 	for (const key of keys) {
 		assert.equal(typeof SQUAD_FIELDS[key], "function", `${key} 没有校验器`);
-		assert.notEqual(SQUAD_FIELDS[key](json[key]), undefined, `${key} 的现值被自己的校验器拒了：${JSON.stringify(json[key])}`);
-		assert.deepEqual(SQUAD_DEFAULTS[key], json[key], `${key} 的出厂值与 SQUAD_DEFAULTS 不一致`);
+		assert.notEqual(SQUAD_FIELDS[key](flat[key]), undefined, `${key} 的现值被自己的校验器拒了：${JSON.stringify(flat[key])}`);
+		// roles 是**分工**，出厂文件里给了一张表，而 SQUAD_DEFAULTS 故意是空表 —— 不比这一项
+		if (key === "roles") continue;
+		assert.deepEqual(SQUAD_DEFAULTS[key], flat[key], `${key} 的出厂值与 SQUAD_DEFAULTS 不一致`);
 	}
 	// 越界的值要拒（免得「能写进 JSON 就能生效」）
 	assert.equal(SQUAD_FIELDS.maxSteps(0), undefined);
@@ -2342,10 +2350,168 @@ await checkAsync("复审·P2-2：durationMs 真的累计（不是恒真的 >=0�
 	assert.ok(member.durationMs >= first + 5, `续聊之后要累加，实际 ${member.durationMs}（第一轮 ${first}）`);
 });
 
+
+// ── REQ-016 E1：配置升 v2 与自动迁移 ────────────────────────────────────────
+// 迁移是**读入时**做的（不写回文件），所以这一段的重点是「v1 形状照常生效」+「坏东西不炸」。
+
+check("配置 v2：分组形状压成一层，值都在", () => {
+	const flat = flattenSquadConfig({
+		configVersion: 2,
+		enabled: true,
+		persist: false,
+		boardLimit: 100,
+		defaults: { provider: "p", model: "m" },
+		limits: { maxSteps: 7, retries: 2, memberTimeoutMinutes: 3 },
+		sandbox: { bash: false },
+		roles: { 审查: "tier-power" },
+	});
+	assert.deepEqual(flat, {
+		enabled: true,
+		persist: false,
+		boardLimit: 100,
+		provider: "p",
+		model: "m",
+		maxSteps: 7,
+		retries: 2,
+		memberTimeoutMinutes: 3,
+		bash: false,
+		roles: { 审查: "tier-power" },
+	});
+});
+
+check("配置 v1（扁平）照常读，并提示一句「还是 v1 形状」", () => {
+	const said = [];
+	const flat = flattenSquadConfig({ provider: "old", model: "tier-std", bash: true }, (m) => said.push(m));
+	assert.equal(flat.provider, "old");
+	assert.equal(flat.bash, true);
+	assert.ok(said.some((m) => /v1 形状/.test(m)), `要说清是 v1 形状，实际：${JSON.stringify(said)}`);
+});
+
+check("配置：分组优先于同名扁平键；坏分组与未知键要说出来、不炸", () => {
+	const said = [];
+	const flat = flattenSquadConfig(
+		{ model: "扁平", defaults: { model: "分组" }, limits: "不是对象", 乱写: 1, sandbox: { bash: true, 多余: 1 }, _说明: [] },
+		(m) => said.push(m),
+	);
+	assert.equal(flat.model, "分组", "分组更明确，应该赢");
+	assert.equal(flat.bash, true);
+	assert.ok(said.some((m) => /limits 应该是一个对象/.test(m)), JSON.stringify(said));
+	assert.ok(said.some((m) => /乱写 不认识/.test(m)), JSON.stringify(said));
+	assert.ok(said.some((m) => /sandbox\.多余 不认识/.test(m)), JSON.stringify(said));
+	assert.ok(!said.some((m) => /_说明/.test(m)), "_ 开头的是给人看的说明，不算未知键");
+});
+
+check("配置：坏形状（null/字符串/数组/数字）不炸，返回空", () => {
+	for (const bad of [null, undefined, "x", 42, [], true]) assert.deepEqual(flattenSquadConfig(bad), {});
+});
+
+check("端到端：v1 形状的文件经真实加载路径，值真的生效", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "squad-cfg-"));
+	const file = path.join(dir, "squad.json");
+	fs.writeFileSync(
+		file,
+		JSON.stringify({
+			enabled: true,
+			provider: "v1-p",
+			model: "v1-m",
+			maxSteps: 9,
+			bash: false,
+			retries: 0,
+			memberTimeoutMinutes: 2,
+			boardLimit: 11,
+			persist: false,
+		}),
+		"utf8",
+	);
+	const cfg = readJsonConfig(file, SQUAD_DEFAULTS, SQUAD_FIELDS, () => {}, flattenSquadConfig);
+	assert.equal(cfg.provider, "v1-p");
+	assert.equal(cfg.model, "v1-m");
+	assert.equal(cfg.maxSteps, 9);
+	assert.equal(cfg.bash, false);
+	assert.equal(cfg.retries, 0);
+	assert.deepEqual(cfg.roles, {}, "v1 文件里没有 roles → 默认空表");
+});
+
+check("出厂 squad.json 是 v2 形状且能过校验（文件与 schema 不许漂移）", () => {
+	const file = fileURLToPath(new URL("../team/extensions/squad.json", import.meta.url));
+	const said = [];
+	const cfg = readJsonConfig(file, SQUAD_DEFAULTS, SQUAD_FIELDS, (m) => said.push(m), flattenSquadConfig);
+	assert.equal(cfg.model, "tier-std");
+	assert.equal(cfg.maxSteps, 30);
+	assert.equal(cfg.bash, true);
+	assert.equal(cfg.retries, 1);
+	assert.equal(cfg.memberTimeoutMinutes, 20);
+	assert.equal(cfg.roles.审查, "tier-power");
+	assert.equal(cfg.roles.侦察, "tier-std");
+	assert.deepEqual(said, [], `出厂文件不该有任何提示：${JSON.stringify(said)}`);
+});
+
+check("配置：v2 文件里的坏值仍会被字段校验拦下并报出来（归一不绕过校验）", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "squad-cfg2-"));
+	const file = path.join(dir, "squad.json");
+	fs.writeFileSync(file, JSON.stringify({ configVersion: 2, limits: { maxSteps: "三十" } }), "utf8");
+	const said = [];
+	const cfg = readJsonConfig(file, SQUAD_DEFAULTS, SQUAD_FIELDS, (m) => said.push(m), flattenSquadConfig);
+	assert.equal(cfg.maxSteps, SQUAD_DEFAULTS.maxSteps, "坏值要回落默认");
+	assert.ok(said.some((m) => /maxSteps/.test(m)), `要说出来：${JSON.stringify(said)}`);
+});
+
+// ── REQ-016 D3：角色 → 档位 ────────────────────────────────────────────────
+
+check("D3 roleModel：归一「型」、去空白、命中不了给 undefined", () => {
+	const roles = { 侦察: "tier-std", 审查: "tier-power" };
+	assert.equal(roleModel(roles, "审查"), "tier-power");
+	assert.equal(roleModel(roles, "审查型"), "tier-power", "尾部「型」要归一");
+	assert.equal(roleModel(roles, " 审查 "), "tier-power");
+	assert.equal(roleModel(roles, "打杂"), undefined);
+	assert.equal(roleModel(undefined, "审查"), undefined);
+	assert.equal(roleModel({ 审查: "  " }, "审查"), undefined, "空档位不算命中");
+	assert.equal(roleModel({ 审查: 42 }, "审查"), undefined);
+});
+
+await checkAsync("D3：spawn 不传 model 时按角色取档，记在成员身上，续聊沿用", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-role-"));
+	const seen = [];
+	const { squad, call, settle } = install({
+		stream: scriptedStream([{ text: "审完了" }, { text: "再审一轮" }, { text: "侦察完" }], seen),
+		config: { persist: false, roles: { 审查: "tier-power", 侦察: "tier-std" } },
+	});
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "R", role: "审查型", task: "审", worktree: wt }, "main-1");
+	await settle();
+	const members = squad.state.get("main-1").get("队").members;
+	assert.equal(members.get("R").model, "tier-power", "角色「审查型」要命中 roles 表");
+	assert.equal(seen[0].model, "tier-power", `真跑的档位要对：${JSON.stringify(seen[0]?.model)}`);
+	// 续聊沿用原来那一档（不是 config.model）—— 否则审查型跑第二轮会悄悄掉档
+	await call("squad_send", { squad: "队", member: "R", text: "再改一处" }, "main-1");
+	await settle();
+	assert.equal(seen[1].model, "tier-power", "续聊不能掉回默认档");
+	// 显式 model 优先于角色表
+	await call("squad_spawn", { squad: "队", member: "S", role: "侦察", model: "tier-max", task: "t", worktree: wt }, "main-1");
+	await settle();
+	assert.equal(members.get("S").model, "tier-max", "显式 model 要赢");
+	assert.equal(members.get("S").provider, "new-api", "provider 仍取默认");
+});
+
+check("D3：档位跟着成员落盘、重启后还在（续聊不掉档）", () => {
+	const revived = reviveSquad(
+		{ name: "n", members: [{ label: "R", role: "审查", model: "tier-power", provider: "new-api" }] },
+		{ statuses: MEMBER_STATUS },
+	);
+	assert.equal(revived.members.get("R").model, "tier-power");
+	assert.equal(revived.members.get("R").provider, "new-api");
+	// 老文件（没有这两个字段）读回来是 undefined，不该是怪值
+	const old = reviveSquad({ name: "n", members: [{ label: "O", role: "实现" }] }, { statuses: MEMBER_STATUS });
+	assert.equal(old.members.get("O").model, undefined);
+	// 落盘/读回一整圈
+	const compacted = compactSquad({ name: "n", members: new Map([["R", revived.members.get("R")]]) });
+	assert.equal(compacted.members[0].model, "tier-power");
+});
+
 // ── 汇总 ──────────────────────────────────────────────────────────────────
 
 if (failures > 0) {
 	console.log(`\n✗ ${failures} 项失败`);
 	process.exit(1);
 }
-console.log("✓ 自检通过：名册与黑板 / 权限三种视角 / 快照 / 全部小队工具真跑（返回值过 schema）/ 装配与会话清理 / HTTP 路由与信任栅栏负例 / 真 socket 端到端（路由挂载 + prefix 匹配）/ 客户端面板真渲染与只读转录 / REQ-015 用量·落盘捡回·续聊·直投·重试·超时");
+console.log("✓ 自检通过：名册与黑板 / 权限三种视角 / 快照 / 全部小队工具真跑（返回值过 schema）/ 装配与会话清理 / HTTP 路由与信任栅栏负例 / 真 socket 端到端（路由挂载 + prefix 匹配）/ 客户端面板真渲染与只读转录 / REQ-015 用量·落盘捡回·续聊·直投·重试·超时 / REQ-016 配置 v2 迁移·角色档位");

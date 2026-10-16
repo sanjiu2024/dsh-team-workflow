@@ -1,5 +1,11 @@
 {
+  "configVersion": 2,
   "_说明": [
+    "配置文件形状：**v2**（2.0 起）。键分了组 —— defaults{provider,model} / limits{maxSteps,retries,memberTimeoutMinutes} / sandbox{bash}。",
+    "  旧形状（v1，9 个扁平键）照常能读：归一在读入时做，**不写回文件**，只在日志里提示一句。",
+    "roles：角色 → 档位。squad_spawn 没传 model 时按角色查这张表（「审查」与「审查型」落到同一条）。",
+    "  ⚠️ 审查默认给的是 tier-power —— 团队网关得真的有这条渠道，否则审查成员一开跑就报 infra 失败（会重试 1 次后判卡住）。",
+    "  查不到的角色用 defaults.model。要全用标准档就把 roles 清空（{}）。",
     "小队（REQ-009 + REQ-011）：主 agent 建多个小队，成员一起朝目标推进。",
     "",
     "要解决的问题：现在派子代理是「一次性」的 —— 一次派一个、结果回来就结束。",
@@ -66,12 +72,24 @@
     "唯一真隔离（提示词不是隔离）。默认 true，因为要跑测试 / 构建的成员离了它基本干不了活。"
   ],
   "enabled": true,
+  "persist": true,
   "boardLimit": 500,
-  "provider": "new-api",
-  "model": "tier-std",
-  "maxSteps": 30,
-  "bash": true,
-  "retries": 1,
-  "memberTimeoutMinutes": 20,
-  "persist": true
+  "defaults": {
+    "provider": "new-api",
+    "model": "tier-std"
+  },
+  "limits": {
+    "maxSteps": 30,
+    "retries": 1,
+    "memberTimeoutMinutes": 20
+  },
+  "sandbox": {
+    "bash": true
+  },
+  "roles": {
+    "侦察": "tier-std",
+    "调研": "tier-std",
+    "实现": "tier-std",
+    "审查": "tier-power"
+  }
 }
