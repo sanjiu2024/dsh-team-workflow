@@ -112,7 +112,7 @@ dsh-team preset install [--default]   # 生成 + 挂载；--default 顺带设成
 | 子代理 worktree | `tools.register`（4 个 `worktree_*` 工具） | 写代码的子代理各在独立 worktree 干活，写完合回主分支。dsh 原生没有工作区隔离，本工具包外补足。见 [docs/requirements/REQ-001-worktree隔离.md](docs/requirements/REQ-001-worktree隔离.md) |
 | 操控电脑 | `tools.register`（7 个工具）+ 常驻 PowerShell 守护进程 | 截屏看屏幕（图片直回模型）、鼠标点击/移动/滚动、打字/按键。操控期锁鼠标（WH_MOUSE_LL 钩子拦真实输入、放 AI 注入；Ctrl+Alt+L 紧急解锁）。**默认启用**（`enabled:false` 可关），审批为会话级（批准时弹窗会写明连带放行）；守护进程 spool 可被 bash 直写 = 与 bash 同属既有信任边界。见 [docs/requirements/REQ-002-computer操控电脑.md](docs/requirements/REQ-002-computer操控电脑.md) |
 | 定时任务 | `tools.register`（4 个 `scheduler_*`）+ HTTP 路由 + Web 面板 | 到点在**全新会话**里无人值守跑一段 prompt（8 种计划）。**默认关闭**，`dsh-team scheduler enable` 开。是本包唯一碰 dsh 内部 API 的模块，靠 `ctx.inject` 条件激活。见「## 定时任务调度器」 |
-| 小队 | `tools.register`（6 个 `squad_*`）+ HTTP 路由 + Web 面板 | 主 agent 建多个小队，小队 = 目标 + 成员名册 + 共享黑板。成员是**小队自己驱动的循环**（不是子 agent，不出现在会话列表里），各自钉在一棵 worktree 里干活。状态只在 dsh 进程内存里（不落盘、重启即失效）。见「## 小队（squad）」 |
+| 小队 | `tools.register`（8 个 `squad_*`）+ HTTP 路由 + Web 面板 | 主 agent 建多个小队，小队 = 目标 + 成员名册 + 共享黑板。成员是**小队自己驱动的循环**（不是子 agent，不出现在会话列表里），各自钉在一棵 worktree 里干活。状态按工作目录落盘，重启后同 cwd 的新会话接管。见「## 小队（squad）」 |
 | 审查 | `team/RULES.md`（注入系统提示） | 两层分工：**std 测**（带工具，每完成一块跑）／**power 判**（`toolFilter: allow: []`，一个工具都没有，只在重大变化或写完一个大部分时派）。见 [team/RULES.md](team/RULES.md) 的「## 审查（两层：std 测，power 判）」 |
 | 技能 | `skills/*/SKILL.md` | 复用 dsh 原生 skill 系统，含 `/review`（用户可调用）、`/workflow`（需求→调研→实现→审查→提交的全流程） |
 
@@ -540,12 +540,16 @@ squad_close   收队：**当场掐掉还在跑的成员**，名册与黑板留�
 「成员视角」。成员往黑板写东西用它自己的 `board` 工具，作者名由服务端判定 —— 不给参数，
 少一个能撒谎的入口。成员的**收工结论会自动记进黑板**，主 agent 通常只需要读。
 
-成员的工具有 7 个：`read` / `write` / `edit` / `grep` / `glob` / `bash` / `board`（`bash` 关掉就是 6 个）。前 6 个的
-文件操作全部钉在成员的 worktree 里（路径越界直接拒），`bash` 走 dsh 的 shell 服务并显式带上
-沙箱策略（`workspaceRoot` = 那棵 worktree）。成员跑在 `team/extensions/squad.json` 的
-`provider` / `model` 上（默认 `new-api` / `tier-std`），`squad_spawn` 可以按成员传 `model` 换档；
-循环有护栏（最多 `maxSteps` 步、单步最多 8 个工具调用、单条工具结果截断），到顶就记「卡住」，
-不会无限烧。
+成员的工具有 12 个（`bash` 关掉就是 11 个）：`read` / `write` / `edit` / `grep` / `glob` / `bash` /
+`board` / `say` / `web_search` / `web_fetch` / `worktree_new` / `worktree_list`。fs 工具的操作全部钉在
+成员的 worktree 里（路径越界直接拒，且挡了符号链接），`bash` 走 dsh 的 shell 服务并显式带上沙箱策略
+（`workspaceRoot` = 那棵 worktree）。循环有护栏（最多 `maxSteps` 步、单步最多 8 个工具调用、
+单条工具结果截断），到顶就记「卡住」，不会无限烧。
+
+**档位按角色取**（2.0 起）：`team/extensions/squad.json` 的 `roles` 是「角色 → 档位」表，
+`squad_spawn` 不传 `model` 时按角色查（「审查」与「审查型」落到同一条），查不到用 `defaults.model`；
+显式传 `model` 永远优先。**成员把实际用的档位记在自己身上**，续聊与重启后沿用它 ——
+不然「审查型配了 tier-power，续聊却掉回 tier-std」这种事没人查得出来。
 
 **两条代价，写在这里以免被当成 bug**：
 
@@ -566,8 +570,9 @@ squad_close   收队：**当场掐掉还在跑的成员**，名册与黑板留�
   同理，**默认配置下成员的 worktree 不是安全边界**：`bash` 能读写外面。别把成员的根指到
   放着密钥的目录 —— 成员读到的内容会进它的上下文，也就发给了模型 provider。
 
-**状态只在当前 dsh 进程的内存里**：不落盘、重启即失效、别的进程看不到。因此**没有**
-`dsh-team squad` 这类 CLI 子命令 —— 那只会是个永远空的表。视图是 Web GUI 面板。
+**配置形状是 v2**（2.0 起）：键分了组 —— `defaults{provider,model}` /
+`limits{maxSteps,retries,memberTimeoutMinutes}` / `sandbox{bash}` / `roles{角色→档位}`。
+**旧形状（v1，9 个扁平键）照常能读**：归一在读入时做、不写回文件，只在日志里提示一句。
 
 ### 面板
 
@@ -578,7 +583,8 @@ squad_close   收队：**当场掐掉还在跑的成员**，名册与黑板留�
 
 为什么是「看转录」而不是「进入会话」：成员不是 dsh 会话，没有会话可进。转录是小队自己的
 数据，走只读路由取（`/transcript?owner=&squad=&member=`，三件套缺一不可 —— 小队名只在
-所有者的表里唯一）。转录**只读、不落盘**，每个成员最多留 200 条、单条正文最多 8000 字符（内存护栏）。
+所有者的表里唯一）。转录**只读**；内存里每个成员最多留 200 条、单条正文最多 8000 字符（护栏），
+落盘时会再压一道（100 条 × 1000 字符）。
 
 取数走宿主 HTTP 路由 `/api/team/squad/options`、`/api/team/squad/squads`、`/api/team/squad/transcript`，
 **只有 GET，没有写路由**：建队/派成员/改状态/写黑板全走上面那 6 个工具。原因是路由拿不到
@@ -708,6 +714,28 @@ try 外面 → 自检变红；摘掉 `checkPermissionCeiling()` → 自检变红
    和 object 文件权限失败（Windows 上稳定复现）。
 5. **失败不抛** —— 远端不可达、分支不存在、超时，都要变成一条可读状态，
    而不能影响启动。
+
+## 发版
+
+```bash
+# 1) 版本号与 CHANGELOG 一起改（加能力 minor / 只修 bug patch / 不兼容 major）
+# 2) 提交 —— 用显式路径，别用 git add -A（本机开关如 team/extensions/scheduler.json 会被卷进去）
+git add package.json CHANGELOG.md <改动的文件>
+git commit -m "feat: ..."
+# 3) 打标签并推送 —— 这一步最容易漏
+git tag -a v2.0.0 -m "v2.0.0 · <一句话>"
+git push origin master --follow-tags
+```
+
+`--follow-tags` 别省：**`git push origin master` 不推标签**。2026-10-16 盘点发现 13 个版本
+（`v1.2.0`、`v1.8.1`–`v1.12.0`、`v1.19.1`、`v1.20.0`、`v1.20.1`）只有提交、没有标签，就是这么漏的。
+嫌每次记着麻烦，配一次就行：
+
+```bash
+git config push.followTags true     # 之后普通 git push 也会带上注解标签
+```
+
+`npm test` 里有一条守卫：**最新版本已经提交却没有对应标签 → 直接红**（版本号刚改、还没提交时不拦）。
 
 ## 来源与许可
 

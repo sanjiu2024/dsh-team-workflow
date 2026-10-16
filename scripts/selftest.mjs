@@ -356,6 +356,27 @@ const headings = [...changelog.matchAll(/^## \[([^\]]+)\]/gm)].map((m) => m[1]);
 assert.ok(headings.length > 0, "CHANGELOG.md 里一个版本节都没有");
 assert.equal(headings[0], pkg.version, `CHANGELOG 最新一节是 ${headings[0]}，package.json 是 ${pkg.version}`);
 
+// —— 9b. 发版守卫：最新版本必须打过标签 ——
+// 2026-10-16 盘点发现 13 个版本（v1.2.0 / v1.8.1–v1.12.0 / v1.19.1 / v1.20.0 / v1.20.1）
+// **只有提交、没有标签** —— 根因是 `git push origin master` 不推标签。
+// 这里卡的是「已经提交了却没标签」；版本号刚改、还没提交时不拦（否则每次改版本都得先打标签）。
+{
+	const { spawnSync } = await import("node:child_process");
+	const { fileURLToPath } = await import("node:url");
+	const git = (args) => spawnSync("git", args, { cwd: fileURLToPath(new URL("..", import.meta.url)), encoding: "utf8" });
+	if (git(["rev-parse", "--is-inside-work-tree"]).status === 0) {
+		// 0 = package.json 与 CHANGELOG.md 相对 HEAD 没有改动 → 这个版本已经提交了
+		const committed = git(["diff", "--quiet", "HEAD", "--", "package.json", "CHANGELOG.md"]).status === 0;
+		if (committed) {
+			const tag = `v${pkg.version}`;
+			assert.ok(
+				(git(["tag", "-l", tag]).stdout ?? "").trim() !== "",
+				`版本 ${pkg.version} 已经提交，却没有标签 ${tag}。补：git tag -a ${tag} -m "..."；推送：git push origin ${tag}（或先 git config push.followTags true，之后普通 push 也会带注解标签）`,
+			);
+		}
+	}
+}
+
 // —— 10. 联网搜索：解析与正文提取 ——
 // 解析器是纯函数，拿真实形状的 HTML 片段测。这两段是从必应/DDG 实际响应里
 // 剪出来的结构，不是编的 —— 编的片段测不出选择器写错。
