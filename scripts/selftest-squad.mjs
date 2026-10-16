@@ -4174,6 +4174,8 @@ await checkAsync("A1：停掉之后**立刻**腾位子 —— 排队者马上补
 	await new Promise((r) => setTimeout(r, 30));
 	// 旧那轮（卡在第一个闸门上）这时才收尾 —— 它的 finally 不许清掉新一轮的 controller
 	assert.equal(members.get("A").running !== undefined, true, "旧那轮的 finally 不许把新一轮的句柄清掉（清了就再也停不掉它）");
+	// 旧那轮的 **.then** 也不许把新一轮的状态盖掉（两轮重叠是 2.0.7 才允许的）
+	assert.equal(members.get("A").status, "在跑", `旧那轮收尾不许把新一轮的状态盖掉，实际 ${members.get("A").status}`);
 	assert.equal(members.get("A").running.aborted, undefined, "新句柄不该带着旧那轮的 aborted 标记");
 	release2();
 	await settle();
