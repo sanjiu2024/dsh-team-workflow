@@ -70,13 +70,25 @@ const { flattenSquadConfig } = await import(new URL("lib/squad-config.js", ROOT)
 const { formatReport, parseReport } = await import(new URL("lib/squad-report.js", ROOT).href);
 const { readJsonConfig } = await import(new URL("lib/util.js", ROOT).href);
 const { fileURLToPath } = await import("node:url");
-const { PERSIST_TRANSCRIPT_LIMIT, PERSIST_TRANSCRIPT_TEXT_MAX, compactSquad, compactTranscript, createSquadStore, reviveSquad, workspaceKey } = await import(
-	new URL("lib/squad-store.js", ROOT).href
-);
+const {
+	LOCK_STALE_MS,
+	PERSIST_TRANSCRIPT_LIMIT,
+	PERSIST_TRANSCRIPT_TEXT_MAX,
+	SQUAD_STORE_KNOWN,
+	SQUAD_STORE_VERSION,
+	compactSquad,
+	compactTranscript,
+	createSquadStore,
+	lockIsStale,
+	processAlive,
+	reviveSquad,
+	safeMemberFileName,
+	workspaceKey,
+} = await import(new URL("lib/squad-store.js", ROOT).href);
 
 // REQ-011：成员不是子 agent —— 循环在 lib/squad-loop.js、工具在 lib/squad-tools.js，
 // 两个都是纯函数/注入依赖，所以能直接单测（不用起 dsh）。
-const { LOOP_DEFAULTS, parseToolArguments, runMemberLoop, trimMessages } = await import(new URL("lib/squad-loop.js", ROOT).href);
+const { LOOP_DEFAULTS, parseToolArguments, runMemberLoop, trimMessages, userMessage } = await import(new URL("lib/squad-loop.js", ROOT).href);
 const { MEMBER_TOOLS, MEMBER_TOOL_SCHEMAS, TOOL_LIMITS, globToRegExp, memberToolsFor, resolveInside, runMemberTool } = await import(new URL("lib/squad-tools.js", ROOT).href);
 
 let failures = 0;
@@ -1516,6 +1528,29 @@ await checkAsync("真 HTTP：路由挂得上、prefix 匹配对、GET 200 / 写�
 			"异源 Origin 要拒（真 header）",
 		);
 		assert.equal((await raw("GET", `${SQUAD_ROUTE_PREFIX}/squads`, { host: "evil.example" })).status, 403, "坏 Host 要拒");
+
+		// B3：SSE 走**真 socket** —— 假 res 只能证明 handler 会调 write，证不了
+		// 「宿主的 webServer 真允许一条长连接流」（缓冲、超时、prefix 路由都可能是坑）。
+		const sse = await new Promise((resolve, reject) => {
+			const r = http.request({ host: "127.0.0.1", port, method: "GET", path: `${SQUAD_ROUTE_PREFIX}/events` }, (res) => {
+				let text = "";
+				res.on("data", (chunk) => {
+					text += chunk;
+					// 第一帧到手就够：证明头是 SSE、快照真推出来了
+					if (text.includes("\n\n")) {
+						res.destroy();
+						resolve({ status: res.statusCode, headers: res.headers, text });
+					}
+				});
+				res.on("error", () => resolve({ status: res.statusCode, headers: res.headers, text }));
+			});
+			r.on("error", reject);
+			r.end();
+		});
+		assert.equal(sse.status, 200, "SSE 要真能连上");
+		assert.match(sse.headers["content-type"], /text\/event-stream/, "真 header 也得是 SSE");
+		assert.match(sse.text, /^event: squads\ndata: /, "开场就要有第一帧");
+		assert.equal(JSON.parse(sse.text.split("data: ")[1].split("\n")[0]).squads[0].name, "队");
 	} finally {
 		await new Promise((r) => server.close(r));
 		squad.dispose();
@@ -2819,6 +2854,112 @@ check("A3/A4：配置校验器 —— 空表合法、坏条目整体拒、越界
 	assert.equal(SQUAD_FIELDS.maxRunning("2"), undefined);
 });
 
+await checkAsync("A6 唤醒不绕过并发上限（叫醒的活先排队，话进待投队列）", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-a6c-"));
+	let release;
+	let releaseB;
+	const gate = new Promise((resolve) => {
+		release = resolve;
+	});
+	// ⚠️ 两道闸门：只卡住乙的话，丙 会瞬间跑完、甲 立刻被补位 —— 「排队」那一态根本来不及看
+	const gateB = new Promise((resolve) => {
+		releaseB = resolve;
+	});
+	const stream = (options) => {
+		const text = JSON.stringify(options.messages);
+		if (text.includes("挂着别动")) {
+			return (async function* gated() {
+				await gate;
+				yield* scriptedStream([{ text: "乙干完了" }])(options);
+			})();
+		}
+		if (text.includes("排着")) {
+			return (async function* gatedB() {
+				await gateB;
+				yield* scriptedStream([{ text: "丙干完了" }])(options);
+			})();
+		}
+		return scriptedStream([{ text: "干完了" }])(options);
+	};
+	const { squad, call, settle } = install({ stream, config: { persist: false, maxRunning: 1 } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "乙", role: "实现", task: "挂着别动", worktree: wt }, "main-1");
+	const members = squad.state.get("main-1").get("队").members;
+	// 甲 在等乙（手工造这个状态，免得再绕一圈）；丙 排在队里
+	await call("squad_spawn", { squad: "队", member: "甲", role: "实现", task: "等乙的产出", worktree: wt }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "丙", role: "实现", task: "排着", worktree: wt }, "main-1");
+	assert.equal(members.get("甲").status, "排队", "上限 1，甲 该排队");
+	assert.equal(members.get("丙").status, "排队", "上限 1，丙 也该排队");
+	members.get("甲").status = "等待";
+	members.get("甲").waitingFor = "乙";
+	members.get("甲").note = "在等「乙」收工";
+	// 乙 收工：补位（丙）先占掉唯一的位置 → 甲 只能排队，且那条「你等的乙收工了」进它的待投队列
+	release();
+	// ⚠️ 不能 `settle()`：丙 还卡在闸门上，settle 会 await 它 → 自检当场死锁（踩过第三次了）
+	await members.get("乙").promise;
+	assert.equal(members.get("甲").status, "排队", `唤醒不能绕过上限，实际 ${members.get("甲").status}`);
+	assert.equal(members.get("甲").waitingFor, undefined, "排队之后不该还挂着等待");
+	assert.match(members.get("甲").note, /并发满了/);
+	assert.equal(members.get("甲").inbox.length, 1, "叫醒的话要进待投队列（不然这条话就丢了）");
+	assert.match(JSON.stringify(members.get("甲").inbox), /你等的「乙」收工了/);
+	assert.equal(members.get("丙").status, "在跑", "补位先把丙放出去了（它是排队里更早的那个）");
+	// 丙 收工后补位 → 甲 真跑起来，并在第一步收到那条话
+	releaseB();
+	for (let i = 0; i < 10; i += 1) await settle();
+	assert.equal(members.get("甲").status, "完成", `补位之后甲该跑完，实际 ${members.get("甲").status}：${members.get("甲").note}`);
+	assert.equal(members.get("甲").inbox.length, 0, "待投的要在第一步被取走");
+});
+
+await checkAsync("A6 在等的成员停得掉；被主 agent 改过状态的不再被叫醒", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-a6d-"));
+	let release;
+	const gate = new Promise((resolve) => {
+		release = resolve;
+	});
+	const stream = (options) => {
+		const text = JSON.stringify(options.messages);
+		if (text.includes("挂着别动")) {
+			return (async function* gated() {
+				await gate;
+				yield* scriptedStream([{ text: "乙干完了" }])(options);
+			})();
+		}
+		return scriptedStream([{ text: "干完了" }])(options);
+	};
+	const { squad, call, settle } = install({ stream, config: { persist: false } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "乙", role: "实现", task: "挂着别动", worktree: wt }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "甲", role: "实现", task: "等乙", worktree: wt }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "丙", role: "实现", task: "也等乙", worktree: wt }, "main-1");
+	const members = squad.state.get("main-1").get("队").members;
+	// ⚠️ 先等它们真跑完，再手工造「等待」态 —— 否则成员还挂着 `running`（或稍后被真状态盖过），
+	// 断言就落在别的东西上了（第一次就是这么漏的：停的是「正在跑」而不是「在等」）。
+	// 也**不能**用 `settle()`：乙 卡在闸门上，settle 会 await 它 → 死锁。
+	await members.get("甲").promise;
+	await members.get("丙").promise;
+	for (const label of ["甲", "丙"]) {
+		members.get(label).status = "等待";
+		members.get(label).waitingFor = "乙";
+		members.get(label).running = undefined;
+	}
+	// 甲：按停止键（等在等的成员也要停得掉）
+	assert.match(await call("squad_stop", { squad: "队", member: "甲", reason: "不要了" }, "main-1"), /它本来在等别人/);
+	assert.equal(members.get("甲").status, "卡住");
+	assert.equal(members.get("甲").waitingFor, undefined);
+	// 丙：主 agent 手动改成「完成」—— 它已经做了别的决定，不该再被叫醒
+	await call("squad_update", { squad: "队", member: "丙", status: "完成", note: "我替它判了" }, "main-1");
+	release();
+	for (let i = 0; i < 10; i += 1) await settle();
+	assert.equal(members.get("甲").status, "卡住", "停掉的成员不许被叫醒");
+	assert.match(members.get("甲").note, /不要了/);
+	assert.equal(members.get("丙").status, "完成", "被改过状态的不许被叫醒");
+	assert.equal(members.get("丙").waitingFor, undefined, "过期的等待标记要清掉");
+	assert.equal(members.get("丙").inbox.length, 0, "没被叫醒就不该有待投");
+	// **光看状态分不出来**：真被叫醒的话它会重新跑一遍、又跑成「完成」（R2 第一次就是这么漏的）。
+	// 用量只跑一遍就是 10 —— 多跑一遍就变 20。
+	assert.equal(members.get("丙").usage.inputTokens, 10, `被改过状态的不许被重新跑起来，实际用量 ${members.get("丙").usage.inputTokens}`);
+});
+
 check("A3：重启时「排队」判「卡住」并说明不会自动补位", () => {
 	const revived = reviveSquad({ name: "n", members: [{ label: "Q", role: "实现", status: "排队" }] }, { statuses: MEMBER_STATUS });
 	assert.equal(revived.members.get("Q").status, "卡住");
@@ -3126,10 +3267,347 @@ await checkAsync("A9 模板：一键起队（目录不存在的不进名册，�
 	assert.equal(SQUAD_FIELDS.templates([]), undefined);
 });
 
+
+// ── REQ-016 块 4：落盘（B1 转录 .log / B2 inbox·history / B5 锁）──────────────
+
+check("B5 纯判据：文件名消毒 / 进程存活 / 锁过期的双判据", () => {
+	// 文件名：成员名是用户给的，不许穿越
+	// 穿越样本：断言**性质**（没有分隔符、没有连续点），别把具体形状写死
+	const traversal = safeMemberFileName("../../etc/passwd");
+	assert.ok(!traversal.includes("/") && !traversal.includes("\\"), `结果里不许有路径分隔符：${traversal}`);
+	assert.ok(!traversal.includes(".."), `结果里不许有 ..：${traversal}`);
+	assert.equal(traversal, "____etc_passwd", "具体形状也钉住（下划线个数是确定的，别下次又猜）");
+	assert.equal(safeMemberFileName("查-A"), "查-A");
+	assert.equal(safeMemberFileName("a/b\\c"), "a_b_c");
+	assert.equal(safeMemberFileName(""), "member", "空名给个兜底");
+	assert.equal(safeMemberFileName(".."), "_", "纯点点收成下划线 —— 文件名本身无害，不穿越就行");
+	assert.equal(safeMemberFileName("...x"), "_x");
+	assert.ok(!safeMemberFileName("....//....//x").includes("/"), "结果里不许还有斜杠");
+	// 进程存活
+	assert.equal(processAlive(process.pid), true, "自己一定活着");
+	assert.equal(processAlive(0), false);
+	assert.equal(processAlive(-1), false);
+	assert.equal(processAlive(2 ** 31 - 1), false, "不存在的 pid 要判「不活」");
+	// 锁过期：**pid 与 mtime 双判据**
+	const now = Date.now();
+	assert.equal(lockIsStale({ pid: process.pid, at: now }, now), false, "自己持的、刚写的 → 不许抢");
+	assert.equal(lockIsStale({ pid: 2 ** 31 - 1, at: now }, now), true, "持有者死了 → 抢");
+	assert.equal(lockIsStale({ pid: process.pid, at: now - LOCK_STALE_MS - 1 }, now), true, "太老 → 抢");
+	assert.equal(lockIsStale(null, now), true);
+	assert.equal(lockIsStale({}, now), true, "没有 at 的坏锁 → 当过期");
+});
+
+await checkAsync("B1+B2：转录落 .log 全文、待投与续聊历史跨重启活着", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "squad-b1-"));
+	const store = createSquadStore({ dir, log: () => {}, debounceMs: 1 });
+	const long = Array.from({ length: 150 }, (_, i) => ({ role: "assistant", text: `第 ${i} 条`, at: i }));
+	const member = {
+		label: "查-A",
+		role: "侦察",
+		task: "摸清入口",
+		worktree: "/tmp/wt",
+		status: "完成",
+		note: "干完了",
+		transcript: long,
+		inbox: [userMessage("第一句"), userMessage("第二句")],
+		history: [
+			{ role: "user", content: [{ type: "text", text: "任务" }] },
+			{ role: "assistant", content: [{ type: "text", text: "我做了 X" }] },
+			{ role: "user", content: [{ type: "text", text: "接着做 Y" }] },
+		],
+	};
+	const squad = { name: "队", objective: "o", members: new Map([["查-A", member]]), board: [] };
+	store.save("/tmp/ws-b1", () => [squad]);
+	store.flush();
+
+	// B1：.log 是全文（JSON 里那份被压到 100 条）
+	const logFile = store.transcriptFile("/tmp/ws-b1", "查-A");
+	assert.equal(fs.existsSync(logFile), true, ".log 要真的落下来");
+	const lines = fs.readFileSync(logFile, "utf8").split("\n").filter((l) => l.trim() !== "");
+	assert.equal(lines.length, 150, "全文 150 条一条不许少");
+	assert.equal(JSON.parse(lines[0]).text, "第 0 条", "JSONL：一行一条，机器能解析");
+	const onDisk = JSON.parse(fs.readFileSync(store.fileFor("/tmp/ws-b1"), "utf8"));
+	assert.equal(onDisk.squads[0].members[0].transcript.length, PERSIST_TRANSCRIPT_LIMIT, "JSON 里那份还是摘要（安全网）");
+	assert.equal(onDisk.version, SQUAD_STORE_VERSION);
+	// B2：待投与历史都落了盘
+	assert.equal(onDisk.squads[0].members[0].inbox.length, 2);
+	assert.equal(onDisk.squads[0].members[0].history.length, 3);
+
+	// 读回来：转录用 .log 的全文，inbox 还原成**真消息**，history 原样带回
+	const loaded = store.load("/tmp/ws-b1");
+	assert.equal(loaded[0].members[0].transcript.length, 150, "有全文就用全文（重启后转录不掉字）");
+	const revived = reviveSquad(loaded[0], { statuses: MEMBER_STATUS });
+	const revivedMember = revived.members.get("查-A");
+	assert.equal(revivedMember.inbox.length, 2);
+	assert.equal(revivedMember.inbox[0].role, "user");
+	assert.equal(revivedMember.inbox[0].content[0].text, "第一句", "待投消息要还原成循环认得的形状");
+	assert.equal(revivedMember.history.length, 3);
+	assert.equal(revivedMember.history[2].content[0].text, "接着做 Y");
+	// `.log` 比 JSON 里那份**少**时（写转录失败过 / 有人手改过）：以 JSON 为准 ——
+	// 无脑「优先全文」会变成「丢最新几条」。
+	fs.writeFileSync(logFile, `${JSON.stringify({ at: 1, role: "assistant", text: "只有一条" })}\n`, "utf8");
+	const shorter = store.load("/tmp/ws-b1");
+	assert.equal(shorter[0].members[0].transcript.length, PERSIST_TRANSCRIPT_LIMIT, "`.log` 更旧时不许用它覆盖 JSON");
+	// 老文件（v1，没有这些字段）照常读，不 quarantine
+	const v1 = { version: 1, cwd: "/tmp/ws-b1", squads: [{ name: "老队", members: [{ label: "A", status: "完成" }] }] };
+	fs.writeFileSync(store.fileFor("/tmp/ws-b1"), JSON.stringify(v1), "utf8");
+	const oldLoaded = store.load("/tmp/ws-b1");
+	assert.equal(oldLoaded.length, 1, "v1 文件必须能读（迁移的意义就在这）");
+	assert.equal(fs.readdirSync(dir).some((f) => f.includes(".broken-")), false, "读老版本不该被改名");
+	const oldRevived = reviveSquad(oldLoaded[0], { statuses: MEMBER_STATUS });
+	assert.deepEqual(oldRevived.members.get("A").inbox, []);
+	assert.equal(oldRevived.members.get("A").history, undefined);
+	assert.deepEqual(SQUAD_STORE_KNOWN.includes(1), true, "v1 要在认得列表里");
+	store.dispose();
+});
+
+await checkAsync("B5 锁：另一个进程正在写就不写；持有者死了就抢过来", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "squad-b5-"));
+	const logs = [];
+	const store = createSquadStore({ dir, log: (m) => logs.push(m), debounceMs: 1 });
+	const squad = { name: "队", objective: "o", members: new Map(), board: [] };
+	const file = store.fileFor("/tmp/ws-b5");
+	const lockFile = `${file}.lock`;
+	// 活着的进程持着锁（用我们自己的 pid 冒充）→ 这次不许写
+	fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, at: Date.now() }), "utf8");
+	store.save("/tmp/ws-b5", () => [squad]);
+	store.flush();
+	assert.equal(fs.existsSync(file), false, "别人持着锁时不许写（写了就是丢更新）");
+	assert.equal(logs.some((m) => m.includes("另一个进程")), true, "要说出来为什么没写");
+	// 持有者死了（拿一个不存在的 pid）→ 抢过来写
+	fs.writeFileSync(lockFile, JSON.stringify({ pid: 2 ** 31 - 1, at: Date.now() }), "utf8");
+	store.flush();
+	assert.equal(fs.existsSync(file), true, "持有者死了就该抢过来写");
+	assert.equal(fs.existsSync(lockFile), false, "写完要放锁（不然下一次写永远被自己挡）");
+	// 锁太老（哪怕 pid 是我们自己）→ 也抢
+	fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, at: Date.now() - LOCK_STALE_MS - 1000 }), "utf8");
+	store.save("/tmp/ws-b5", () => [squad]);
+	store.flush();
+	assert.equal(fs.existsSync(lockFile), false, "过期锁要被抢掉");
+	store.dispose();
+	assert.equal(fs.existsSync(lockFile), false, "dispose 之后不留锁文件");
+});
+
+
+// ── REQ-016 块 4：B3 实时推送（SSE）/ C2 成本面板 ───────────────────────────
+
+await checkAsync("B3 SSE：/events 先推一份快照，状态变了才再推，close 时清定时器", async () => {
+	const { ctx, record } = fakeCtx();
+	const squad = installSquad(ctx, { config: { ...SQUAD_DEFAULTS } });
+	const handler = record.routes[0].handler;
+	newSquad(squad.state, "s1", { name: "队", objective: "o" });
+	addMember(squad.state, squad.state.get("s1").get("队"), { label: "实现-A", role: "实现", task: "改代码", worktree: "/tmp/wt-a" });
+
+	// 自己造一个能收 SSE 的 res：writeHead / write / on("close")
+	const frames = [];
+	const listeners = new Map();
+	const res = {
+		status: 0,
+		headers: null,
+		writeHead(status, headers) {
+			this.status = status;
+			this.headers = headers;
+		},
+		write(chunk) {
+			frames.push(String(chunk));
+		},
+		end() {},
+		on(event, fn) {
+			listeners.set(event, fn);
+		},
+	};
+	const req = new EventEmitter();
+	req.method = "GET";
+	req.url = `${SQUAD_ROUTE_PREFIX}/events`;
+	req.socket = { remoteAddress: "127.0.0.1" };
+	req.headers = { host: "localhost:3080" };
+
+	await withFakeTimers(async (timers) => {
+		await handler(req, res);
+		assert.equal(res.status, 200);
+		assert.match(res.headers["content-type"], /text\/event-stream/, "SSE 的 content-type 不能写成 JSON");
+		assert.equal(res.headers["cache-control"], "no-store");
+		// 开场先给一份完整快照 —— 面板不必先打一次 /squads
+		assert.equal(frames.length, 1);
+		assert.match(frames[0], /^event: squads\ndata: /);
+		const first = JSON.parse(frames[0].split("data: ")[1]);
+		assert.equal(first.squads[0].name, "队");
+		// 两个定时器：变化检查 + 心跳（都在 fake timers 里，不会真跑）
+		assert.equal(timers.created.length, 2, "要安排「查变化」与「心跳」两个定时器");
+		const [tick] = timers.created;
+		// 状态没变 → 不推（指纹一样）
+		tick.callback();
+		assert.equal(frames.length, 1, "没变化就不推：不然每秒一坨一样的快照");
+		// 状态变了 → 推
+		squad.state.get("s1").get("队").members.get("实现-A").status = "完成";
+		squad.state.get("s1").get("队").members.get("实现-A").updatedAt = Date.now();
+		tick.callback();
+		assert.equal(frames.length, 2, "变了才推");
+		assert.match(frames[1], /"status":"完成"/);
+		// 连接断了必须把两个定时器都清掉（否则每开一次面板漏两个常驻定时器）
+		listeners.get("close")();
+		assert.equal(timers.cleared.length, 2, "close 要清定时器");
+	});
+	// 栅栏：非本机来源一律 403（SSE 也不能例外）
+	const denied = await request(handler, "GET", `${SQUAD_ROUTE_PREFIX}/events`, { remoteAddress: "10.0.0.9" });
+	assert.equal(denied.status, 403);
+	squad.dispose();
+});
+
+await checkAsync("C2 /cost：与账单同一套口径，形状稳定（没有审计日志时 audit 是 null）", async () => {
+	const { ctx, record } = fakeCtx();
+	const squad = installSquad(ctx, { config: { ...SQUAD_DEFAULTS } });
+	const handler = record.routes[0].handler;
+	newSquad(squad.state, "s1", { name: "队", objective: "o" });
+	addMember(squad.state, squad.state.get("s1").get("队"), { label: "实现-A", role: "实现", task: "改代码", worktree: "/tmp/wt-a" });
+	// 今天收工的一个成员：小队那半要算得出来
+	const member = squad.state.get("s1").get("队").members.get("实现-A");
+	member.status = "完成";
+	member.endedAt = Date.now();
+	member.usage = { inputTokens: 100, outputTokens: 50, totalTokens: 150 };
+
+	const cost = await request(handler, "GET", `${SQUAD_ROUTE_PREFIX}/cost`);
+	assert.equal(cost.status, 200);
+	assert.equal(cost.body.ok, true);
+	assert.equal(typeof cost.body.date, "string");
+	assert.match(cost.body.date, /^\d{4}-\d{2}-\d{2}$/, "日期是本地日（与 bill 同一套）");
+	// 本机可能有也可能没有审计日志：两种形状都要能渲染（面板要能区分 0 与「没数据」）
+	assert.ok(cost.body.audit === null || typeof cost.body.audit.totals === "object", `audit 形状：${JSON.stringify(cost.body.audit)}`);
+	assert.equal(cost.body.squads.totals.calls >= 1, true, "今天收工的小队成员要算进去");
+	assert.equal(cost.body.squads.totals.input, 100);
+	assert.equal(cost.body.squads.members[0].squad, "队");
+	assert.equal(cost.body.squads.members[0].label, "实现-A");
+	// 只读：写方法 404；非本机 403
+	assert.equal((await request(handler, "POST", `${SQUAD_ROUTE_PREFIX}/cost`)).status, 404);
+	assert.equal((await request(handler, "GET", `${SQUAD_ROUTE_PREFIX}/cost`, { remoteAddress: "10.0.0.9" })).status, 403);
+	squad.dispose();
+});
+
+await checkAsync("B3 面板：有 EventSource 就推（不轮询）；没有就退回 5 秒轮询", async () => {
+	const rt = createReact();
+	const { exports } = loadClient(rt.React);
+	const { ctx, record } = fakeClientCtx();
+	// 假的 EventSource：记下 URL，允许测试往里塞事件
+	const opened = [];
+	class FakeEventSource {
+		constructor(url) {
+			this.url = url;
+			this.closed = false;
+			this.listeners = new Map();
+			opened.push(this);
+		}
+		addEventListener(name, fn) {
+			this.listeners.set(name, fn);
+		}
+		close() {
+			this.closed = true;
+		}
+		emit(name, payload) {
+			this.listeners.get(name)?.({ data: JSON.stringify(payload) });
+		}
+	}
+	const realEventSource = globalThis.EventSource;
+	globalThis.EventSource = FakeEventSource;
+	try {
+		const tree = await withFetch(
+			async (url) => (url.endsWith("/squads") ? reply(200, SQUAD_FIXTURE)() : reply(200, { ok: true, boardLimit: 500 })()),
+			async () => {
+				exports.apply(ctx);
+				await settle();
+				const page = record.registrations.find((r) => r.options.name === "main" && r.options.key === "team-squad");
+				return withFakeTimers(async (timers) => {
+					const first = rt.render(page.component);
+					await settle();
+					assert.equal(opened.length, 1, "要开一条 SSE");
+					assert.match(opened[0].url, /\/events$/);
+					assert.equal(timers.created.length, 0, "有 SSE 就不该再安排轮询（这就是 B3 的全部意义）");
+					// 推一帧 → 面板换数据（换成空快照，树里就该出现「还没有小队」）
+					opened[0].emit("squads", { ok: true, squads: [], count: 0 });
+					await settle();
+					// ⚠️ 用现成的 `textsOf`：`walk` 只访问**元素**，字符串节点它直接跳过（我第一版用 walk 收字符串，收到空数组）
+					const pushed = textsOf(rt.render(page.component)).join(" | ");
+					assert.match(pushed, /还没有小队/, `推送要真的换掉面板数据，实际：${pushed.slice(0, 200)}`);
+					rt.cleanup();
+					assert.equal(opened[0].closed, true, "卸载要关掉 SSE（不然每开一次面板漏一条连接）");
+					return first;
+				});
+			},
+		);
+		assert.ok(tree !== undefined);
+	} finally {
+		if (realEventSource === undefined) delete globalThis.EventSource;
+		else globalThis.EventSource = realEventSource;
+	}
+});
+
+await checkAsync("C2 面板：成本行渲染出来；/cost 挂了也不拖垮名册", async () => {
+	const rt = createReact();
+	const { exports } = loadClient(rt.React);
+	const { ctx, record } = fakeClientCtx();
+	await withFetch(
+		async (url) => {
+			if (url.endsWith("/squads")) return reply(200, SQUAD_FIXTURE)();
+			if (url.endsWith("/cost")) {
+				return reply(200, {
+					ok: true,
+					date: "2026-10-16",
+					audit: { totals: { calls: 1111, input: 5417230, output: 1226172, cacheRead: 194059648, cacheWrite: 0, total: 200703050 } },
+					squads: { totals: { calls: 3, total: 450 }, members: [] },
+				})();
+			}
+			return reply(200, { ok: true, boardLimit: 500 })();
+		},
+		async () => {
+			exports.apply(ctx);
+			await settle();
+			const page = record.registrations.find((r) => r.options.name === "main" && r.options.key === "team-squad");
+			const tree = await withFakeTimers(async () => {
+				rt.render(page.component);
+				await settle();
+				const rendered = rt.render(page.component);
+				rt.cleanup();
+				return rendered;
+			});
+			const text = textsOf(tree).join(" | ");
+			assert.match(text, /今天（2026-10-16）本机全部/, `成本行要在面板上，实际：${text.slice(0, 200)}`);
+			assert.match(text, /1,111 次调用/, "千分位要真的分开");
+			assert.match(text, /其中小队：3 次/);
+		},
+	);
+	// /cost 抛错：名册照常显示
+	const rt2 = createReact();
+	const second = loadClient(rt2.React);
+	const { ctx: ctx2, record: record2 } = fakeClientCtx();
+	await withFetch(
+		async (url) => {
+			if (url.endsWith("/squads")) return reply(200, SQUAD_FIXTURE)();
+			// 探活那条要照常 200，否则面板压根不注册（第一版把 /options 也炸了，
+			// 结果连 page.component 都取不到）
+			if (url.endsWith("/cost")) throw new Error("成本这条路炸了");
+			return reply(200, { ok: true, boardLimit: 500 })();
+		},
+		async () => {
+			second.exports.apply(ctx2);
+			await settle();
+			const page = record2.registrations.find((r) => r.options.name === "main" && r.options.key === "team-squad");
+			const tree = await withFakeTimers(async () => {
+				rt2.render(page.component);
+				await settle();
+				const rendered = rt2.render(page.component);
+				rt2.cleanup();
+				return rendered;
+			});
+			const text = textsOf(tree).join(" | ");
+			assert.doesNotMatch(text, /读不到小队数据/, "成本读不到不该说成「小队读不到」");
+			assert.match(text, /今天|小队/, "名册照常渲染");
+		},
+	);
+});
+
 // ── 汇总 ──────────────────────────────────────────────────────────────────
 
 if (failures > 0) {
 	console.log(`\n✗ ${failures} 项失败`);
 	process.exit(1);
 }
-console.log("✓ 自检通过：名册与黑板 / 权限三种视角 / 快照 / 全部小队工具真跑（返回值过 schema）/ 装配与会话清理 / HTTP 路由与信任栅栏负例 / 真 socket 端到端（路由挂载 + prefix 匹配）/ 客户端面板真渲染与只读转录 / REQ-015 用量·落盘捡回·续聊·直投·重试·超时 / REQ-016 配置 v2 迁移·角色档位");
+console.log("✓ 自检通过：名册与黑板 / 权限三种视角 / 快照 / 全部小队工具真跑（返回值过 schema）/ 装配与会话清理 / HTTP 路由与信任栅栏负例 / 真 socket 端到端（路由挂载 + prefix 匹配 + SSE 长连接）/ 客户端面板真渲染与只读转录 / REQ-015 用量·落盘捡回·续聊·直投·重试·超时 / REQ-016 配置 v2 迁移·角色档位·可控性·协作·落盘·SSE·成本");
