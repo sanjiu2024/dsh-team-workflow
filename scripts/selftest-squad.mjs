@@ -2,11 +2,11 @@
 /**
  * 自检：小队（REQ-009 / REQ-011）。
  *
- * 八段：
+ * 九段（第 9 段是 REQ-015 的用量 / 落盘捡回 / 续聊 / 直投 / 重试 / 超时）：
  *   1. 名册与黑板（纯函数：建队 / 加人 / 改行 / 写黑板 / 收队 / 裁剪）
  *   2. 权限（authorize：只有所有者进得来 —— 成员不是 dsh agent，没有工具可调）
  *   3. 快照（snapshot 只给自己的队；snapshotAll 给全部）
- *   4. 6 个工具**真跑**一遍（假 ctx + 真 execute），返回值逐条过 output.schema
+ *   4. 全部小队工具**真跑**一遍（假 ctx + 真 execute），返回值逐条过 output.schema
  *   5. 成员的循环与工具（**C 路的核心**）：假模型流把 `runMemberLoop` 整条路径跑通
  *      （每个 tool call 恰好一条结果、参数坏 JSON 也要回结果、单步上限、maxSteps、
  *      中止、模型报错），以及成员工具的路径越界与 bash 沙箱拦截
@@ -27,6 +27,14 @@ import { EventEmitter } from "node:events";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+
+/**
+ * 工具数写死在这里（**不**从模块里算）：从模块算出来就成了同义反复，加了工具测试照样绿。
+ * REQ-015 起小队工具 8 个（多了 squad_send / squad_say）、成员工具 12 个
+ * （多了 say / web_search / web_fetch / worktree_new / worktree_list）。
+ */
+const SQUAD_TOOL_COUNT = 8;
+const MEMBER_TOOL_COUNT = 12;
 
 const ROOT = new URL("../", import.meta.url);
 const {
@@ -49,9 +57,13 @@ const {
 	newSquad,
 	snapshot,
 	snapshotAll,
+	formatDuration,
 	updateMember,
 	usageLine,
 } = await import(new URL("lib/squad.js", ROOT).href);
+const { PERSIST_TRANSCRIPT_LIMIT, PERSIST_TRANSCRIPT_TEXT_MAX, compactTranscript, createSquadStore, reviveSquad, workspaceKey } = await import(
+	new URL("lib/squad-store.js", ROOT).href
+);
 
 // REQ-011：成员不是子 agent —— 循环在 lib/squad-loop.js、工具在 lib/squad-tools.js，
 // 两个都是纯函数/注入依赖，所以能直接单测（不用起 dsh）。
@@ -516,10 +528,10 @@ await checkAsync("工具：建队 → spawn（真跑成员循环）→ 结论自
 			seen,
 		),
 	});
-	assert.equal(record.tools.length, 6);
+	assert.equal(record.tools.length, SQUAD_TOOL_COUNT);
 	assert.deepEqual(
 		record.tools.map((t) => t.name).sort(),
-		["squad_board", "squad_close", "squad_new", "squad_spawn", "squad_status", "squad_update"],
+		["squad_board", "squad_close", "squad_new", "squad_say", "squad_send", "squad_spawn", "squad_status", "squad_update"],
 	);
 
 	assert.match(await call("squad_new", { name: "登录改造", objective: "把登录改成 OAuth" }, "main-1"), /已建小队「登录改造」/);
@@ -890,17 +902,20 @@ check("成员提示词：system 说清身份/边界/收工方式；任务里带�
 	assert.doesNotMatch(memberTaskText(fresh, { task: "t" }), /黑板/);
 });
 
-check("成员工具·工具表：7 个、schema 合法（描述/必填齐），护栏值都是正数", () => {
+check("成员工具·工具表：12 个、schema 合法（描述/必填齐），护栏值都是正数", () => {
 	assert.deepEqual(
 		MEMBER_TOOLS.map((t) => t.name),
-		["read", "write", "edit", "grep", "glob", "bash", "board"],
+		["read", "write", "edit", "grep", "glob", "bash", "board", "say", "web_search", "web_fetch", "worktree_new", "worktree_list"],
 	);
 	for (const t of MEMBER_TOOLS) {
 		assert.equal(typeof t.description, "string");
 		assert.ok(t.description.length > 10, `${t.name} 的描述太短 —— 模型就靠它选工具`);
 		assert.equal(t.parameters.type, "object");
 		assert.equal(t.parameters.additionalProperties, false);
-		assert.ok(t.parameters.required.length > 0, `${t.name} 一个必填参数都没有？`);
+		assert.ok(Array.isArray(t.parameters.required), `${t.name} 的 required 得是数组`);
+		// 有参数的工具有必填项才算写全；**没有参数**的工具（如 worktree_list）允许 required 为空
+		const props = Object.keys(t.parameters.properties ?? {});
+		assert.ok(props.length === 0 || t.parameters.required.length > 0, `${t.name} 有参数却一个必填都没写？`);
 		for (const key of t.parameters.required) {
 			assert.ok(t.parameters.properties[key] !== undefined, `${t.name}.${key} 标了必填却没定义`);
 		}
@@ -910,10 +925,10 @@ check("成员工具·工具表：7 个、schema 合法（描述/必填齐），�
 
 	// bash 开关：关掉之后成员的工具表里**不能**再有 bash（那是唯一等于宿主权限的工具）
 	const noBash = memberToolsFor({ bash: false });
-	assert.deepEqual(noBash.tools.map((t) => t.name), ["read", "write", "edit", "grep", "glob", "board"]);
+	assert.deepEqual(noBash.tools.map((t) => t.name), ["read", "write", "edit", "grep", "glob", "board", "say", "web_search", "web_fetch", "worktree_new", "worktree_list"]);
 	assert.equal(noBash.schemas.some((t) => t.name === "bash"), false);
 	assert.equal(noBash.schemas.some((t) => "run" in t), false, "线上字段里不能有 run");
-	assert.equal(memberToolsFor().schemas.length, 7, "默认还是 7 个");
+	assert.equal(memberToolsFor().schemas.length, MEMBER_TOOL_COUNT, "默认就是全部 12 个");
 
 	// 发给 provider 的那份：只有线上字段，且真能序列化（`run` 混进去就发不出去了）
 	assert.deepEqual(
@@ -1172,11 +1187,11 @@ check("装配：team/extensions/squad.json 的每个键都有校验器，且出�
 	assert.equal(SQUAD_FIELDS.provider("   "), undefined);
 });
 
-check("装配：webServer 缺失 → 面板不挂，但 6 个工具照常（headless 也要能用）", () => {
+check("装配：webServer 缺失 → 面板不挂，但工具照常（headless 也要能用）", () => {
 	const { ctx, record } = fakeCtx({ services: ["tools"] });
 	const squad = installSquad(ctx, { config: { ...SQUAD_DEFAULTS } });
 	assert.equal(squad.enabled, true);
-	assert.equal(record.tools.length, 6, "没有 webServer 不该连累工具");
+	assert.equal(record.tools.length, SQUAD_TOOL_COUNT, "没有 webServer 不该连累工具");
 	assert.equal(record.routes.length, 0);
 	assert.match(squad.describe(), /面板未挂/);
 	squad.dispose();
@@ -1189,7 +1204,7 @@ check("装配：webServer 在 → 路由挂上且只认 GET（写方法一律 40
 	assert.equal(record.routes[0].kind, "prefix");
 	assert.equal(record.routes[0].path, SQUAD_ROUTE_PREFIX);
 	assert.match(squad.describe(), /面板已挂/);
-	assert.match(squad.describe(), /6 个工具/);
+	assert.match(squad.describe(), new RegExp(`${SQUAD_TOOL_COUNT} 个工具`));
 	squad.dispose();
 	assert.equal(squad.state.size, 0, "dispose 要清状态");
 });
@@ -1224,8 +1239,8 @@ await checkAsync("装配：bash=false → 成员的工具表里没有 bash，且
 
 	const names = seen[0].tools.map((t) => t.name);
 	assert.equal(names.includes("bash"), false, "关了 bash 就不能把它发给模型");
-	assert.equal(names.length, 6);
-	assert.match(seen[0].system, /工具就 6 个/, "提示词里的工具数要跟着变");
+	assert.equal(names.length, MEMBER_TOOL_COUNT - 1, "关掉 bash 之后少一个");
+	assert.match(seen[0].system, new RegExp(`工具就 ${MEMBER_TOOL_COUNT - 1} 个`), "提示词里的工具数要跟着变");
 	// 用词边界：临时目录名里带「bash」会把这条断言骗过去（踩过）
 	assert.doesNotMatch(seen[0].system, /\bbash\b/, "提示词里不该再提 bash");
 	const member = squad.state.get("main-1").get("队").members.get("实现-A");
@@ -1893,7 +1908,269 @@ await checkAsync("客户端面板：空数据 → 给下一步提示，而不是
 	assert.match(texts, /0 个/, "空就是空，别装作有");
 	assert.match(texts, /squad_new/, "要告诉用户下一步用什么");
 	assert.match(texts, /squad_spawn/, "派成员的工具名要对（squad_add 已经没有了）");
-	assert.match(texts, /不落盘/, "顺手说清寿命：只在当前会话");
+	assert.match(texts, /落盘/, "顺手说清寿命：落盘 + 重启后同 cwd 捡回");
+});
+
+
+// ── REQ-015：用量 / 落盘 / 续聊 / 直投 / 重试 / 超时 ──────────────────────────
+
+/** 超时用例复用上面已有的 `hangingStream`（它听 signal，abort 就 reject —— 跟真 provider 一样）。 */
+
+check("REQ-015·耗时格式化：0/秒/分/时/天的边界", () => {
+	assert.equal(formatDuration(0), "0s");
+	assert.equal(formatDuration(-5), "0s");
+	assert.equal(formatDuration(59_000), "59s");
+	assert.equal(formatDuration(90_000), "1m30s");
+	assert.equal(formatDuration(3_600_000), "1h00m");
+	assert.equal(formatDuration(90_000_000), "1d01h");
+});
+
+check("REQ-015·落盘纯函数：workspaceKey 稳定且区分路径、转录裁剪、revive 补回运行时字段", () => {
+	assert.equal(workspaceKey("/a/b/c"), workspaceKey("/a/b/c"), "同一个 cwd 必须同一个键");
+	assert.notEqual(workspaceKey("/a/b/c"), workspaceKey("/a/b/d"), "不同 cwd 不能撞");
+	assert.notEqual(workspaceKey("/a/b"), workspaceKey("/a-b"), "净化后同名也要靠 hash 区分");
+	assert.equal(workspaceKey(""), "unknown");
+	assert.equal(workspaceKey(undefined), "unknown");
+
+	const long = Array.from({ length: 150 }, (_, i) => ({ role: "assistant", text: "x".repeat(2000), step: i }));
+	const compacted = compactTranscript(long);
+	assert.equal(compacted.length, PERSIST_TRANSCRIPT_LIMIT, `落盘只留 ${PERSIST_TRANSCRIPT_LIMIT} 条`);
+	assert.equal(compacted[0].step, 50, "留的是**最后** 100 条");
+	assert.ok(compacted[0].text.length <= PERSIST_TRANSCRIPT_TEXT_MAX + 20, "单条正文要压到 1000 字符级");
+
+	const revived = reviveSquad({
+		name: "n",
+		members: [{ label: "A", transcript: [{ role: "assistant", text: "t" }], usage: { inputTokens: 3 }, attempts: 2, durationMs: 500 }],
+		board: [{ at: 1, from: "x", text: "y" }],
+	});
+	assert.ok(revived.members instanceof Map, "members 要变回 Map");
+	assert.deepEqual(revived.members.get("A").inbox, [], "运行时字段给回默认值");
+	assert.equal(revived.members.get("A").running, undefined);
+	assert.equal(revived.members.get("A").usage.inputTokens, 3);
+	assert.equal(revived.members.get("A").attempts, 2);
+	assert.equal(revived.board.length, 1);
+});
+
+await checkAsync("REQ-015·用量：结构化 usage + attempts + durationMs，小队合计 = 各成员之和", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-usage-"));
+	const { squad, call, settle } = install({ stream: scriptedStream([{ text: "干完了" }]), config: { persist: false } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "A", role: "实现", task: "t", worktree: wt }, "main-1");
+	await settle();
+	const member = squad.state.get("main-1").get("队").members.get("A");
+	assert.equal(member.usage.inputTokens, 10, "假流的 usage 要落进成员");
+	assert.equal(member.usage.outputTokens, 5);
+	assert.equal(member.attempts, 1);
+	assert.equal(typeof member.durationMs, "number");
+	assert.ok(member.durationMs >= 0);
+
+	const snap = snapshotAll(squad.state).squads[0];
+	assert.equal(snap.members[0].usage.inputTokens, 10, "快照里要有结构化用量（面板要用）");
+	assert.equal(snap.members[0].attempts, 1);
+	assert.equal(snap.members[0].durationMs >= 0, true);
+	assert.equal(snap.usage.inputTokens, 10, "小队合计 = 各成员之和");
+	assert.equal(snap.members[0].inbox, 0);
+	// 渲染也要带上（工具输出与面板一条数据路径）
+	const text = await call("squad_status", {}, "main-1");
+	assert.match(text, /in 10/, "状态文本里要能看到用量");
+});
+
+await checkAsync("REQ-015·续聊：squad_send 带历史续跑、转录追加不清空、attempts 累加", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-resume-"));
+	const seen = [];
+	const { squad, call, settle } = install({
+		stream: scriptedStream([{ text: "第一次做完了" }, { text: "接着也做完了" }], seen),
+		config: { persist: false },
+	});
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "A", role: "实现", task: "改登录", worktree: wt }, "main-1");
+	await settle();
+	const member = squad.state.get("main-1").get("队").members.get("A");
+	const before = member.transcript.length;
+	assert.ok(before > 0);
+
+	const said = await call("squad_send", { squad: "队", member: "A", text: "再把登出也改了" }, "main-1");
+	assert.match(said, /接着干/);
+	await settle();
+
+	assert.equal(seen.length, 2, "第二次真的又发了请求");
+	const second = JSON.stringify(seen[1].messages);
+	assert.match(second, /第一次做完了/, "第二次请求里带着上次的历史（不是从零开始）");
+	assert.match(second, /再把登出也改了/, "新要求也在");
+	assert.ok(member.transcript.length > before, "续聊是**追加**转录，不是清空");
+	assert.equal(member.attempts, 2, "attempts 累加");
+	assert.equal(member.usage.inputTokens, 20, "用量也是累加的（两次各 10）");
+});
+
+await checkAsync("REQ-015·续聊·重启后：没有历史时用「原任务 + 上次结论」兜底", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-resume2-"));
+	const seen = [];
+	const { squad, call, settle } = install({
+		stream: scriptedStream([{ text: "第一次做完" }, { text: "又做完" }], seen),
+		config: { persist: false },
+	});
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "A", role: "实现", task: "改登录", worktree: wt }, "main-1");
+	await settle();
+	const member = squad.state.get("main-1").get("队").members.get("A");
+	member.history = undefined;   // 模拟「dsh 重启过，消息历史没了」
+	const said = await call("squad_send", { squad: "队", member: "A", text: "接着改" }, "main-1");
+	assert.match(said, /兜底/, "要明说走了兜底那条路");
+	await settle();
+	const second = JSON.stringify(seen[1].messages);
+	assert.match(second, /改登录/, "兜底里有原任务");
+	assert.match(second, /第一次做完/, "兜底里有上次结论");
+});
+
+await checkAsync("REQ-015·直投：不在跑就排队，下次开跑先投给它（并写黑板）", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-say-"));
+	const seen = [];
+	const { squad, call, settle } = install({
+		stream: scriptedStream([{ text: "第一次做完" }, { text: "又做完" }], seen),
+		config: { persist: false },
+	});
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "A", role: "实现", task: "改登录", worktree: wt }, "main-1");
+	await settle();
+	const squadObj = squad.state.get("main-1").get("队");
+	const member = squadObj.members.get("A");
+	const boardBefore = squadObj.board.length;
+
+	const r = await call("squad_say", { squad: "队", to: "A", text: "记得看黑板上的接口约定" }, "main-1");
+	assert.match(r, /待投队列/, "收工的成员只能排队（文案是「排在…待投队列里」）");
+	assert.equal(member.inbox.length, 1);
+	assert.equal(squadObj.board.length, boardBefore + 1, "直投也要记进黑板（不是悄悄话）");
+	assert.ok(member.transcript.some((e) => e.injected === true), "要进目标转录");
+
+	await call("squad_send", { squad: "队", member: "A", text: "继续" }, "main-1");
+	await settle();
+	const second = JSON.stringify(seen[1].messages);
+	assert.match(second, /记得看黑板上的接口约定/, "开跑时先把排队的话投出去");
+	assert.match(second, /队里给你的消息/);
+	assert.equal(member.inbox.length, 0, "投出去之后队列要空");
+});
+
+await checkAsync("REQ-015·直投·在跑：下一步边界注入，且窗口不以 tool 消息开头", async () => {
+	const seen = [];
+	let drained = false;
+	const result = await runMemberLoop({
+		kit: { BlockAssembler: FakeAssembler, createToolResultMessage: fakeToolResult },
+		stream: scriptedStream([{ text: "先查一下", calls: [{ id: "c1", name: "board", arguments: '{"text":"x"}' }] }, { text: "收工" }], seen),
+		provider: "p",
+		model: "m",
+		system: "s",
+		task: "任务",
+		tools: [],
+		executeTool: async () => ({ text: "ok" }),
+		takeInbox: () => {
+			if (drained) return [];
+			drained = true;
+			return [{ role: "user", content: [{ type: "text", text: "插一句话" }] }];
+		},
+	});
+	assert.equal(result.status, "完成");
+	const second = seen[1].messages;
+	assert.equal(second[0].role, "user", "窗口不能以 tool 结果开头（协议约束）");
+	assert.ok(second.some((m) => JSON.stringify(m).includes("插一句话")), "注入的消息要在下一次请求里");
+	assert.ok(result.transcript.some((e) => e.injected === true), "注入要有转录事件");
+	assert.ok(Array.isArray(result.messages) && result.messages.length > 0, "循环要把它最终的消息数组交出来（续聊靠它）");
+});
+
+await checkAsync("REQ-015·重试：基础设施失败重试一次并带上原因；maxSteps 耗尽不重试", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-retry-"));
+	const seen = [];
+	let round = 0;
+	const flaky = (options) => {
+		round += 1;
+		if (round === 1) throw new Error("provider 挂了");
+		return scriptedStream([{ text: "第二次成功了" }], seen)(options);
+	};
+	const first = install({ stream: flaky, config: { persist: false, retries: 1 } });
+	await first.call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await first.call("squad_spawn", { squad: "队", member: "A", role: "实现", task: "t", worktree: wt }, "main-1");
+	await first.settle();
+	const member = first.squad.state.get("main-1").get("队").members.get("A");
+	assert.equal(member.status, "完成", `重试之后应该成功，实际：${member.status} / ${member.note}`);
+	assert.equal(member.attempts, 2, "失败一次 + 重试一次");
+	assert.match(JSON.stringify(seen[0].messages), /上一次因为/, "重试要带上中断原因（不是闷头重来）");
+
+	// maxSteps 耗尽**不**重试（那是模型真在绕圈，重试等于继续烧钱）
+	const second = install({
+		stream: scriptedStream([{ text: "还在干", calls: [{ id: "c1", name: "board", arguments: '{"text":"x"}' }] }]),
+		config: { persist: false, retries: 3, maxSteps: 1 },
+	});
+	await second.call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await second.call("squad_spawn", { squad: "队", member: "A", role: "实现", task: "t", worktree: wt }, "main-1");
+	await second.settle();
+	const stuck = second.squad.state.get("main-1").get("队").members.get("A");
+	assert.equal(stuck.status, "卡住");
+	assert.equal(stuck.attempts, 1, "maxSteps 耗尽不重试");
+});
+
+await checkAsync("REQ-015·超时：超过墙钟上限就 abort，判卡住并写明是超时", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-timeout-"));
+	const { squad, call, settle } = install({
+		stream: hangingStream,
+		config: { persist: false, memberTimeoutMinutes: 0.001, retries: 0 },   // 60ms
+	});
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "A", role: "实现", task: "t", worktree: wt }, "main-1");
+	await settle();
+	const member = squad.state.get("main-1").get("队").members.get("A");
+	assert.equal(member.status, "卡住");
+	assert.match(member.note, /分钟上限/, `note 要写明超时，实际：${member.note}`);
+	assert.equal(member.attempts, 1, "超时不重试（重试只会再等一遍）");
+});
+
+await checkAsync("REQ-015·落盘与捡回：dispose 之后换个会话 id、同一个 cwd，能捡回且能写", async () => {
+	const home = fs.mkdtempSync(path.join(os.tmpdir(), "squad-home-"));
+	const previous = process.env.DSH_HOME;
+	process.env.DSH_HOME = home;
+	try {
+		const cwd = "/tmp/squad-ws-demo";
+		const first = install({ stream: scriptedStream([{ text: "干完了" }]), config: { persist: true } });
+		const exec1 = { agent: { id: "sess-1", session: { header: { cwd } } } };
+		await first.tools.squad_new.execute({ name: "队", objective: "把登录改完" }, exec1);
+		await first.tools.squad_board.execute({ squad: "队", text: "入口在 src/a.js:42" }, exec1);
+		await first.squad.dispose();   // dispose 会 flush，并把写队列的 promise 交出来
+
+		const dir = path.join(home, "team-workflow", "squads");
+		assert.ok(fs.existsSync(dir), `落盘目录该被建出来：${dir}`);
+		assert.equal(fs.readdirSync(dir).filter((f) => f.endsWith(".json")).length, 1, "一个 cwd 一份文件");
+
+		// 新会话（id 不同）、同一个工作目录
+		const second = install({ stream: scriptedStream([{ text: "x" }]), config: { persist: true } });
+		const exec2 = { agent: { id: "sess-2", session: { header: { cwd } } } };
+		const out = await second.tools.squad_status.execute({}, exec2);
+		assert.match(out.text, /队/, "重启后要能看见");
+		assert.match(out.text, /入口在 src\/a\.js:42/, "黑板内容也要在");
+		const adopted = second.squad.state.get("sess-2").get("队");
+		assert.equal(adopted.adoptedFrom, "sess-1", "要记下是从哪个会话接管的");
+		const wrote = await second.tools.squad_board.execute({ squad: "队", text: "新会话也能写" }, exec2);
+		assert.doesNotMatch(wrote.text, /\[失败\]/, `接管后必须可写，实际：${wrote.text}`);
+		second.squad.dispose();
+	} finally {
+		if (previous === undefined) delete process.env.DSH_HOME;
+		else process.env.DSH_HOME = previous;
+	}
+});
+
+check("REQ-015·坏文件不炸：quarantine 成 .broken-* 之后从空开始", () => {
+	const home = fs.mkdtempSync(path.join(os.tmpdir(), "squad-broken-"));
+	const store = createSquadStore({ dir: path.join(home, "team-workflow", "squads"), log: () => {} });
+	const file = store.fileFor("/tmp/squad-ws-broken");
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	fs.writeFileSync(file, "{ 这不是 JSON");
+	assert.deepEqual(store.load("/tmp/squad-ws-broken"), [], "读坏了就当空的，不抛错");
+	const kept = fs.readdirSync(path.dirname(file)).filter((f) => f.includes(".broken-"));
+	assert.equal(kept.length, 1, "坏文件要改名保留（不删）");
+	// 版本不认识也一样
+	const store2 = createSquadStore({ dir: path.join(home, "team-workflow", "squads2"), log: () => {} });
+	const file2 = store2.fileFor("/tmp/squad-ws-ver");
+	fs.mkdirSync(path.dirname(file2), { recursive: true });
+	fs.writeFileSync(file2, JSON.stringify({ version: 99, squads: [] }));
+	assert.deepEqual(store2.load("/tmp/squad-ws-ver"), []);
+	assert.equal(fs.readdirSync(path.dirname(file2)).filter((f) => f.includes(".broken-")).length, 1);
 });
 
 // ── 汇总 ──────────────────────────────────────────────────────────────────
@@ -1902,4 +2179,4 @@ if (failures > 0) {
 	console.log(`\n✗ ${failures} 项失败`);
 	process.exit(1);
 }
-console.log("✓ 自检通过：名册与黑板 / 权限三种视角 / 快照 / 6 个工具真跑（返回值过 schema）/ 装配与会话清理 / HTTP 路由与信任栅栏负例 / 真 socket 端到端（路由挂载 + prefix 匹配）/ 客户端面板真渲染与只读转录");
+console.log("✓ 自检通过：名册与黑板 / 权限三种视角 / 快照 / 全部小队工具真跑（返回值过 schema）/ 装配与会话清理 / HTTP 路由与信任栅栏负例 / 真 socket 端到端（路由挂载 + prefix 匹配）/ 客户端面板真渲染与只读转录 / REQ-015 用量·落盘捡回·续聊·直投·重试·超时");
