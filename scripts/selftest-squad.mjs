@@ -58,6 +58,7 @@ const {
 	snapshot,
 	snapshotAll,
 	formatDuration,
+	renderSnapshot,
 	updateMember,
 	usageLine,
 } = await import(new URL("lib/squad.js", ROOT).href);
@@ -2171,6 +2172,174 @@ check("REQ-015·坏文件不炸：quarantine 成 .broken-* 之后从空开始", 
 	fs.writeFileSync(file2, JSON.stringify({ version: 99, squads: [] }));
 	assert.deepEqual(store2.load("/tmp/squad-ws-ver"), []);
 	assert.equal(fs.readdirSync(path.dirname(file2)).filter((f) => f.includes(".broken-")).length, 1);
+});
+
+
+// ── REQ-015 复审修复（2026-10-16 std 测报回来的 4×P1 + 2×P2，每条都要能变红）────
+
+await checkAsync("复审·P1-1：会话销毁后再开同 cwd 的会话，盘上的队要捡得回来（loadedCwds 不能留着）", async () => {
+	const home = fs.mkdtempSync(path.join(os.tmpdir(), "squad-home2-"));
+	const previous = process.env.DSH_HOME;
+	process.env.DSH_HOME = home;
+	try {
+		const cwd = "/tmp/squad-ws-handover";
+		const first = install({ stream: scriptedStream([{ text: "干完了" }]), config: { persist: true } });
+		const exec1 = { agent: { id: "sess-1", session: { header: { cwd } } } };
+		await first.tools.squad_new.execute({ name: "队", objective: "别丢" }, exec1);
+		await first.tools.squad_board.execute({ squad: "队", text: "这条不能在换会话后消失" }, exec1);
+
+		// 真机上的形状：**插件常驻**，一个会话结束、随后同一个 cwd 来了新会话（不重启）。
+		// 注意不能先调 `first.squad.dispose()` —— 那是插件拆除，会把状态整个清空，
+		// 测的就不是「会话销毁」了（我第一次就是这么写的，第一断言靠「没有小队」里的「队」字假过了）。
+		const disposed = first.record.events.find((e) => e.name === "session/disposed");
+		assert.ok(disposed, "要挂上 session/disposed");
+		disposed.callback({ id: "sess-1" });   // 它会 flush 落盘 + 清状态 + 清 loadedCwds
+		assert.equal(first.squad.state.size, 0, "旧会话的状态要清掉");
+
+		const exec2 = { agent: { id: "sess-2", session: { header: { cwd } } } };
+		const revived = await (async () => {
+			await first.tools.squad_status.execute({}, exec2);
+			return first.squad.state.get("sess-2")?.get("队");
+		})();
+		assert.ok(revived, "同 cwd 的新会话必须捡回盘上的队（loadedCwds 留着就一个都看不到）");
+		assert.equal(revived.adoptedFrom, "sess-1");
+		assert.equal(revived.board.length, 1, "黑板内容也要在");
+		assert.match(revived.board[0].text, /这条不能在换会话后消失/);
+		first.squad.dispose();
+	} finally {
+		if (previous === undefined) delete process.env.DSH_HOME;
+		else process.env.DSH_HOME = previous;
+	}
+});
+
+await checkAsync("复审·P1-2：收队之后 squad_send 必须拒（收队 = 只读）", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-closed-"));
+	const seen = [];
+	const { squad, call, settle } = install({
+		stream: scriptedStream([{ text: "做完了" }, { text: "不该跑到这里" }], seen),
+		config: { persist: false },
+	});
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "A", role: "实现", task: "t", worktree: wt }, "main-1");
+	await settle();
+	await call("squad_close", { squad: "队", reason: "收工" }, "main-1");
+	const member = squad.state.get("main-1").get("队").members.get("A");
+	const attemptsBefore = member.attempts;
+	const r = await call("squad_send", { squad: "队", member: "A", text: "再改一处" }, "main-1");
+	assert.match(r, /\[失败\]/, "收队之后不许再起成员");
+	assert.match(r, /收队/, "要说清是因为收队了");
+	assert.equal(member.attempts, attemptsBefore, "attempts 不能变（不能偷偷跑起来）");
+	assert.equal(seen.length, 1, "也不该再发模型请求");
+});
+
+await checkAsync("复审·P1-3：模型报错早退时，悬挂的 tool-call 必须补上结果（否则续聊/重试发回去会被 provider 拒）", async () => {
+	const seen = [];
+	const stream = (options) => {
+		seen.push(options);
+		return (async function* chunks() {
+			yield { type: "usage", usage: { inputTokens: 1, outputTokens: 1 } };
+			yield { type: "block-start", index: 0, blockType: "tool-call" };
+			yield { type: "tool-call-delta", index: 0, id: "c9", name: "board", argumentsDelta: '{"text":"x"}' };
+			yield { type: "finish", reason: { kind: "error", failure: { message: "上游 500" } } };
+		})();
+	};
+	const result = await runMemberLoop({
+		kit: { BlockAssembler: FakeAssembler, createToolResultMessage: fakeToolResult },
+		stream,
+		provider: "p",
+		model: "m",
+		system: "s",
+		task: "任务",
+		tools: [],
+		executeTool: async () => ({ text: "不该被调用" }),
+	});
+	assert.equal(result.status, "卡住");
+	// 协议：每个 assistant 里的 tool call 都要有且只有一条结果
+	const calls = [];
+	const results = [];
+	for (const message of result.messages) {
+		if (message.role === "assistant") for (const block of message.content ?? []) if (block.type === "tool-call") calls.push(block.id);
+		if (message.role === "tool") results.push(message.callId ?? message.toolCallId ?? message.content?.[0]?.callId);
+	}
+	assert.equal(calls.length, 1, "这一步确实产生了 tool call");
+	assert.equal(results.length, calls.length, `悬挂了：calls=${JSON.stringify(calls)} results=${JSON.stringify(results)}`);
+	assert.equal(result.messages[result.messages.length - 1].role, "tool", "最后一条必须是那条结果（不能以 assistant(call) 收尾）");
+});
+
+check("复审·P1-4：捡回时校验字段（缺 text 的黑板条目、非法的 status）", () => {
+	const revived = reviveSquad(
+		{
+			name: "n",
+			board: [{ at: 1, from: "x", text: "好的" }, { at: 2, from: "x" }, { at: 3, text: "没有作者" }, null],
+			members: [{ label: "A", status: "在跑" }, { label: "B", status: "编的状态" }],
+		},
+		{ statuses: MEMBER_STATUS },
+	);
+	assert.equal(revived.board.length, 1, "缺 text / 缺 from 的条目要丢掉");
+	assert.equal(revived.members.get("A").status, "卡住", "「在跑」是进程内的状态，重启后它不可能还在跑");
+	assert.equal(revived.members.get("B").status, "卡住", "不认识的状态落「卡住」");
+	// 渲染不能炸（std 测实测到 `.replace` 上的 TypeError）
+	assert.doesNotThrow(() => renderSnapshot(snapshotAll(new Map([["o", new Map([["n", revived]])]]))));
+});
+
+await checkAsync("复审·P2-1：新加的五个成员工具至少各跑一次（负例也要优雅失败，不能抛）", async () => {
+	// say：目标不存在 → 失败文本，不抛
+	const noTarget = await runMemberTool("say", { to: "没人", text: "喂" }, { say: () => ({ ok: false, detail: "没有这个成员" }) });
+	assert.equal(noTarget.isError, true);
+	assert.match(noTarget.text, /没有这个成员/);
+	// say：成功路径
+	const okSay = await runMemberTool("say", { to: "B", text: "看黑板" }, { say: () => ({ ok: true, queued: true }) });
+	assert.doesNotMatch(okSay.text ?? "", /\[失败\]/);
+	assert.match(okSay.text, /队列/);
+	// web_*：宿主没有 web 服务 → 明确说不可用，而不是崩
+	const noWeb = { ctx: { get: () => undefined } };
+	const ws = await runMemberTool("web_search", { query: "x" }, noWeb);
+	assert.equal(ws.isError, true);
+	assert.match(ws.text, /web 服务/);
+	const wf = await runMemberTool("web_fetch", { url: "https://example.com" }, noWeb);
+	assert.equal(wf.isError, true);
+	// web_*：有服务时真的调它（用假服务，不联网）
+	const fakeWeb = {
+		ctx: {
+			get: () => ({
+				search: async () => ({ provider: "fake", results: [{ title: "T", url: "https://e.com", snippet: "S" }] }),
+				fetch: async () => ({ title: "页", content: "正文" }),
+			}),
+		},
+	};
+	const searched = await runMemberTool("web_search", { query: "x" }, fakeWeb);
+	assert.doesNotMatch(searched.text ?? "", /\[失败\]/);
+	assert.match(searched.text, /https:\/\/e\.com/);
+	const fetched = await runMemberTool("web_fetch", { url: "https://e.com" }, fakeWeb);
+	assert.match(fetched.text, /正文/);
+	// worktree_*：在一个不是 git 仓库的临时目录里 → 失败文本（不抛）
+	const plain = fs.mkdtempSync(path.join(os.tmpdir(), "squad-nogit-"));
+	const badName = await runMemberTool("worktree_new", { name: "a/b/../c" }, { worktree: plain });
+	assert.equal(badName.isError, true);
+	const listed = await runMemberTool("worktree_list", {}, { worktree: plain });
+	assert.equal(listed.isError, true, "不是 git 仓库要优雅失败");
+});
+
+await checkAsync("复审·P2-2：durationMs 真的累计（不是恒真的 >=0）", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-dur-"));
+	// 慢一点的假流：每轮 5ms，好让耗时断言有意义
+	const slow = (options) => {
+		const inner = scriptedStream([{ text: "第一轮" }, { text: "第二轮" }])(options);
+		return (async function* chunks() {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			yield* inner;
+		})();
+	};
+	const { squad, call, settle } = install({ stream: slow, config: { persist: false } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "A", role: "实现", task: "t", worktree: wt }, "main-1");
+	await settle();
+	const member = squad.state.get("main-1").get("队").members.get("A");
+	const first = member.durationMs;
+	assert.ok(first >= 5, `一轮至少要记到那次 5ms，实际 ${first}`);
+	await call("squad_send", { squad: "队", member: "A", text: "再来一轮" }, "main-1");
+	await settle();
+	assert.ok(member.durationMs >= first + 5, `续聊之后要累加，实际 ${member.durationMs}（第一轮 ${first}）`);
 });
 
 // ── 汇总 ──────────────────────────────────────────────────────────────────
