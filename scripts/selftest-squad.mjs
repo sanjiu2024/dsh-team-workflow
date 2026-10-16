@@ -3935,6 +3935,22 @@ await checkAsync("C2 面板：SSE 推送时成本行也跟着刷（节流，不�
 	}
 });
 
+
+await checkAsync("B1：2.0.1 落的老布局 .log（不带队名）升级后照样读得回来（升级不丢全文）", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "squad-b1-legacy-"));
+	const store = createSquadStore({ dir, log: () => {}, debounceMs: 1 });
+	const member = { label: "查-A", role: "侦察", task: "t", status: "完成", transcript: [{ role: "assistant", text: "尾巴一条" }] };
+	store.save("/tmp/ws-b1-legacy", () => [{ name: "队", objective: "o", members: new Map([["查-A", member]]), board: [] }]);
+	store.flush();
+	// 抹掉新布局那份，只留 2.0.1 时代的老文件（不带队名）
+	const tdir = path.join(dir, fs.readdirSync(dir).find((f) => f.endsWith(".transcripts")));
+	fs.rmSync(path.join(tdir, "队"), { recursive: true, force: true });
+	fs.writeFileSync(path.join(tdir, "查-A.log"), [1, 2, 3].map((i) => JSON.stringify({ at: i, role: "assistant", text: `旧全文${i}` })).join("\n") + "\n", "utf8");
+	const loaded = store.load("/tmp/ws-b1-legacy");
+	assert.equal(loaded[0].members[0].transcript.map((e) => e.text).join("|"), "旧全文1|旧全文2|旧全文3", "老布局的全文要能读回来");
+	store.dispose();
+});
+
 // ── 汇总 ──────────────────────────────────────────────────────────────────
 
 if (failures > 0) {
