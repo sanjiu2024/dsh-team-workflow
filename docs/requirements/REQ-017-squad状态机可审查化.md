@@ -71,7 +71,8 @@
 
 - **搬了什么**：`startMember` 整块（原 `lib/squad.js:1467-1705`，239 行）→ 新文件
   `lib/squad-round.js`（257 行，含头注释）。squad.js 只留一个**函数声明**包装
-  （`startRound(deps, squad, member, opts)`）—— 用函数声明而不是箭头 `const`，
+  （**函数声明** `startMember(squad, member, opts)`；`startRound` 只是 `import { startMember as startRound }`
+  的别名 —— 独立测指出我原来把包装名写成了 `startRound`）—— 用函数声明而不是箭头 `const`，
   因为上面的 `drainQueue` 也会调它，声明会提升（箭头 `const` 会撞 TDZ）。
 - **依赖怎么给**：`deps` 显式注入 21 个键（`config`/`ctx`/`persistSquad`/`drainQueue`/
   `wakeWaiters`/`roleToolsFor`/`requestWait`/`deliverSay`/`markAcceptance`/`appendBoard`/`log`/
@@ -102,8 +103,10 @@
 - **要修的结构问题**：原来两个字段各清各的，`startMember` 里两行、`squad_stop` 里一行、
   `wakeWaiters` 里三行 —— 2.0.6 的事故正是从这漏的：停一个「等待中」的成员时写的是
   `stopNote`，而那条分支的 `.then` 早就跑过了、没人消费，于是那句停因留到**下一轮**，
-  重派跑完了结论栏却写着上一轮的停因。合成一个字段之后：**跨轮清理只有一个入口**
-  （`startMember`），其余四处都是**轮内**的「消费完就清」。
+  重派跑完了结论栏却写着上一轮的停因。合成一个字段之后：**跨轮清理的主入口只有一处**
+  （`startMember`）；`wakeWaiters` 那三处与 `squad_stop` 的非 running 分支是**防御性**清理
+  （顺手清掉残留，语义上不是「这一轮的收尾」）—— 独立测指出我原来写「只有一个入口」不严格，
+  这是实际形状。
 - **`kind` 的作用**：让两种「为什么结束」不可能互相冒充。**但要说实话：它是防御性的** ——
   独立测试过「去掉 kind 只看 reason」，全绿。原因是能走到收尾分支的 `waiting` 状态在真实时序里
   不可达（`squad_stop` 会连 `waitingFor` 一起清）。留着是因为代价为零且语义清楚，但**不当成已验收**。
@@ -135,6 +138,22 @@
   发现它做的是**字符串手术**（`upsertThreshold`/`upsertSettings`），注释不丢 —— 真正的问题是
   **注释块不会随 apply 更新**（用户文件里还写着「压到 20%」，值是 65）。**没跑过的话不写进文档。**
 
+### 独立 std 测（第八轮，2026-10-16）—— 报回 1 P1 + 5 P2，全部处理
+
+派在**独立 worktree**（`re-view-017`）里跑，避免它改到主仓库；11 条变异、7 条变红。
+
+| 级别 | 问题 | 处置 |
+| --- | --- | --- |
+| **P1** | `lib/squad-round.js` 的 `closedDetail` 既没 import 也没进 `deps` → `ReferenceError`（探针实测）。今天不可达（调用点都有前置 closed 守卫），但纯搬移把优雅错误变成了未定义引用 | 注进 `deps`（连同 `isRunning`）；静态证据，**无行为断言**（不可达） |
+| P2 | 两条**空断言**：删 `requestWait` 写 `roundEnd` 那行、删等待分支清 `roundEnd` 那行，套件都全绿（只断言了 `/在等「乙」收工/` 前缀，等因 `why` 没人看） | 新增「真调成员侧 `wait` 工具」的测试：等因进结论栏 + `roundEnd` 当场消费；两条变异现在各变红 |
+| P2 | `squad-round.js` 内联 `member.running && …aborted !== true`，与状态文档「`isRunning` 是唯一判据」不符 | 换成 `deps.isRunning(member)` |
+| P2 | 整块多一级缩进（搬移残留） | 重排；`diff -w` 证明只动空白 |
+| P2 | §6 把包装名写成 `startRound`（实为 import 别名，包装是 `startMember`）；「跨轮清理只有一个入口」不严格 | 都改成实际形状 |
+| P2 | 状态文档「23 条链全绿」缺前提：裸 worktree 里 `selftest-mc`/`selftest-surface` 会因找不到 bundle 挂（实测 21/23） | 文档写明前提 |
+
+**它也复核掉了没问题的部分**：搬移正文去 `deps.` 后与原块逐行 diff 只差 2 处（签名行 + 简写属性展开）、
+239 行对齐无丢失、`deps` 键齐全；`note` 落盘而 `roundEnd` 不落盘；旧字段名在 `lib/` 下计数为 0。
+
 ## 7. 天花板
 
 （做完填）
@@ -145,13 +164,14 @@
 
 | # | 命令 | 实际输出 |
 | --- | --- | --- |
-| 1 | `npm test` | `EXIT=0`；输出里 64 行 `✓`；链上 23 条自检 |
+| 1 | `npm test` | `EXIT=0`（**前提：装好 magic-context bundle**；裸 worktree 里 mc/surface 两条会挂） |
 | 2 | `node scripts/selftest-squad.mjs` | `EXIT=0`；末行 `✓ 自检通过：名册与黑板 / 权限三种视角 / …` |
 | 3 | `diff <(git show 70ce064^:lib/squad.js \| grep "^export " \| sort) <(grep "^export " lib/squad.js \| sort)` | **diff 为空**；导出数 31 → 31（逐字一致） |
 | 4 | `wc -l lib/squad.js lib/squad-round.js` | `2146` / `262`（拆分前 2347）；轮次判据 `grep -c` 在 `squad-round.js` → **4**、在 `squad.js` → **0** |
 | 5 | `grep -c "member\.stopNote\|member\.waitNote" lib/*.js` | 每个文件都是 `:0`（过滤后无输出） |
 | 6 | 4 条变异：改坏 → 跑 → 逐字节还原 | 各自打出对应断言原文（见 §6 表）。**前两条第一次没变红** —— 断言放在了「一轮跑完之后」，收尾分支自己会清，那是空断言；挪到「跑起来的时候」才咬住 |
 | 7 | `head -3 docs/状态.md`；`grep -n "^## " docs/状态.md` | 头部含状态/日期/版本/基线；6 节，含「设计取舍 / 天花板 / 修了但没断言」 |
+| 9 | 独立 std 测（第八轮）1 P1 + 5 P2 | 全部处理（见 §6 独立测小节）；11 条变异 7 条变红，**两条原本是空断言**的已补上并各自变红 |
 | 8 | 与 `REQ-016 §8` / 本文件 §6 对撞 | 4 条「修了但没断言」逐条有出处：`.catch` 不可达 → REQ-016 §8；`requestWait`/`squad_say` 时序构造不到 → REQ-016 §8；`roundEnd.kind` 防御性 → §6；「验证脚本会自欺」→ §6 |
 
 ### 实现过程中自己踩到并修掉的（不计入验收，但值得记）

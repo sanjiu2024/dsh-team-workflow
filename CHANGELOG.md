@@ -8,6 +8,29 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.0.10]
+
+**第八轮独立 std 测**（审 REQ-017 的两个重构：搬移 + 字段收敛）报回 1 个 P1 + 5 个 P2，全部处理。
+
+- **P1 · 搬移漏注入 `closedDetail`**：`lib/squad-round.js` 里那句 `closedDetail(squad)` 既没 import
+  也没进 `deps` —— 纯搬移把一句优雅错误变成了 `ReferenceError`。今天不可达（所有调用点都有前置
+  closed 守卫：`addMember`/`wakeWaiters`/`drainQueue`/`squad_send`），但那是运气不是设计。
+  修：`closedDetail` 与 `isRunning` 一起注进 `deps`；顺带把这里内联的
+  `member.running && member.running.aborted !== true` 换成 `deps.isRunning(member)` ——
+  状态文档写着「`isRunning` 是唯一判据」，代码得兑现这句话。
+- **P2 · 两条空断言（独立测实测）**：把 `requestWait` 里写 `roundEnd` 那行删掉、把等待分支里清
+  `roundEnd` 那行删掉，套件都**全绿** —— 原来只断言了 `/在等「乙」收工/` 这个前缀，等因 `why`
+  根本没人看。修：新增一条真调成员侧 `wait` 工具的测试，断言「等因进结论栏」+「`roundEnd` 当场
+  消费掉」；两条变异现在各自变红（失败数各 2）。
+- **P2 · 整块多一级缩进**（搬移残留）→ 重排，并用 `diff -w` 证明只动空白（非空白差异恰好只有上面
+  那两处有意改动）。
+- **P2 · 文档两处措辞不实**：REQ-017 §6 把包装名写成 `startRound`（那是 import 别名，实际是
+  `startMember`）；「跨轮清理只有一个入口」也不严格（`squad_stop` 与 `wakeWaiters` 另有 4 处
+  防御性清理）—— 都改成实际形状。
+- **P2 · 测试声明有前提**：`docs/状态.md` 写「23 条链全绿」，但那需要**装好 magic-context bundle**；
+  裸 worktree 里 `selftest-mc`/`selftest-surface` 会因「找不到 bundle」挂掉（独立测在 worktree 里
+  实测 21/23）。属环境，不是代码问题 —— 但文档得写明前提。
+
 ## [2.0.9]
 
 **第七轮独立 std 测**报回 2 个 P1 + 5 个 P2（专打 2.0.7/2.0.8 引入的 `aborted` 重叠语义）。

@@ -4044,6 +4044,38 @@ await checkAsync("A6：续聊命中「等待」中的成员，返回文本必须
 });
 
 
+await checkAsync("A6：成员真调 wait 工具 → 等因要进结论栏、roundEnd 要当场消费掉", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-waitwhy-"));
+	let release;
+	const gate = new Promise((resolve) => {
+		release = resolve;
+	});
+	// 乙占着不放（当等待目标必须真在跑），甲一上手就调 `wait` 工具
+	const stream = (options) => (async function* gated() {
+		if (JSON.stringify(options.messages).includes("被等")) await gate;
+		if (JSON.stringify(options.messages).includes("等乙")) {
+			yield* scriptedStream([{ calls: [{ id: "c1", name: "wait", arguments: '{"member":"乙","note":"要它的产出"}' }] }])(options);
+			return;
+		}
+		yield* scriptedStream([{ text: "干完了" }])(options);
+	})();
+	const { squad, call, settle } = install({ stream, config: { persist: false } });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "乙", role: "实现", task: "被等", worktree: wt }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "甲", role: "实现", task: "等乙", worktree: wt }, "main-1");
+	// ⚠️ 不能 settle()：乙正卡在闸门上（settle 会等它，自检自己死锁 —— 上面那条测试踩过）
+	await new Promise((r) => setTimeout(r, 40));
+	const members = squad.state.get("main-1").get("队").members;
+	assert.equal(members.get("甲").status, "等待", `调了 wait 该进「等待」，实际 ${members.get("甲").status}；note=${members.get("甲").note}`);
+	assert.equal(members.get("甲").waitingFor, "乙", "等待目标要记下来");
+	// 这两句是补空断言：独立测发现「把 requestWait 里写 roundEnd 那行删掉」「把等待分支的清掉那行删掉」
+	// 都能全绿 —— 因为原来只断言了 `/在等「乙」收工/` 这个前缀，等因 `why` 根本没人看。
+	assert.match(String(members.get("甲").note), /要它的产出/, "等因要进结论栏（删掉 requestWait 写 roundEnd 那行 → 变红）");
+	assert.equal(members.get("甲").roundEnd, undefined, "等待分支要把 roundEnd 消费掉（删掉那句清 → 变红）");
+	release();
+	await settle();
+});
+
 await checkAsync("A1：停一个「在跑 + 挂着等待标记」的成员，停掉不许被静默撤销", async () => {
 	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-stopwait-"));
 	let release;
