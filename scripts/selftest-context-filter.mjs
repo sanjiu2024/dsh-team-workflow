@@ -144,7 +144,7 @@ await checkAsync("安全闸：混合场景（有的无出处、有的查不了�
 // 现在它在了：钩子必须真的**改到 surface 上那份数据**。
 
 function fakeSession({ id = "sess-1", startSeq = 100, nodes = [] } = {}) {
-	const surface = { nodes: new Set() };
+	const surface = { nodes: [] }; // 宿主是数组（surface.js:186，靠 push/splice/indexOf），不是 Set
 	const events = new Map();
 	const appends = [];
 	let nextSeq = startSeq;
@@ -160,7 +160,10 @@ function fakeSession({ id = "sess-1", startSeq = 100, nodes = [] } = {}) {
 		deriveEventMessage: (event) => {
 			if (event.type === "user/message") return event.data;
 			const message = event.data?.message ?? null;
-			if (message && Array.isArray(message.content) && message.content.length === 0) return null;
+			// 空 content 投成 null 只对 system/developer/assistant（surface.js:75-105）——
+			// 对 tool/result 也这么做是「假替身自己发明规则」。
+			const emptyIsNull = event.type === "system/message" || event.type === "developer/message" || event.type === "assistant/message";
+			if (emptyIsNull && message && Array.isArray(message.content) && message.content.length === 0) return null;
 			return message;
 		},
 		append(type, data, opts) {
@@ -172,14 +175,17 @@ function fakeSession({ id = "sess-1", startSeq = 100, nodes = [] } = {}) {
 			};
 			events.set(event.seq, event);
 			appends.push({ type, data, opts, seq: event.seq });
-			if (opts?.surfaceOp?.op === "replace") surface.nodes.delete(opts.surfaceOp.startSeq);
-			surface.nodes.add(event.seq);
+			if (opts?.surfaceOp?.op === "replace") {
+				const at = surface.nodes.indexOf(opts.surfaceOp.startSeq);
+				if (at >= 0) surface.nodes.splice(at, 1);
+			}
+			surface.nodes.push(event.seq);
 			return event;
 		},
 	};
 	for (const node of nodes) {
 		events.set(node.seq, node);
-		surface.nodes.add(node.seq);
+		surface.nodes.push(node.seq);
 	}
 	return session;
 }
@@ -221,16 +227,34 @@ function fakeCtx({ engine, freeze = true } = {}) {
 	return { ctx, fire, listeners };
 }
 
-const searchEngine = (haystack) => ({
+/**
+ * 假检索：语料是**事件文档列表**，并且**真的按 filters 过滤**。
+ *
+ * 为什么必须这样：上一版把语料写成外部字符串、且忽略 filters，于是「只认环境输出」这个修复
+ * 根本测不出来 —— checkpoint 自己就在日志里（`user/message`，正文即摘要），
+ * 不按类型过滤时它会给自己的每条条目当证据，过滤器在真实宿主里就是空操作而套件全绿。
+ */
+const searchEngine = (docs) => ({
 	calls: 0,
-	async searchEvents({ query }) {
+	lastFilters: undefined,
+	async searchEvents({ query, filters }) {
 		this.calls += 1;
-		return { items: haystack.includes(query) ? [{ seq: 1, type: "tool/result", snippet: "命中" }] : [] };
+		this.lastFilters = filters;
+		const allowed = (doc) =>
+			!filters || filters.every((f) => f.kind !== "type" || f.values.includes(doc.type));
+		return {
+			items: docs
+				.filter((doc) => allowed(doc) && doc.text.includes(query))
+				.map((doc) => ({ seq: doc.seq, type: doc.type, snippet: doc.text.slice(0, 40) })),
+		};
 	},
 });
 
+/** 造语料：默认全是环境输出（tool/result）。 */
+const envDocs = (text) => [{ seq: 1, type: "tool/result", text }];
+
 await checkAsync("装配：pre-step 真的换掉 surface 上的 checkpoint 节点（surfaceOp replace）", async () => {
-	const engine = searchEngine("lib/real.js");
+	const engine = searchEngine(envDocs("lib/real.js"));
 	const session = fakeSession({ nodes: [checkpointNode(7, "\n- 真 lib/real.js\n- 假 hallucinated/module.js\n")] });
 	const { ctx, fire } = fakeCtx({ engine });
 	installContextFilter(ctx);
@@ -244,12 +268,67 @@ await checkAsync("装配：pre-step 真的换掉 surface 上的 checkpoint 节�
 	assert.match(text, /lib\/real\.js/, "有出处的留");
 	assert.doesNotMatch(text, /hallucinated/, "无出处的删");
 	assert.match(text, /删掉了 1 条/);
-	assert.ok(session.surface.nodes.has(call.seq), "新节点要进 surface");
-	assert.ok(!session.surface.nodes.has(7), "被替的节点要出 surface");
+	assert.ok(session.surface.nodes.includes(call.seq), "新节点要进 surface");
+	assert.ok(!session.surface.nodes.includes(7), "被替的节点要出 surface");
+});
+
+await checkAsync("P0 守门员：checkpoint 自己不算证据（只认环境输出）", async () => {
+	// 独立测逮到的 P0：检索语料是本会话日志，而 **checkpoint 自己就是日志里的一条 user/message**
+	// （正文即摘要）—— 不按类型过滤时，每条条目都能从自己身上找到「证据」，dropped 恒为 0，
+	// 真实宿主里这个过滤器是**空操作**。这条用例把「只认 tool/result」钉住。
+	const body = "\n- 真 lib/real.js\n- 假 hallucinated/module.js\n";
+	const engine = searchEngine([
+		{ seq: 1, type: "tool/result", text: "lib/real.js 的工具输出" },
+		{ seq: 2, type: "user/message", text: ckpt(body) }, // checkpoint 自己也在语料里
+	]);
+	const session = fakeSession({ nodes: [checkpointNode(7, body)] });
+	const { ctx, fire } = fakeCtx({ engine });
+	installContextFilter(ctx);
+	await fire("agent/pre-step", { agent: { session }, signal: { aborted: false } });
+	assert.equal(session.appends.length, 1, "该换一次");
+	assert.doesNotMatch(messageText(session.appends[0].data), /hallucinated/, "只被 checkpoint 自己提到 → 不算有出处");
+	assert.deepEqual(engine.lastFilters, [{ kind: "type", values: ["tool/result"] }], "必须只拿环境输出当证据");
+});
+
+await checkAsync("没有可查标识的条目 → 留（不许因为「查不到」就删）", async () => {
+	// 混合：1 条没有可查标识 + 2 条有出处。这样「无标识 → 留」若被改成「→ 删」，
+	// 只删 1/3（不触发整段放弃闸）→ 会真的发生替换 → 断言变红。
+	// 上一版是「两条全无标识」，于是变异被整段放弃闸遮住、看不出区别。
+	const engine = searchEngine(envDocs("lib/real.js lib/util.js"));
+	const session = fakeSession({
+		nodes: [checkpointNode(7, "\n- 短词 a b\n- 有出处 lib/real.js\n- 也有出处 lib/util.js\n")],
+	});
+	const { ctx, fire } = fakeCtx({ engine });
+	installContextFilter(ctx);
+	await fire("agent/pre-step", { agent: { session }, signal: { aborted: false } });
+	assert.equal(session.appends.length, 0, "没有可查标识 → 留，整段不该被改");
+	assert.ok(engine.calls > 0, "有出处的条目照常检索（对照）");
+});
+
+await checkAsync("早退闸：缺服务 / 缺会话 id → 一次过滤都不做（不靠下游 fail-open 兜）", async () => {
+	// 这两条闸以前没有独立断言：拆掉它们套件仍绿（下游 fail-open 会兜住结果）。所以这里看
+	// **统计量**（checkpoints 计数）—— 只有真的没进过滤器才是 0。
+	const body = "\n- 有出处 lib/real.js\n- 无出处 xyz/module.js\n- 也有出处 lib/util.js\n";
+
+	const noEngine = fakeSession({ nodes: [checkpointNode(7, body)] });
+	const a = fakeCtx({ engine: undefined });
+	const handleA = installContextFilter(a.ctx);
+	await a.fire("agent/pre-step", { agent: { session: noEngine }, signal: { aborted: false } });
+	assert.equal(handleA.stats.checkpoints, 0, "缺服务时不该进过滤器");
+	assert.equal(noEngine.appends.length, 0);
+
+	const noId = fakeSession({ id: null, nodes: [checkpointNode(7, body)] });
+	const engine = searchEngine(envDocs("lib/real.js lib/util.js"));
+	const b = fakeCtx({ engine });
+	const handleB = installContextFilter(b.ctx);
+	await b.fire("agent/pre-step", { agent: { session: noId }, signal: { aborted: false } });
+	assert.equal(handleB.stats.checkpoints, 0, "缺会话 id 时不该进过滤器");
+	assert.equal(engine.calls, 0, "拿不到会话 id 就不该发检索");
+	assert.equal(noId.appends.length, 0);
 });
 
 await checkAsync("装配：幂等 —— 第二遍不再换（过滤过的内容全部有出处）", async () => {
-	const engine = searchEngine("lib/real.js");
+	const engine = searchEngine(envDocs("lib/real.js"));
 	const session = fakeSession({ nodes: [checkpointNode(7, "\n- 真 lib/real.js\n- 假 hallucinated/module.js\n")] });
 	const { ctx, fire } = fakeCtx({ engine });
 	installContextFilter(ctx);
@@ -261,7 +340,7 @@ await checkAsync("装配：幂等 —— 第二遍不再换（过滤过的内容
 });
 
 await checkAsync("装配：只碰 checkpoint —— 普通消息与 tool/result 一个都不换", async () => {
-	const engine = searchEngine("lib/real.js lib/util.js");
+	const engine = searchEngine(envDocs("lib/real.js lib/util.js"));
 	const session = fakeSession({
 		nodes: [
 			{ seq: 1, type: "user/message", data: { role: "user", content: "普通消息" } },
@@ -300,12 +379,12 @@ await checkAsync("装配：缺 sessionQuery → 一次都不换；signal 已中�
 	assert.equal(session.appends.length, 0, "缺服务时不许动");
 	// 正向对照：同样的输入，有服务时**一定**会换 —— 否则上面那条「0」是空的
 	const control = fakeSession({ nodes: [checkpointNode(7, "\n- 有出处 lib/real.js\n- 无出处 xyz/module.js\n- 也有出处 lib/util.js\n")] });
-	const controlCtx = fakeCtx({ engine: searchEngine("lib/real.js lib/util.js") });
+	const controlCtx = fakeCtx({ engine: searchEngine(envDocs("lib/real.js lib/util.js")) });
 	installContextFilter(controlCtx.ctx);
 	await controlCtx.fire("agent/pre-step", { agent: { session: control }, signal: { aborted: false } });
 	assert.equal(control.appends.length, 1, "有服务时必须换（正向对照）");
 
-	const engine = searchEngine("");
+	const engine = searchEngine(envDocs(""));
 	const session2 = fakeSession({ nodes: [checkpointNode(7, "\n- 有出处 lib/real.js\n- 无出处 xyz/module.js\n- 也有出处 lib/util.js\n")] });
 	const second = fakeCtx({ engine });
 	installContextFilter(second.ctx);
@@ -315,7 +394,7 @@ await checkAsync("装配：缺 sessionQuery → 一次都不换；signal 已中�
 });
 
 await checkAsync("装配：拿不到宿主 freezeMessage → 退回 Object.freeze，照样换（不静默失效）", async () => {
-	const engine = searchEngine("lib/real.js");
+	const engine = searchEngine(envDocs("lib/real.js"));
 	const session = fakeSession({ nodes: [checkpointNode(7, "\n- 真 lib/real.js\n- 假 hallucinated/module.js\n")] });
 	const { ctx, fire } = fakeCtx({ engine, freeze: false });
 	const handle = installContextFilter(ctx);
@@ -326,7 +405,7 @@ await checkAsync("装配：拿不到宿主 freezeMessage → 退回 Object.freez
 });
 
 await checkAsync("装配：agent/request-error 也触发（overflow 重试不重跑 pre-step）", async () => {
-	const engine = searchEngine("lib/real.js");
+	const engine = searchEngine(envDocs("lib/real.js"));
 	const session = fakeSession({ nodes: [checkpointNode(7, "\n- 真 lib/real.js\n- 假 hallucinated/module.js\n")] });
 	const { ctx, fire } = fakeCtx({ engine });
 	installContextFilter(ctx);
