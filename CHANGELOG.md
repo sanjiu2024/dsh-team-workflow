@@ -8,6 +8,19 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.4.1] - 2026-10-16
+
+**修 P0：折叠后端的 `inject` 少了 `loader`，真实宿主里插件加载即抛。**
+
+cordis 的 ctx 是访问器代理 —— **没 `inject` 的服务读一下就抛**（`cannot get property "loader"
+without inject`），不是返回 undefined。而基类只能靠 `ctx.loader.import` 异步取，所以漏了它就是
+「加载即抛」。套件全绿是因为假 ctx 把 `loader` 当普通属性给了（同一个坑的第四种形态）。
+
+新增 `scripts/smoke-fold-host.mjs`：用**真的** `BasicCompactionEngine` + **真的** cordis 上下文跑，
+一次性验证「基类加载得到、服务名注册成功、确实子类化、`summarize` 确实被覆写、预设那几个 config
+键过 basic 的 schema、`llm.stream()` 被调 0 次」——它就是这么逮到上面那个 P0 的。
+自检里也钉了一条（去掉 `loader` 的变异必须变红）。
+
 ## [2.4.0] - 2026-10-16
 
 **确定性折叠压缩后端（REQ-018 ①）：一个不调 LLM 的压缩后端，可选启用，默认仍是 `compaction-basic`。**

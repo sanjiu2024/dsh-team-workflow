@@ -90,6 +90,18 @@ await checkAsync("装配：基类没导出 → 明确抛错（不静默失效）
 	await assert.rejects(() => apply(ctx, {}), /没导出 BasicCompactionEngine/);
 });
 
+await checkAsync("inject 必须含 loader —— 少了它在真实宿主里一加载就抛", async () => {
+	// cordis 的 ctx 是访问器代理：**没 inject 的服务读一下就抛**（`cannot get property "loader"
+	// without inject`），不是返回 undefined。而基类只能靠 `ctx.loader.import` 异步取，所以漏了
+	// `loader` 就是「插件加载即抛」。这条断言是 2026-10-16 集成冒烟（真基类 + 真 cordis）逼出来的
+	// —— 假 ctx 把 loader 当普通属性给了，套件全绿。
+	const { inject } = await import("../lib/compaction-fold.js");
+	assert.ok(inject.includes("loader"), `inject 少了 loader：${JSON.stringify(inject)}`);
+	for (const name of ["llm", "tokenMeter", "sessions"]) {
+		assert.ok(inject.includes(name), `inject 少了 ${name}（basic 的骨架要用）`);
+	}
+});
+
 // ── 2. 不调模型 ─────────────────────────────────────────────────────────────
 
 await checkAsync("不调模型：summarize 返回折叠产物，假基类的 LLM 路径一次都没被调", async () => {
