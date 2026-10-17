@@ -436,7 +436,9 @@ function hangingStream(options) {
 }
 
 /** 让所有待处理的微任务跑完（`startMember` 里第一件事是 `await loadKit()`）。 */
-const tick = () => new Promise((resolve) => setImmediate(resolve));
+// `setImmediate` 只保证「本轮 poll 之后」，而模块图里每多一层 await 就要多一次 —— 2.0.10 拆出
+// `lib/squad-round.js` 时正好踩到（那个测试的注释早就警告过这类脆假设）。用宏任务，一次到位。
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 function fakeCtx({
 	services = ["tools", "webServer"],
