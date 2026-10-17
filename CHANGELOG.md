@@ -8,6 +8,29 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.2.0]
+
+**会话取回通道（REQ-018 的 ③）**：新工具 `session_recall` —— 上下文被压缩后，旧事件被折成摘要、
+模型看不到它们了，这个工具把原文按需取回来。
+
+- 三种用法：**不带参数 = 索引**（总事件数、seq 区间、**哪些 seq 区间被压缩折叠过** —— 从日志里
+  compaction 事件的 `shadowedSeqs` 读，权威列表）；**`{query}` = 关键词**（走宿主全文检索）；
+  **`{seq}` / `{from,to}` = 按 seq 取逐字原文**（窗口上限 50，超预算会明说「只取了 N 条」）。
+- **不自己解会话文件**：`.jsonl.zstd` 是多帧串联，Node 的 zstd API **只解第一帧**（实测 202KB
+  只出 281 字节）。走宿主现成的 `sessionQuery` 服务（`readEvent`/`searchEvents`/`listEvents`）。
+- **地址用 `seq`**（会话内单调、从 0 连续），不是「第几条消息」、也不是 mc 的 ordinal（会随折叠漂移）。
+- **不挂 magic-context**：mc 自己的 `ctx_search`/`ctx_expand` 走它自己的 SQLite 副本，而本机实测
+  `compartments` 表 0 行、`ctx_search` 直接报 `Could not resolve project identity` —— 把取回通道
+  挂在它上面等于依赖一个已经坏掉的组件。这条走 dsh 自己的服务 + 日志里的折叠记录，独立成立。
+- 失败**必须 throw**（契约）：返回一句「失败」文本会让模型以为取到了东西。
+- 索引模式里**读不出来的折叠记录不算「没折叠过」**：读失败会单独报「有 N 条读不出来」——
+  把读失败说成事实，比不报更糟（模型会据此认为「这里没东西」）。
+
+验证：`npm test` EXIT=0（链上多一条 `selftest-session-recall.mjs`，10 条断言）；
+8 条变异各自变红（不读折叠区间 / 区间不合并 / 失败不抛 / 未识别类型不标 / 忽略预算 / render 返回
+undefined / 会话 id 写死 / 读失败说成没折叠过）。**没断言**：真实宿主里 `exec.agent.session.id` 这条取值路径（套件用的是
+假 exec）—— 如实记在 `docs/状态.md` §4。
+
 ## [2.1.0]
 
 **角色档位可以配成降级链**（修 `roles.审查` → `tier-power` 在本机 503 导致审查这一层跑不起来）。

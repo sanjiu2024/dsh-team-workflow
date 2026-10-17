@@ -17,6 +17,7 @@
 | `docs` | 见工具内 schema | 第三方库文档查询 |
 | `lens_check` | `file` `cwd` `lsp` | 单文件静态体检 |
 | `lens_tools` | 见工具内 schema | 按需点亮 pi-lens 工具集 |
+| `session_recall` | `query` `seq` `from` `to` `limit` | 取回本会话历史原文（不带参数 = 索引 + 折叠区间） |
 | `thrift` | 见工具内 schema | 上下文节流 |
 | `worktree_new` | `name` `base` `description` | 给子代理建独立 worktree（`name` 必填） |
 | `worktree_list` | `description` | 列出 worktree 及各棵的脏/净 |
