@@ -8,6 +8,31 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.4.0] - 2026-10-16
+
+**确定性折叠压缩后端（REQ-018 ①）：一个不调 LLM 的压缩后端，可选启用，默认仍是 `compaction-basic`。**
+
+做法：**子类化 `BasicCompactionEngine`、只覆写 `summarize()`**。自动触发、压力判定、事务骨架
+（start→summary→replace→end）、token 计量、那几条不变量校验全在 basic 里（基类零提供），覆写之后
+唯一变化的是摘要内容 —— 风险面最小的那条路。返回值走 `SummaryResult` 的**未标记**支
+（没有 `llmStreamCall`：确实一次模型调用都没有）。
+
+开关：`team/agent-settings.json` 的 `compactionBackend`（`"basic"` 默认 / `"fold"`）。它**不在**
+`compaction` 块里 —— 那块的键会原样写进插件 config，而插件对未知键直接抛错。切后端 = 换预设里
+compaction 那一行的 `name`（`dsh-team-workflow/compaction-fold`），config 块照旧（schema 继承）。
+
+基类只能**异步**取：本包以 symlink 装在 profile 下，realpath 是仓库自己，裸 import 找不到
+`@deepseek-ai/*`。所以走 `ctx.loader.import`（由 profile 解析）。**cordis 会 await 异步插件**
+（`ctx.plugin()` 返回 thenable，用 cordis 本体实测过），所以 async `apply` 里注册服务是安全的。
+
+写这个后端时被自己的测试逮到两个真 bug：① 折叠的硬截断线写死 0.9、与目标无关，于是引擎那层
+「折不动就再狠一点」完全推不动；② 安全线只看「小于 1」不够 —— basic 的闸比的是 **framing 之后**
+的估值（前言 + 标签约 50 token），小区间上那 50 token 能占十几个百分点，正文压到 0.7 到闸那儿
+就成了 0.87、**它会 throw**，所以留了 40% 余量。
+
+真数据（`node scripts/smoke-fold.mjs`）：61KB 输入 → 28.2% 留存，两次产物逐字节相同。
+引擎 6 条 + 折叠 9 条变异全部咬住。
+
 ## [2.3.1] - 2026-10-16
 
 **修 P0：出处过滤在真实宿主里是个空操作**（独立测逮到，并用宿主真函数复现）。

@@ -1,6 +1,6 @@
 # AGENTS.md · 给 agent 的项目约定
 
-> **状态**：维护中 · **日期**：2026-10-16 · **版本**：`2.3.1`
+> **状态**：维护中 · **日期**：2026-10-16 · **版本**：`2.4.0`
 >
 > 这份文件只写**这个仓库里必须照做**的事：确切命令、代码约定、禁区。
 > 「这是什么、怎么用」在 [`README.md`](README.md)；「现在哪里是虚的」在 [`docs/状态.md`](docs/状态.md)；
@@ -20,6 +20,9 @@ node bin/dsh-team.mjs squad ls [--all] # 落盘的小队（实时那份在 Web �
 - **`npm test` 的前提**：magic-context bundle 已装（`dsh-team mc install` 或随 `install` 一起装）。
   没装时 `selftest-mc` / `selftest-surface` 会以「找不到 bundle」失败 —— 在一棵**裸 worktree** 里
   跑就是 21/23，那是环境不是代码。
+- **压缩后端可选**：`team/agent-settings.json` 的 `compactionBackend`（`"basic"` 默认 / `"fold"` =
+  本包的确定性折叠后端，不调 LLM）。改完 `dsh-team preset install` 重新生成预设。
+  这个键**不属于** `compaction` 块 —— 那块的键会原样写进插件 config，插件对未知键直接抛错。
 - **改预设不要手改产物**：团队预设是 `dsh-team preset install` 从 `team/agent-settings.json`
   生成的。要改就先改那份 JSON，再 `preset install`（或 `thrift apply`）。直接改预设文件，
   下次重生成就覆盖。

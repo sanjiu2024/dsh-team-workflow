@@ -5,6 +5,8 @@
   "_subagents 为什么要改": "dsh 的子代理没有「角色」概念（角色是 prompt 第一行声明的），rc.2 也不读 pi 那套 agentOverrides —— 2026-10-05 实测全树零命中，那份配置在 dsh 下是死的，档位映射等于没生效。所以改成钉在工具行上：preset install 按 tierTools 给每一档挂一条独立的 subagent 工具行（agentOptions 里写死 provider+model），调用哪个工具就等于选了哪一档。tierTools 的键就是工具名后缀（std → subagent_std）。disableThinking 是 pi 侧的键，留着不影响 dsh。\\n\\n【2026-10-08 追加：审查档不给工具】toolLessTiers 里的档位（现在是 power）会生成 `toolFilter: { allow: [] }` —— 那个档位的子代理**一个工具都没有**：过滤掉的工具从它的提示里消失、调用直接被拒（dsh-subagent 的 ctx.tools.restrict，能力由 spawn-in-process 提供）。这是团队规范「审查只凭材料判断、不许自己探索」在配置层的落地：无边界探索会把审查跑成上百轮（上游 42 次实测最慢 108 轮、80 次 grep + 72 次 read，跑满 30 分钟被超时砍掉）。跑测试/验证的活给 std（它带工具），power 只出判断。",
   "defaultProvider": "new-api",
   "defaultModel": "tier-std",
+  "_compactionBackend 是什么": "压缩后端。'basic'（默认）= dsh 自带的 compaction-basic，调 LLM 写摘要；'fold' = 本包的确定性折叠后端（REQ-018 ①，不调模型，逐字选择保留什么、丢了明说）。切它 = 换预设里 compaction 那一行的 name，config 块照旧（折叠引擎是 BasicCompactionEngine 的子类，schema 继承）。注意这个键**不属于下面的 compaction 块** —— 那块的键会原样写进插件 config，而插件对未知键直接抛错。",
+  "compactionBackend": "basic",
   "compaction": {
     "enabled": true,
     "contextWindow": 512000,

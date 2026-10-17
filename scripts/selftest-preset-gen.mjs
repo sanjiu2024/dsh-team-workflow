@@ -333,6 +333,23 @@ try {
 }
 
 {
+	// 压缩后端可切：`compactionBackend: "fold"` 换成折叠后端，config 块照旧跟着走（REQ-018 ①）
+	{
+		const fold = generateRc2TeamPreset(pristine, {
+			settings: { ...settings, compactionBackend: "fold" },
+			overlay,
+		});
+		assert.ok(
+			fold.text.includes("name: 'dsh-team-workflow/compaction-fold'"),
+			"fold 后端没写进预设",
+		);
+		assert.ok(!fold.text.includes("name: '@deepseek-ai/dsh-compaction-basic'"), "换后端后不该还留着 basic 那行");
+		assert.ok(fold.text.includes("config:\n                  thresholdRatio:"), "config 块要跟着新后端走");
+		// 默认（键不存在）必须还是 basic —— 折叠后端是可选能力，不能悄悄变成默认
+		const basic = generateRc2TeamPreset(pristine, { settings: { ...settings, compactionBackend: "basic" }, overlay });
+		assert.ok(basic.text.includes("name: '@deepseek-ai/dsh-compaction-basic'"), "默认必须仍是 basic");
+	}
+
 	// 只给 settings、不给 overlay：只有 compaction-basic 一行被改，裁剪保持出厂
 	const gen = generateTeamPreset(pristine, { settings: teamSettings });
 	assert.equal(gen.changed, 1, `只该改 compaction-basic 一行，实际改了 ${gen.changed} 处`);

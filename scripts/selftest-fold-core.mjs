@@ -58,10 +58,13 @@ check("全局预算：工具结果多的时候，产物仍要装进目标留存�
 	// 逐条预算不够用：20 条工具结果 × 每条 1600 字符 = 3 万字符（真实会话实测 83% 留存）。
 	// 长工具结果：靠逐条预算就够
 	const longInput = [msg("user", "需求")];
-	for (let i = 0; i < 20; i += 1) longInput.push(msg("tool", long(5000, "t")));
+	for (let i = 0; i < 20; i += 1) longInput.push(msg("tool", long(3000, "t")));
 	const a = foldMessages(longInput);
 	const aChars = longInput.reduce((n, m) => n + contentText(m).length, 0);
 	assert.ok(a.text.length <= aChars * 0.35, `长消息：留存要 ≤35%，实际 ${(a.text.length / aChars * 100).toFixed(1)}%`);
+	// 3000 字符的工具消息：第 0 轮（1600/3000=53%）超目标，第 1 轮减半后达标 → scale 必须正好是 1/2。
+	// 这条钉住「每轮减半」这个机制（变异成「不缩」时最终 scale 会不一样）。
+	assert.equal(a.stats.scale, 0.5, `该在第 1 轮达标，实际 scale=${a.stats.scale}`);
 
 	// 全是短消息：逐条预算咬不住（每条都没超），必须靠硬截断兜住 —— 否则 basic 的尺寸闸会 throw
 	const shortInput = [msg("user", "需求")];
@@ -78,6 +81,9 @@ check("全局预算：工具结果多的时候，产物仍要装进目标留存�
 	const c = foldMessages(many);
 	const cChars = many.reduce((n, m) => n + contentText(m).length, 0);
 	assert.equal(c.stats.hardTruncated, true, "消息极多时地板之和超过输入 → 必须硬截断");
+	// 断言**机制**而不是结果：这条输入必须真的触发收缩（否则「超目标就减半」那套逻辑删掉也看不出来）
+	assert.ok(c.stats.scale < 1, `该触发收缩，实际 scale=${c.stats.scale}`);
+	assert.equal(c.stats.targetRatio, 0.35, "默认目标留存率是 35%");
 	assert.ok(c.text.length < cChars * 0.9, `硬截断后仍要满足不变量，实际 ${(c.text.length / cChars * 100).toFixed(1)}%`);
 	assert.match(c.text, /折叠产物本身也被截断/, "硬截断要写明（静默截断最坏）");
 });
