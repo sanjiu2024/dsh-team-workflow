@@ -87,7 +87,10 @@ function fakeEngine(events, { searchHits = null } = {}) {
 				events
 					.filter((e) => e.sessionId === sessionId && String(e.data?.content ?? "").includes(query))
 					.slice(0, limit)
-					.map((e) => ({ sessionId: e.sessionId, seq: e.seq, type: e.type, time: e.time, surface: "log", text: e.data.content }));
+					// **照真实形状来**：`dsh-session-query-sqlite` 的 `_eventHit` 只给
+					// `{sessionId,seq,type,time,surface,snippet}` —— **没有 `data`、没有 `text`**。
+					// 2.2.1 之前这里伪造了 `text`，于是把错字段钉死了（独立测的 P0）。
+					.map((e) => ({ sessionId: e.sessionId, seq: e.seq, type: e.type, time: e.time, surface: "log", snippet: e.data.content }));
 			return { items: hits };
 		},
 	};
@@ -216,7 +219,60 @@ await checkAsync("单条模式：seq 会带上前后各 2 条做上下文", asyn
 	assert.match(text, /第 10 条的正文/, "要带后文");
 });
 
+await checkAsync("关键词模式：命中只有宿主给的 snippet（真实形状没有 data）也要出正文", async () => {
+	// 这条是 P0 的守门员：把代码里的 `hit.snippet` 改回 `hit.text` → 这里会渲染成
+	// 「宿主没给这段的摘要片段」→ 断言变红。
+	const events = fakeLog({ count: 6 });
+	const engine = fakeEngine(events, {
+		searchHits: [{ sessionId: "sess-1", seq: 4, type: "user/message", time: 1, surface: "log", snippet: "只有 snippet 的正文" }],
+	});
+	const { ctx, captured } = fakeCtx(engine);
+	installSessionRecall(ctx);
+	const text = await textOf(captured.definition, { query: "随便" }, execFor("sess-1"));
+	assert.match(text, /只有 snippet 的正文/, `要读宿主的 snippet，实际：${text}`);
+	assert.doesNotMatch(text, /没给这段的摘要片段/, "有 snippet 就不该说没给");
+});
+
+await checkAsync("区间模式：整段超出日志范围 → 用**请求的区间**说话，别把宿主内部序号当结论", async () => {
+	const { ctx, captured } = fakeCtx(fakeEngine(fakeLog({ count: 5 })));
+	installSessionRecall(ctx);
+	await assert.rejects(
+		() => captured.definition.execute({ seq: 9999 }, execFor("sess-1")),
+		(error) => {
+			assert.match(String(error.message), /9997–10001/, `要报请求的区间，实际：${error.message}`);
+			assert.match(String(error.message), /读不出来/, "要说清是读失败");
+			return true;
+		},
+	);
+});
+
+await checkAsync("索引模式：事件都没有可用 seq 时不许输出 Infinity", async () => {
+	const engine = {
+		async listEvents() {
+			return [{ sessionId: "sess-1", type: "user/message", time: 1, surface: "log" }];
+		},
+		async readEvent() {
+			throw new Error("不该走到这");
+		},
+		async searchEvents() {
+			throw new Error("不该走到这");
+		},
+	};
+	const { ctx, captured } = fakeCtx(engine);
+	installSessionRecall(ctx);
+	const text = await textOf(captured.definition, {}, execFor("sess-1"));
+	assert.doesNotMatch(text, /Infinity/, `不许出现 Infinity，实际：${text}`);
+	assert.match(text, /没有一条带可用的 seq/);
+});
+
 // ── 4. 失败路径（必须 throw） ───────────────────────────────────────────────
+
+await checkAsync("limit 给了但不是正整数 → 说清楚，不许静默取默认", async () => {
+	const { ctx, captured } = fakeCtx(fakeEngine(fakeLog({ count: 4 })));
+	installSessionRecall(ctx);
+	await assert.rejects(() => captured.definition.execute({ limit: 2.5 }, execFor("sess-1")), /limit 要是正整数/);
+	await assert.rejects(() => captured.definition.execute({ limit: 0 }, execFor("sess-1")), /limit 要是正整数/);
+});
 
 await checkAsync("没有 sessionQuery 服务 → throw（不许返回「失败」文本冒充结果）", async () => {
 	const { ctx, captured } = fakeCtx(undefined);
