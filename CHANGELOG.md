@@ -8,6 +8,20 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.4.2] - 2026-10-16
+
+**修 ② 的时序：只挂 `agent/pre-step` 会晚一步。**
+
+原前提是「本包监听注册在 compaction-basic 之后」。读本机真实配置发现**前提是反的**：
+`~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles` 把 `dsh-team-workflow` 排在
+`dsh-team-presets` 之前 —— 本包是 profile bundle（启动时注册监听），压缩在预设里（后注册）。
+waterfall 按注册顺序跑，于是本包会跑在压缩**之前**，那时 checkpoint 还没写，导致「刚压完、模型
+第一次看到摘要」的那次请求看到的是**没过滤**的版本。
+
+修法不靠顺序：加一条 `session/event` 触发（checkpoint 刚落盘就动手），排 `queueMicrotask` 而不是
+直接 append（`session.append` 不可重入）；pre-step / request-error 留作幂等兜底。
+两条变异各自变红：去掉事件触发、改成不排微任务。
+
 ## [2.4.1] - 2026-10-16
 
 **修 P0：折叠后端的 `inject` 少了 `loader`，真实宿主里插件加载即抛。**

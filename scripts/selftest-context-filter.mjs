@@ -253,6 +253,42 @@ const searchEngine = (docs) => ({
 /** 造语料：默认全是环境输出（tool/result）。 */
 const envDocs = (text) => [{ seq: 1, type: "tool/result", text }];
 
+await checkAsync("事件触发：checkpoint 刚落盘就换（这条与注册顺序无关，是主力）", async () => {
+	// 为什么必须有这条：waterfall 按注册顺序跑，而本包是 profile bundle（启动时注册）、
+	// compaction-basic 在预设里（后注册）→ 光靠 pre-step 会跑在压缩之前，晚一步。
+	// 那时「刚压完、模型第一次看到摘要」的那次请求会看到没过滤的版本。
+	const engine = searchEngine(envDocs("lib/real.js lib/util.js"));
+	const session = fakeSession({ nodes: [] });
+	const { ctx, listeners } = fakeCtx({ engine });
+	installContextFilter(ctx);
+
+	// 照宿主的顺序：先把 checkpoint append 进 surface，再发 session/event
+	const node = checkpointNode(7, "\n- 有出处 lib/real.js\n- 无出处 xyz/module.js\n- 也有出处 lib/util.js\n");
+	session.events.set(7, node);
+	session.surface.nodes.push(7);
+
+	const emit = listeners.get("session/event")?.[0];
+	assert.ok(emit, "要挂上 session/event 监听");
+	emit(session, node); // emit 是同步的，不是 waterfall
+	assert.equal(session.appends.length, 0, "emit 回调里**不能**直接 append（append 不可重入）—— 要排微任务");
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(session.appends.length, 1, "微任务里该把它换掉");
+	assert.doesNotMatch(messageText(session.appends[0].data), /xyz\/module\.js/);
+});
+
+await checkAsync("事件触发：普通 user/message 事件什么都不做", async () => {
+	const engine = searchEngine(envDocs("lib/real.js"));
+	const session = fakeSession({ nodes: [] });
+	const { ctx, listeners } = fakeCtx({ engine });
+	installContextFilter(ctx);
+	const node = { seq: 5, type: "user/message", data: { role: "user", content: "普通消息" } };
+	session.events.set(5, node);
+	session.surface.nodes.push(5);
+	listeners.get("session/event")[0](session, node);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(session.appends.length, 0);
+});
+
 await checkAsync("装配：pre-step 真的换掉 surface 上的 checkpoint 节点（surfaceOp replace）", async () => {
 	const engine = searchEngine(envDocs("lib/real.js"));
 	const session = fakeSession({ nodes: [checkpointNode(7, "\n- 真 lib/real.js\n- 假 hallucinated/module.js\n")] });
