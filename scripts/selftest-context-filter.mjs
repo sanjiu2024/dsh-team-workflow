@@ -17,6 +17,7 @@
 import * as assert from "node:assert/strict";
 import {
 	distinctiveTokens,
+	isCheckpointEvent,
 	filterCheckpointText,
 	installContextFilter,
 	messageText,
@@ -134,6 +135,21 @@ await checkAsync("安全闸：混合场景（有的无出处、有的查不了�
 	assert.equal(out.aborted, undefined, "没超过一半就不该放弃");
 });
 
+
+check("isCheckpointEvent：真实形状是**块数组**（日志实测），字符串兜底，别的类型一律 false", () => {
+	// 真实事件长这样（本机会话日志实测）：data={content:[{type:'text',text},…],source,role,id}
+	const asBlocks = { type: "user/message", data: { role: "user", source: "compaction", content: [{ type: "text", text: ckpt("\n- 甲\n") }] } };
+	assert.equal(isCheckpointEvent(asBlocks), true, "块数组那条是主力，必须认");
+	const asString = { type: "user/message", data: { content: ckpt("\n- 甲\n") } };
+	assert.equal(isCheckpointEvent(asString), true, "字符串兜底");
+	assert.equal(isCheckpointEvent({ type: "user/message", data: { content: "普通消息" } }), false);
+	assert.equal(isCheckpointEvent({ type: "tool/result", data: { content: ckpt("x") } }), false, "别的类型一律不是");
+	assert.equal(isCheckpointEvent({ type: "user/message", data: {} }), false);
+	assert.equal(isCheckpointEvent(undefined), false);
+	// 混在别的块里的文本也要能认出来
+	const mixed = { type: "user/message", data: { content: [{ type: "image" }, { type: "text", text: ckpt("x") }] } };
+	assert.equal(isCheckpointEvent(mixed), true);
+});
 
 // ── 4. 装配：surfaceOp replace（这一节才是「缝」的守门员）─────────────────────
 //
