@@ -333,21 +333,24 @@ try {
 }
 
 {
-	// 压缩后端可切：`compactionBackend: "fold"` 换成折叠后端，config 块照旧跟着走（REQ-018 ①）
+	// 压缩后端：**默认就是折叠后端**（REQ-018 ①），显式 `compactionBackend: "basic"` 才用回宿主的。
 	{
-		const fold = generateRc2TeamPreset(pristine, {
-			settings: { ...settings, compactionBackend: "fold" },
-			overlay,
-		});
+		// 测的是**代码默认**（键不存在），不是文件里写了什么 —— 文件可以被人改回 basic。
+		const { compactionBackend: _dropped, ...withoutKey } = settings;
+		const dflt = generateRc2TeamPreset(pristine, { settings: withoutKey, overlay });
+		assert.ok(dflt.text.includes("name: 'dsh-team-workflow/compaction-fold'"), "键不存在时必须默认用折叠后端");
 		assert.ok(
-			fold.text.includes("name: 'dsh-team-workflow/compaction-fold'"),
-			"fold 后端没写进预设",
+			!dflt.text.includes("name: '@deepseek-ai/dsh-compaction-basic'"),
+			"默认折叠时不该还留着 basic 那行",
 		);
-		assert.ok(!fold.text.includes("name: '@deepseek-ai/dsh-compaction-basic'"), "换后端后不该还留着 basic 那行");
-		assert.ok(fold.text.includes("config:\n                  thresholdRatio:"), "config 块要跟着新后端走");
-		// 默认（键不存在）必须还是 basic —— 折叠后端是可选能力，不能悄悄变成默认
+		assert.ok(dflt.text.includes("config:\n                  thresholdRatio:"), "config 块要跟着新后端走");
+		// 反向：显式 basic 必须真的换回宿主后端（否则这个键是死的）
 		const basic = generateRc2TeamPreset(pristine, { settings: { ...settings, compactionBackend: "basic" }, overlay });
-		assert.ok(basic.text.includes("name: '@deepseek-ai/dsh-compaction-basic'"), "默认必须仍是 basic");
+		assert.ok(basic.text.includes("name: '@deepseek-ai/dsh-compaction-basic'"), "显式 basic 要用回宿主后端");
+		assert.ok(
+			!basic.text.includes("name: 'dsh-team-workflow/compaction-fold'"),
+			"显式 basic 时不该还留着折叠那行",
+		);
 	}
 
 	// 只给 settings、不给 overlay：只有 compaction-basic 一行被改，裁剪保持出厂

@@ -8,6 +8,19 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.5.0] - 2026-10-16
+
+**折叠后端提成默认压缩后端**（`compactionBackend` 的默认从 `"basic"` 改成 `"fold"`）。
+
+改默认的理由：真事务冒烟已经跑通（真基类 + 真 cordis + 真 `TokenMeter` + 真会话回放 →
+`compactNow` 压掉 2 个节点 / 2102 tokens、checkpoint 落在 surface 上、**`llm.stream()` 0 次**），
+而折叠后端不调模型、逐字选择保留什么、丢了明说 —— 比让模型现写摘要更便宜也更可控。
+折不动时它自己退回 `super.summarize`（也就是原来那套行为），所以最坏情况不比现在差。
+
+想用回宿主后端：`team/agent-settings.json` 里显式写 `compactionBackend: "basic"`，
+再 `dsh-team preset install`（**要重启 dsh 才生效**）。自检里那条断言也跟着翻了过来：
+现在钉的是「键不存在时默认折叠」，反向钉「显式 basic 真的换回宿主后端」。
+
 ## [2.4.3] - 2026-10-16
 
 **修 P1：`foldForBudget` 的分母含 basic 不 shadow 的 system 头，导致 `fellBack` 在真实宿主里不触发、

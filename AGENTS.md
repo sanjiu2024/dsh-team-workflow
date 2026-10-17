@@ -1,6 +1,6 @@
 # AGENTS.md · 给 agent 的项目约定
 
-> **状态**：维护中 · **日期**：2026-10-16 · **版本**：`2.4.1`
+> **状态**：维护中 · **日期**：2026-10-16 · **版本**：`2.5.0`
 >
 > 这份文件只写**这个仓库里必须照做**的事：确切命令、代码约定、禁区。
 > 「这是什么、怎么用」在 [`README.md`](README.md)；「现在哪里是虚的」在 [`docs/状态.md`](docs/状态.md)；
@@ -9,7 +9,7 @@
 ## 1. 确切命令（都是实测过的）
 
 ```bash
-npm test                              # 全仓自检：链上 23 条 node 自检，EXIT=0 才算过
+npm test                              # 全仓自检：链上 26 条 node 自检，EXIT=0 才算过
 node scripts/selftest-squad.mjs        # 单跑一条（小队：状态机 / 工具 / 面板 / 权限 / 落盘）
 node bin/dsh-team.mjs --help           # CLI 全量用法
 node bin/dsh-team.mjs status           # 装到哪个 profile、版本对不对
@@ -20,8 +20,9 @@ node bin/dsh-team.mjs squad ls [--all] # 落盘的小队（实时那份在 Web �
 - **`npm test` 的前提**：magic-context bundle 已装（`dsh-team mc install` 或随 `install` 一起装）。
   没装时 `selftest-mc` / `selftest-surface` 会以「找不到 bundle」失败 —— 在一棵**裸 worktree** 里
   跑就是 21/23，那是环境不是代码。
-- **压缩后端可选**：`team/agent-settings.json` 的 `compactionBackend`（`"basic"` 默认 / `"fold"` =
-  本包的确定性折叠后端，不调 LLM）。改完 `dsh-team preset install` 重新生成预设。
+- **压缩后端**：`team/agent-settings.json` 的 `compactionBackend` —— **默认 `"fold"`**（本包的确定性
+  折叠后端，不调 LLM）；显式写 `"basic"` 才用回宿主自带的 compaction-basic（调 LLM 写摘要）。
+  改完 `dsh-team preset install` 重新生成预设（要重启 dsh 才生效）。
   这个键**不属于** `compaction` 块 —— 那块的键会原样写进插件 config，插件对未知键直接抛错。
 - **改预设不要手改产物**：团队预设是 `dsh-team preset install` 从 `team/agent-settings.json`
   生成的。要改就先改那份 JSON，再 `preset install`（或 `thrift apply`）。直接改预设文件，
@@ -106,5 +107,9 @@ node bin/dsh-team.mjs squad ls [--all] # 落盘的小队（实时那份在 Web �
 - dsh `0.2.0-rc.2`；本包以 symlink 装在 `~/.dsh/profiles/web/node_modules/` 下。
 - **`web_search` / `web_fetch` 在本机挂**（`HTTP_PROXY=127.0.0.1:7897` 拒连）→
   直连绕过：`env -u HTTP_PROXY -u HTTPS_PROXY curl -sL '<url>'`。
+- **本机 `dsh-team preset install` 会在最后一步失败**（`dsh plugin --profile tauri install` →
+  `cannot resolve profile bundle "dsh-tauri"`）：那是 **tauri** profile 自己的依赖缺，跟本包无关。
+  预设文件在这之前**已经写好**（web profile 用 `link:` 指着它），所以那一步失败不影响生效 ——
+  别把它当成「预设没更新」。
 - `roles.审查` 默认是降级链 `["tier-power","tier-std"]` —— 本机 `tier-power` 报 503，
   会自动退到 `tier-std`（换档写进成员结论栏）。
