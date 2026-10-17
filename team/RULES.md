@@ -91,9 +91,10 @@
 ### 小队怎么开（确切流程）
 
 ```text
-worktree_new(name="写-A")          → 拿到【绝对路径】
+worktree_new(name="wt-a")            → 拿到【绝对路径】（**只能字母数字连字符**，中文名会被拒）
 squad_new(name="登录改造", objective="…可验收的目标…", acceptance=["跑 npm test 全绿", …])
 squad_spawn(squad, member="写-A", role="实现", task="…", worktree="<绝对路径>")
+  ↑ member/role 可以是中文（只有 worktree 的 name 限 ASCII）
   ↓ 多个成员并行；成员自己往黑板写进展；你 squad_status 看板
 squad_review(squad, member="写-A") → 派审查成员审它（被审者必须已收工）
 worktree_merge(name="写-A")        → 合不合由你决定
@@ -115,8 +116,8 @@ squad_close(squad, reason="…")     → 收队（会掐掉还在跑的成员）
 - **要 `subagent_fork`（继承本会话上下文）** 的活：成员看不到我们这段对话。
 - 纯文本产出、**不需要**留痕或恢复的。
 
-写代码的子代理仍照老规矩：先 `worktree_new`，把**绝对路径**写进 task，并要求它对文件用绝对路径；
-做完你逐个 `git diff` 审。
+写代码的子代理仍照老规矩：先 `worktree_new`（名字只能字母数字连字符），把**绝对路径**写进 task，
+并要求它对文件用绝对路径；做完你逐个 `git diff` 审。
 
 ### 回报必须短
 
