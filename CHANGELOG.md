@@ -8,6 +8,25 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.4.3] - 2026-10-16
+
+**修 P1：`foldForBudget` 的分母含 basic 不 shadow 的 system 头，导致 `fellBack` 在真实宿主里不触发、
+压缩直接失败。**
+
+`SummarizationInput.messages` 是「系统头 + 被压区间」（`summarizer.d.ts:23`），而 basic 的尺寸闸只比
+`shadowedRouteTokenCount`（选中节点的 Σtokens，`index.js:576-577`）。拿整个 messages 当分母，
+ratio 会系统性偏小 (1+S/R) 倍 —— 系统头一大，`fellBack` 永不触发，然后 basic 的闸 **throw**，
+整次压缩失败：正是 `fellBack` 要防的那个场景。修：分母只算会被 shadow 的 role。
+
+同一轮还修了两条「自检把它们盖住」的地方：折不动的用例补上真实形状的大 system 头；checkpoint 假替身
+的 `content` 从字符串改成**块数组**（真实宿主是块数组，字符串分支是死分支）—— 改完两条原本咬不住的
+变异都变红了。
+
+另把 framing 开销从「约 50 token」的估计改成**实测的 85 token**（用宿主 `estimateMessage` 在三个真实
+checkpoint 上量的，恒为 85，占正文 4.5%/3.8%/1.9%），并**显式算进**尺寸判断：极小区间上（190 字符档）
+差一点就是「折不动 vs basic throw」。以及把「排微任务是因为 append 不可重入」这个站不住的理由改成
+「防御性延迟」，真正没证的时序风险如实记进 `docs/状态.md`。
+
 ## [2.4.2] - 2026-10-16
 
 **修 ② 的时序：只挂 `agent/pre-step` 会晚一步。**

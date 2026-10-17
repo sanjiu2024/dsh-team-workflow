@@ -160,14 +160,27 @@ check("重折：第一遍只能到硬截断线（≈0.9）时，必须按更狠�
 	assert.ok(out.ratio < SAFE_RATIO, `重折后要达标，实际 ${out.ratio}`);
 });
 
-check("退路：折不动（区间里全是必须逐字留的用户原话）→ 标记 fellBack，交给超类去调 LLM", () => {
-	// 什么时候真的折不动：**极小区间**。折叠侧对 <200 字符的区间不启用硬截断（那种区间压根不该被压），
-	// 而说明文字本身就有近百字符 → token 比 > 1。大区间折不动是不可能的：硬截断保证 ≤0.9。
+check("framing 常数必须算进去：190 字符的区间要判折不动，而不是硬塞给 basic 让它 throw", () => {
+	// 这条是 FRAME_OVERHEAD_TOKENS 的守门员（数值是量出来的，不是估的）：
+	// 190 字符是**量出来的**分界（170/180 两档区分不出来：两种算法都折不动）：
+	// 算上 framing 85 → 274/190 = 1.44 ≥ 1 → 折不动 ✓；
+	// 不算 → 188/190 = 0.99 < 1 → 以为达标 → 交给 basic → 它的闸看到 274 ≥ 190 → **throw**。
 	const meter = { estimateMessage: (m) => contentText(m).length };
-	const out = foldForBudget([msg("user", "短需求")], meter);
-	assert.ok(out.ratio > 1, `极小区间该折不动，实际 ratio=${out.ratio}`);
-	assert.equal(out.fellBack, true, "折不动要明确标记，不能硬塞给 basic 让它 throw");
+	const out = foldForBudget([msg("user", long(190, "需"))], meter);
+	assert.equal(out.fellBack, true, `该判折不动，实际 ratio=${out.ratio}`);
+});
+
+check("退路：折不动（区间里全是必须逐字留的用户原话）→ 标记 fellBack，交给超类去调 LLM", () => {
+	// **真实形状**：SummarizationInput.messages = 系统头 + 被压区间（summarizer.d.ts:23）。
+	// 分母必须只算区间 —— 拿整个 messages 当分母的话，系统头一大，ratio 就系统性偏小、
+	// fellBack 永不触发（独立测逮到的 P1，就是这个形状下量出来的）。
+	const meter = { estimateMessage: (m) => contentText(m).length };
+	const head = msg("system", long(20000, "s")); // 系统头很大：当分母的话 ratio 会被稀释到 0.004
+	const out = foldForBudget([head, msg("user", "短需求")], meter);
+	assert.equal(out.fellBack, true, `折不动要明确标记，不能硬塞给 basic 让它 throw（实际 ratio=${out.ratio}）`);
 	assert.equal(out.text, undefined);
+	// 分母里不许有系统头：它不在被 shadow 的区间里
+	assert.ok(out.inputTokens < 100, `分母只该算区间（实际 ${out.inputTokens}）`);
 });
 
 await checkAsync("退路接线：fellBack 时真的调回超类（而不是返回空摘要）", async () => {

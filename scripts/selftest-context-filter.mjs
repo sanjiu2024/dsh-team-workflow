@@ -209,7 +209,10 @@ function fakeSession({ id = "sess-1", startSeq = 100, nodes = [] } = {}) {
 const checkpointNode = (seq, body) => ({
 	seq,
 	type: "user/message",
-	data: { role: "user", source: "compaction", id: `ckpt-${seq}`, content: ckpt(body) },
+	// **真实形状**：basic 的 frameSummary → createUserMessage，content 是**块数组**
+	// （2026-10-16 从本机会话日志实测：3 块，{type:'text',text}）。写成字符串的话，
+	// isCheckpointEvent 的数组分支（真实唯一会走的那条）就测不到了 —— 独立测逮到的 P1。
+	data: { role: "user", source: "compaction", id: `ckpt-${seq}`, content: [{ type: "text", text: ckpt(body) }] },
 });
 
 /** 假 ctx：捕获两个 waterfall 监听器；loader.import 供 makeHostLoader 用。 */
