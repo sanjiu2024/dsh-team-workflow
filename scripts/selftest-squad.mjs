@@ -63,6 +63,7 @@ const {
 	normalizeAcceptance,
 	renderSnapshot,
 	roleModel,
+	roleModelChain,
 	updateMember,
 	usageLine,
 } = await import(new URL("lib/squad.js", ROOT).href);
@@ -2491,7 +2492,7 @@ check("出厂 squad.json 是 v2 形状且能过校验（文件与 schema 不许�
 	assert.equal(cfg.bash, true);
 	assert.equal(cfg.retries, 1);
 	assert.equal(cfg.memberTimeoutMinutes, 20);
-	assert.equal(cfg.roles.审查, "tier-power");
+	assert.deepEqual(cfg.roles.审查, ["tier-power", "tier-std"], "审查走降级链：主档用不了就退到标准档");
 	assert.equal(cfg.roles.侦察, "tier-std");
 	assert.deepEqual(said, [], `出厂文件不该有任何提示：${JSON.stringify(said)}`);
 });
@@ -2517,6 +2518,13 @@ check("D3 roleModel：归一「型」、去空白、命中不了给 undefined", 
 	assert.equal(roleModel(undefined, "审查"), undefined);
 	assert.equal(roleModel({ 审查: "  " }, "审查"), undefined, "空档位不算命中");
 	assert.equal(roleModel({ 审查: 42 }, "审查"), undefined);
+	// 降级链（2.1.0）：值可以是数组；`roleModel` 取链上第一个，链本身另给
+	const chain = { 审查: [" tier-power ", "tier-std", ""] };
+	assert.equal(roleModel(chain, "审查"), "tier-power", "取链上第一个");
+	assert.deepEqual(roleModelChain(chain, "审查"), ["tier-power", "tier-std"], "空条目要滤掉");
+	assert.deepEqual(roleModelChain({ 审查: "tier-std" }, "审查"), ["tier-std"], "单档也归一成链");
+	assert.deepEqual(roleModelChain({ 审查: [] }, "审查"), [], "空链 = 没配（配置层面这种值会被校验器整体拒，这里只是纯函数语义）");
+	assert.deepEqual(roleModelChain({ 审查: [42] }, "审查"), [], "坏条目滤掉");
 });
 
 await checkAsync("D3：spawn 不传 model 时按角色取档，记在成员身上，续聊沿用", async () => {
@@ -2721,7 +2729,7 @@ check("复审·P2：squadConfig 真把 v2 分组读进来了（漏传归一会�
 	// 出厂文件走同一条路（这条只钉「真读了文件」）
 	const real = squadConfig(layered, undefined);
 	assert.equal(real.maxSteps, SQUAD_DEFAULTS.maxSteps);
-	assert.equal(real.roles.审查, "tier-power");
+	assert.deepEqual(real.roles.审查, ["tier-power", "tier-std"], "出厂文件的审查档是降级链（2.1.0）");
 });
 
 
@@ -4256,6 +4264,58 @@ await checkAsync("A1：手改状态不许造出「等待」死态；排队中的
 	await settle();
 	assert.equal(members.get("B").status, "卡住", "停掉的排队成员不许被 drainQueue 点着");
 	assert.equal(members.get("B").attempts ?? 0, 0, "它一步都不该跑");
+});
+
+await checkAsync("角色档位降级链：主档 infra 失败 → 自动换到链上下一档，并写进结论栏", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-tier-"));
+	const seen = [];
+	let calls = 0;
+	// 第一次模拟「网关没有这条渠道」（同步抛 = infra 失败），第二次正常收工
+	const stream = (options) => {
+		calls += 1;
+		seen.push(options.model);
+		if (calls === 1) throw new Error("503 no channel for tier-power");
+		return scriptedStream([{ text: "干完了" }])(options);
+	};
+	const { squad, call, settle } = install({
+		stream,
+		config: { persist: false, retries: 1, roles: { 审查: ["tier-power", "tier-std"] } },
+	});
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "甲", role: "审查", task: "审一下", worktree: wt }, "main-1");
+	await settle();
+	const m = squad.state.get("main-1").get("队").members.get("甲");
+	assert.equal(seen[0], "tier-power", `第一次该用主档，实际 ${seen[0]}`);
+	assert.equal(seen[1], "tier-std", `主档挂了该换链上下一档，实际 ${seen[1]}`);
+	assert.equal(m.status, "完成", `换档之后该跑完，实际 ${m.status}：${m.note}`);
+	// 换档**不许静默**：结论栏要写清从哪档换到哪档
+	assert.match(String(m.note), /中途换档/, `结论栏要写清换档，实际：${m.note}`);
+	assert.match(String(m.note), /tier-std/, `要写明换成哪档，实际：${m.note}`);
+});
+
+await checkAsync("角色档位降级链：**显式传过 model** 的成员不许被角色链顶掉（更贵的档尤其不行）", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-tierovr-"));
+	const seen = [];
+	let calls = 0;
+	// **两次都失败**：这才是不变式的锋利形式 —— 全都挂了也不许用链上那个更贵的档
+	const stream = (options) => {
+		calls += 1;
+		seen.push(options.model);
+		throw new Error("503 no channel");
+	};
+	// 角色链里 tier-power 比显式指定的 tier-std **更贵** —— 顶掉就是悄悄加钱
+	const { squad, call, settle } = install({
+		stream,
+		config: { persist: false, retries: 1, roles: { 审查: ["tier-power", "tier-max"] } },
+	});
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "甲", role: "审查", task: "审一下", model: "tier-std", worktree: wt }, "main-1");
+	await settle();
+	const m = squad.state.get("main-1").get("队").members.get("甲");
+	assert.equal(m.modelFromRole, false, "显式传 model 的成员不该被记成「按角色取」");
+	assert.deepEqual(seen, ["tier-std", "tier-std"], `显式档不许被链顶掉，实际用了 ${JSON.stringify(seen)}`);
+	assert.equal(m.status, "卡住", `两次都 infra 失败 → 卡住，实际 ${m.status}`);
+	assert.ok(!/中途换档/.test(String(m.note)), `没换档就不许写换档，实际：${m.note}`);
 });
 
 await checkAsync("E1：override 也要过校验器（`retries:-1` 不许一路走进循环）", async () => {

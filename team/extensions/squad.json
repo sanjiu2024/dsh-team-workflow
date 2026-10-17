@@ -10,7 +10,10 @@
     "配置文件形状：**v2**（2.0 起）。键分了组 —— defaults{provider,model} / limits{maxSteps,retries,memberTimeoutMinutes} / sandbox{bash}。",
     "  旧形状（v1，9 个扁平键）照常能读：归一在读入时做，**不写回文件**，只在日志里提示一句。",
     "roles：角色 → 档位。squad_spawn 没传 model 时按角色查这张表（「审查」与「审查型」落到同一条）。",
-    "  ⚠️ 审查默认给的是 tier-power —— 团队网关得真的有这条渠道，否则审查成员一开跑就报 infra 失败（会重试 1 次后判卡住）。",
+    "  值可以是**数组**（降级链，按顺序试）：[tier-power, tier-std] = 优先用强的，网关没这条渠道就自动退到下一个。",
+    "  ⚠️ 链里**只能写 model 别名**（写 new-api/tier-power 这种会原样当 model 传出去）；链长超过 limits.retries+1 的部分是死配置（永远用不上）。",
+    "  为什么需要：网关有没有某条渠道是环境事实，包这边查不到。本机 `tier-power` 报 503 —— 只配单档时",
+    "  审查成员一开跑就 infra 失败（重试 1 次后判卡住）；配成链就会换档重跑，并把换档写进结论栏。",
     "  查不到的角色用 defaults.model。要全用标准档就把 roles 清空（{}）。",
     "小队（REQ-009 + REQ-011）：主 agent 建多个小队，成员一起朝目标推进。",
     "",
@@ -103,7 +106,7 @@
     "侦察": "tier-std",
     "调研": "tier-std",
     "实现": "tier-std",
-    "审查": "tier-power"
+    "审查": ["tier-power", "tier-std"]
   },
   "templates": {
     "侦察+实现+审查": [
