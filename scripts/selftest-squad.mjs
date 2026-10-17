@@ -3737,11 +3737,19 @@ await checkAsync("等待中的成员被重派：waitingFor 必须清掉（否则
 	// 造一个「等待中」的甲（它的被等者乙早就收工了）
 	members.get("甲").status = "等待";
 	members.get("甲").waitingFor = "乙";
-	members.get("甲").waitNote = "等它的产出";
+	members.get("甲").roundEnd = { kind: "waiting", reason: "等它的产出" };
 	// 重派：起新的一轮 → 这一轮跑完必须按「完成」收尾（不是又退回「等待」）
 	await call("squad_spawn", { squad: "队", member: "甲", role: "实现", task: "再来一次", worktree: wt }, "main-1");
 	await settle();
 	assert.equal(members.get("甲").waitingFor, undefined, "起新一轮就该把等待标记清掉");
+	// 这一轮跑完之后 `roundEnd` 必须被清掉 —— 变异：去掉收尾分支里那句
+	// `member.roundEnd = undefined` → 这条变红。
+	assert.equal(members.get("甲").roundEnd, undefined, "收尾之后「这一轮为什么结束」要清掉");
+	assert.equal(members.get("甲").status, "完成", `这一轮该正常收尾，实际 ${members.get("甲").status}`);
+	// 注：`roundEnd.kind` 那个判据是**防御性**的 —— 独立测时试过「去掉 kind 只看 reason」，
+	// 全绿。原因是能走到收尾分支的 `waiting` 状态在真实时序里不可达（`squad_stop` 会连
+	// `waitingFor` 一起清）。留着是因为它让两种「为什么结束」不可能互相冒充，代价为零 ——
+	// 但**不当成已验收**（REQ-017 §8 有记）。
 	assert.equal(members.get("甲").status, "完成", `重派跑完该是「完成」，实际 ${members.get("甲").status}：${members.get("甲").note}`);
 	assert.equal(members.get("甲").report?.parsed, true, "回报要照常解析（被吞掉的话这里是空的）");
 	assert.equal(members.get("甲").report.deliverables, "第二次的产出");
@@ -4060,9 +4068,12 @@ await checkAsync("A1：停一个「在跑 + 挂着等待标记」的成员，停
 	assert.match(stopText, /已停掉/, `停掉要有明确回复，实际：${stopText}`);
 	assert.equal(members.get("甲").status, "卡住", `停掉那一刻必须是「卡住」，实际 ${members.get("甲").status}`);
 	assert.equal(members.get("甲").waitingFor, undefined, "等待标记要被清掉（不然它还会被叫醒）");
-	assert.ok(String(members.get("甲").stopNote ?? "").includes("不要了"), "stopNote 不许被吞掉");
+	assert.ok(String(members.get("甲").roundEnd?.reason ?? "").includes("不要了"), "停因不许被吞掉（本轮 `.then` 要消费它）");
 	release();
 	await settle();
+	// 收尾分支必须把 roundEnd 消费掉并清空 —— 这条路径的 roundEnd 是**轮内**写的（squad_stop 写的），
+	// 所以它才可观测。变异：去掉收尾分支里那句 `member.roundEnd = undefined` → 这条变红。
+	assert.equal(members.get("甲").roundEnd, undefined, "收尾之后「这一轮为什么结束」要清掉（它是轮内的临时状态）");
 	// 被等者收工也不许把它自己跑起来（闸门不认 abort，所以这一步只验「没有被唤醒再起一条」）
 	await call("squad_spawn", { squad: "队", member: "丙", role: "实现", task: "再跑一个", worktree: wt }, "main-1");
 	await settle();
@@ -4082,7 +4093,7 @@ await checkAsync("A2：宿主没有 llm 时起成员失败，**不许**把它的
 		task: "等",
 		status: "等待",
 		waitingFor: "乙",
-		waitNote: "等乙",
+		roundEnd: { kind: "waiting", reason: "等乙" },
 		transcript: [],
 		history: [],
 	});
@@ -4102,13 +4113,19 @@ await checkAsync("A1：停一个「等待中」的成员之后重派，结论栏
 	await settle();
 	const members = squad.state.get("main-1").get("队").members;
 	// 造一个「等待中」（没在跑）的成员，再停掉它 —— 这条分支的 `.then` 早就跑过了，
-	// 写下的 stopNote 没人消费，会漏给下一轮
+	// 写下的 roundEnd 没人消费，会漏给下一轮
 	members.get("甲").status = "等待";
 	members.get("甲").waitingFor = "乙";
 	await call("squad_stop", { squad: "队", member: "甲", reason: "不要了" }, "main-1");
 	assert.equal(members.get("甲").status, "卡住");
+	// 手工留一句「上一轮为什么结束」：真实的漏法（等待中的成员被停）在这条时序里造不出
+	// `waiting` 的 roundEnd（那条分支要成员在跑时调等待工具，套件构造不到），所以直接摆出来。
+	members.get("甲").roundEnd = { kind: "waiting", reason: "上一轮的等待" };
 	// 重派 → 正常跑完 → 结论栏必须是这一轮的，不许是上一轮的停掉原因
 	await call("squad_spawn", { squad: "队", member: "甲", role: "实现", task: "重来", worktree: wt }, "main-1");
+	// **必须在跑起来的时候看**：跑完收尾分支自己会清，那时候看什么都对，断言就成了空的。
+	// 变异：去掉 `startMember` 里那句 `member.roundEnd = undefined` → 这条变红。
+	assert.equal(members.get("甲").roundEnd, undefined, "起新一轮要把「上一轮为什么结束」清掉");
 	await settle();
 	assert.equal(members.get("甲").status, "完成", `重派跑完该是「完成」，实际 ${members.get("甲").status}`);
 	assert.ok(!String(members.get("甲").note ?? "").includes("被 squad_stop 停掉"), `结论栏不许残留上一轮的停掉原因，实际：${members.get("甲").note}`);
@@ -4196,11 +4213,13 @@ await checkAsync("A1：手改状态不许造出「等待」死态；排队中的
 	const bad = await call("squad_update", { squad: "队", member: "B", status: "等待" }, "main-1");
 	assert.match(String(bad), /\[失败\]/, `手改「等待」该被拒，实际：${bad}`);
 	assert.equal(members.get("B").status, "排队");
-	// 排队中的成员也要停得掉，而且之后不许被点着
+	// 排队中的成员也要停得掉，而且之后不许被点着。先给它摆一句上一轮残留的 roundEnd ——
+	// 「非 running 分支也要清」这件事只有在这个前提下才可观测（变异 M4 就死在这句上）。
+	members.get("B").roundEnd = { kind: "waiting", reason: "上一轮的等待" };
 	const stopText = await call("squad_stop", { squad: "队", member: "B", reason: "不要了" }, "main-1");
 	assert.match(String(stopText), /已停掉/, `排队中的成员该停得掉，实际：${stopText}`);
 	assert.equal(members.get("B").status, "卡住");
-	assert.equal(members.get("B").stopNote, undefined, "「排队」这条没有 promise 消费 stopNote，不许留脏字段");
+	assert.equal(members.get("B").roundEnd, undefined, "「排队」这条没有 promise 消费 roundEnd，不许留脏字段");
 	assert.match(String(members.get("B").note), /不要了/);
 	await settle();
 	assert.equal(members.get("B").status, "卡住", "停掉的排队成员不许被 drainQueue 点着");
@@ -4352,7 +4371,7 @@ await checkAsync("A1：整队被掐（会话销毁）之后，排队的成员不
 	const members = squad.state.get("main-1").get("队").members;
 	assert.equal(members.get("B").status, "排队");
 	// 造一个「在等 A」的成员（C 排着队，手工把它置成等待态）
-	members.set("C", { label: "C", role: "实现", task: "等 A", status: "等待", waitingFor: "A", waitNote: "要它的产出", transcript: [], history: [], attempts: 0 });
+	members.set("C", { label: "C", role: "实现", task: "等 A", status: "等待", waitingFor: "A", roundEnd: { kind: "waiting", reason: "要它的产出" }, transcript: [], history: [], attempts: 0 });
 	// 会话销毁 → 整队被掐
 	record.events.find((e) => e.name === "session/disposed").callback({ id: "main-1" });
 	release();
