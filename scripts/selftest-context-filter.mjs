@@ -2,10 +2,12 @@
 /**
  * 自检：出处过滤（REQ-018 的 ②）。
  *
- * 三段（**只测纯函数与过滤本身** —— 接线还没写，而且第一版接线是错的，见 lib/context-filter.js 头注释）：
+ * 四段：
  *   1. 纯函数：`distinctiveTokens`（挑可查标识，纯数字不算）/ `parseCheckpoint`（条目 vs 结构）
  *   2. 过滤本身：删无出处的、留有出处的、写清删了几条
  *   3. **安全闸**：查不了就留、删太多就整段放弃（混合场景只删该删的那条）
+ *   4. **装配**：pre-step / request-error 真的把 surface 上的 checkpoint 节点换掉（surfaceOp replace）、
+ *      幂等、只碰 checkpoint、waterfall 契约、缺服务/已中止不动、拿不到 freezeMessage 也不静默失效
  *
  * 为什么这几条必须钉住：这个功能的破坏面是**上下文本身** —— 删错一条，模型就永远看不到它了。
  * 所以「宁可不删」的三条约束（只碰 checkpoint / 查不了就留 / 删太多放弃）都要有断言守着。
@@ -13,7 +15,14 @@
  *   node scripts/selftest-context-filter.mjs
  */
 import * as assert from "node:assert/strict";
-import { distinctiveTokens, filterCheckpointText, parseCheckpoint, SUPPORT_TOKENS_PER_ENTRY } from "../lib/context-filter.js";
+import {
+	distinctiveTokens,
+	filterCheckpointText,
+	installContextFilter,
+	messageText,
+	parseCheckpoint,
+	SUPPORT_TOKENS_PER_ENTRY,
+} from "../lib/context-filter.js";
 
 let failures = 0;
 const check = (name, fn) => {
@@ -125,9 +134,226 @@ await checkAsync("安全闸：混合场景（有的无出处、有的查不了�
 	assert.equal(out.aborted, undefined, "没超过一半就不该放弃");
 });
 
+
+// ── 4. 装配：surfaceOp replace（这一节才是「缝」的守门员）─────────────────────
+//
+// 假替身照**真实 API** 造（先例 dsh-compaction-tool-result-pruner:139-177）：
+//   surface.nodes 是 Set（那边用 [...nodes] 展开）、eventAt(seq)、deriveEventMessage(event)、
+//   append(type, data, { surfaceOp, sourceEventSeqs })。
+// 上一版接线挂错缝（agent/pre-step 的 decision）时这一节不存在，所以套件全绿也说明不了什么 ——
+// 现在它在了：钩子必须真的**改到 surface 上那份数据**。
+
+function fakeSession({ id = "sess-1", startSeq = 100, nodes = [] } = {}) {
+	const surface = { nodes: new Set() };
+	const events = new Map();
+	const appends = [];
+	let nextSeq = startSeq;
+	const session = {
+		id,
+		surface,
+		events,
+		appends,
+		eventAt: (seq) => events.get(seq),
+		// 照**真实投影**（dsh-session/lib/types/surface.js:75-105）：user/message → data；
+		// tool/result → data.message；空 content 的投成 null。别按想象简化 —— 上一版这里
+		// 直接返回 data，于是 tool/result 节点根本走不到 messageText，type 守卫的变异咬不住。
+		deriveEventMessage: (event) => {
+			if (event.type === "user/message") return event.data;
+			const message = event.data?.message ?? null;
+			if (message && Array.isArray(message.content) && message.content.length === 0) return null;
+			return message;
+		},
+		append(type, data, opts) {
+			const event = {
+				seq: nextSeq++,
+				type,
+				data,
+				...(opts ? { surfaceOp: opts.surfaceOp, sourceEventSeqs: opts.sourceEventSeqs } : {}),
+			};
+			events.set(event.seq, event);
+			appends.push({ type, data, opts, seq: event.seq });
+			if (opts?.surfaceOp?.op === "replace") surface.nodes.delete(opts.surfaceOp.startSeq);
+			surface.nodes.add(event.seq);
+			return event;
+		},
+	};
+	for (const node of nodes) {
+		events.set(node.seq, node);
+		surface.nodes.add(node.seq);
+	}
+	return session;
+}
+
+const checkpointNode = (seq, body) => ({
+	seq,
+	type: "user/message",
+	data: { role: "user", source: "compaction", id: `ckpt-${seq}`, content: ckpt(body) },
+});
+
+/** 假 ctx：捕获两个 waterfall 监听器；loader.import 供 makeHostLoader 用。 */
+function fakeCtx({ engine, freeze = true } = {}) {
+	const listeners = new Map();
+	const ctx = {
+		logger: { info: () => {} },
+		on(event, listener) {
+			if (!listeners.has(event)) listeners.set(event, []);
+			listeners.get(event).push(listener);
+			return () => listeners.get(event)?.splice(listeners.get(event).indexOf(listener), 1);
+		},
+		get: (name) => (name === "sessionQuery" ? engine : undefined),
+		loader: {
+			import: async () => (freeze ? { freezeMessage: (message) => Object.freeze(message) } : {}),
+		},
+	};
+	const fire = async (event, payload, next = async () => ({ kind: "enter" })) => {
+		const chain = listeners.get(event) ?? [];
+		let decision;
+		let i = 0;
+		const step = async () => {
+			if (i >= chain.length) return next();
+			const listener = chain[i];
+			i += 1;
+			return listener(payload, step);
+		};
+		decision = await step();
+		return decision;
+	};
+	return { ctx, fire, listeners };
+}
+
+const searchEngine = (haystack) => ({
+	calls: 0,
+	async searchEvents({ query }) {
+		this.calls += 1;
+		return { items: haystack.includes(query) ? [{ seq: 1, type: "tool/result", snippet: "命中" }] : [] };
+	},
+});
+
+await checkAsync("装配：pre-step 真的换掉 surface 上的 checkpoint 节点（surfaceOp replace）", async () => {
+	const engine = searchEngine("lib/real.js");
+	const session = fakeSession({ nodes: [checkpointNode(7, "\n- 真 lib/real.js\n- 假 hallucinated/module.js\n")] });
+	const { ctx, fire } = fakeCtx({ engine });
+	installContextFilter(ctx);
+	await fire("agent/pre-step", { agent: { session }, signal: { aborted: false } });
+	assert.equal(session.appends.length, 1, `该换一次，实际 ${session.appends.length}`);
+	const call = session.appends[0];
+	assert.equal(call.type, "user/message");
+	assert.deepEqual(call.opts.surfaceOp, { op: "replace", startSeq: 7, endSeq: 7 }, "必须是原地替换同一个节点");
+	assert.deepEqual(call.opts.sourceEventSeqs, [7], "要记来源事件");
+	const text = messageText(call.data);
+	assert.match(text, /lib\/real\.js/, "有出处的留");
+	assert.doesNotMatch(text, /hallucinated/, "无出处的删");
+	assert.match(text, /删掉了 1 条/);
+	assert.ok(session.surface.nodes.has(call.seq), "新节点要进 surface");
+	assert.ok(!session.surface.nodes.has(7), "被替的节点要出 surface");
+});
+
+await checkAsync("装配：幂等 —— 第二遍不再换（过滤过的内容全部有出处）", async () => {
+	const engine = searchEngine("lib/real.js");
+	const session = fakeSession({ nodes: [checkpointNode(7, "\n- 真 lib/real.js\n- 假 hallucinated/module.js\n")] });
+	const { ctx, fire } = fakeCtx({ engine });
+	installContextFilter(ctx);
+	const payload = { agent: { session }, signal: { aborted: false } };
+	await fire("agent/pre-step", payload);
+	await fire("agent/pre-step", payload);
+	await fire("agent/pre-step", payload);
+	assert.equal(session.appends.length, 1, `只该换一次，实际 ${session.appends.length}`);
+});
+
+await checkAsync("装配：只碰 checkpoint —— 普通消息与 tool/result 一个都不换", async () => {
+	const engine = searchEngine("lib/real.js lib/util.js");
+	const session = fakeSession({
+		nodes: [
+			{ seq: 1, type: "user/message", data: { role: "user", content: "普通消息" } },
+			{ seq: 2, type: "tool/result", data: { message: { content: [{ type: "text", text: "工具输出" }] } } },
+			// 工具输出里**真的会**带着摘要块（比如 session_recall 把日志打出来）—— 它绝不能
+			// 被换成 user/message（那是改节点类型，不是改内容）。这条是 type 守卫的守门员。
+			{ seq: 4, type: "tool/result", data: { message: { content: [{ type: "text", text: ckpt("\n- 无出处 xyz/module.js\n- 有出处 lib/real.js\n- 也有出处 lib/util.js\n") }] } } },
+			checkpointNode(3, "\n- 有出处 lib/real.js\n- 无出处 xyz/module.js\n- 也有出处 lib/util.js\n"),
+		],
+	});
+	const { ctx, fire } = fakeCtx({ engine });
+	installContextFilter(ctx);
+	await fire("agent/pre-step", { agent: { session }, signal: { aborted: false } });
+	assert.equal(session.appends.length, 1, `只该换一次，实际 ${session.appends.length}`);
+	assert.equal(session.appends[0].opts.surfaceOp.startSeq, 3, "只该换 checkpoint 那条");
+	assert.doesNotMatch(messageText(session.appends[0].data), /xyz\/module\.js/, "无出处的删了");
+	assert.ok(!session.appends.some((a) => a.opts.surfaceOp.startSeq === 4), "tool/result 节点绝不能被换（那会改节点类型）");
+});
+
+await checkAsync("装配：waterfall 契约 —— 钩子必须 return next() 的返回值，且自己不抛", async () => {
+	const engine = { async searchEvents() { throw new Error("DB 锁了"); } };
+	const session = fakeSession({ nodes: [checkpointNode(7, "\n- 甲 lib/a.js\n- 乙 lib/b.js\n")] });
+	const { ctx, fire } = fakeCtx({ engine });
+	installContextFilter(ctx);
+	const decision = { kind: "enter", messages: [{ role: "user", content: "x" }] };
+	const out = await fire("agent/pre-step", { agent: { session }, signal: { aborted: false } }, async () => decision);
+	assert.equal(out, decision, "decision 必须原样传下去（链不能断）");
+	assert.equal(session.appends.length, 0, "检索挂了就不许改");
+});
+
+await checkAsync("装配：缺 sessionQuery → 一次都不换；signal 已中止 → 也不换", async () => {
+	const session = fakeSession({ nodes: [checkpointNode(7, "\n- 有出处 lib/real.js\n- 无出处 xyz/module.js\n- 也有出处 lib/util.js\n")] });
+	const { ctx, fire } = fakeCtx({ engine: undefined });
+	installContextFilter(ctx);
+	await fire("agent/pre-step", { agent: { session }, signal: { aborted: false } });
+	assert.equal(session.appends.length, 0, "缺服务时不许动");
+	// 正向对照：同样的输入，有服务时**一定**会换 —— 否则上面那条「0」是空的
+	const control = fakeSession({ nodes: [checkpointNode(7, "\n- 有出处 lib/real.js\n- 无出处 xyz/module.js\n- 也有出处 lib/util.js\n")] });
+	const controlCtx = fakeCtx({ engine: searchEngine("lib/real.js lib/util.js") });
+	installContextFilter(controlCtx.ctx);
+	await controlCtx.fire("agent/pre-step", { agent: { session: control }, signal: { aborted: false } });
+	assert.equal(control.appends.length, 1, "有服务时必须换（正向对照）");
+
+	const engine = searchEngine("");
+	const session2 = fakeSession({ nodes: [checkpointNode(7, "\n- 有出处 lib/real.js\n- 无出处 xyz/module.js\n- 也有出处 lib/util.js\n")] });
+	const second = fakeCtx({ engine });
+	installContextFilter(second.ctx);
+	await second.fire("agent/pre-step", { agent: { session: session2 }, signal: { aborted: true } });
+	assert.equal(session2.appends.length, 0, "已中止就别干活");
+	assert.equal(engine.calls, 0, "已中止时一次检索都不该发");
+});
+
+await checkAsync("装配：拿不到宿主 freezeMessage → 退回 Object.freeze，照样换（不静默失效）", async () => {
+	const engine = searchEngine("lib/real.js");
+	const session = fakeSession({ nodes: [checkpointNode(7, "\n- 真 lib/real.js\n- 假 hallucinated/module.js\n")] });
+	const { ctx, fire } = fakeCtx({ engine, freeze: false });
+	const handle = installContextFilter(ctx);
+	await fire("agent/pre-step", { agent: { session }, signal: { aborted: false } });
+	assert.equal(session.appends.length, 1, "拿不到 freezeMessage 也要换");
+	assert.ok(Object.isFrozen(session.appends[0].data), "退回 Object.freeze");
+	assert.equal(handle.stats.rewrites, 1);
+});
+
+await checkAsync("装配：agent/request-error 也触发（overflow 重试不重跑 pre-step）", async () => {
+	const engine = searchEngine("lib/real.js");
+	const session = fakeSession({ nodes: [checkpointNode(7, "\n- 真 lib/real.js\n- 假 hallucinated/module.js\n")] });
+	const { ctx, fire } = fakeCtx({ engine });
+	installContextFilter(ctx);
+	await fire("agent/request-error", { agent: { session }, failure: { code: "context-window-exceeded" }, signal: { aborted: false } });
+	assert.equal(session.appends.length, 1, "overflow 那条路也要过滤");
+});
+
+await checkAsync("装配：并发调用不重复换（append 不可重入，防重入闸）", async () => {
+	const engine = {
+		calls: 0,
+		async searchEvents({ query }) {
+			this.calls += 1;
+			await new Promise((r) => setTimeout(r, 5));
+			return { items: query.startsWith("lib/") ? [{ seq: 1, snippet: "命中" }] : [] };
+		},
+	};
+	const session = fakeSession({ nodes: [checkpointNode(7, "\n- 有出处 lib/real.js\n- 无出处 xyz/module.js\n- 也有出处 lib/util.js\n")] });
+	const { ctx, fire } = fakeCtx({ engine });
+	installContextFilter(ctx);
+	const payload = { agent: { session }, signal: { aborted: false } };
+	await Promise.all([fire("agent/pre-step", payload), fire("agent/pre-step", payload)]);
+	assert.equal(session.appends.length, 1, `并发下只该换一次，实际 ${session.appends.length}`);
+});
+
 if (failures > 0) {
 	console.error(`✗ ${failures} 项失败`);
 	process.exitCode = 1;
 } else {
-	console.log("✓ 自检通过：出处过滤（纯函数 / 过滤与标记 / 安全闸）—— 注意：接线未写，见 lib/context-filter.js 头注释");
+	console.log("✓ 自检通过：出处过滤（纯函数 / 过滤与标记 / 安全闸 / surfaceOp replace 装配）");
 }

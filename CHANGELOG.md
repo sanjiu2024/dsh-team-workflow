@@ -8,6 +8,21 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.3.0] - 2026-10-16
+
+**出处过滤（REQ-018 ②）：压缩产生的 checkpoint 里，逐条判「这条有没有环境输出支撑」，
+没有的删掉。** 依据是 SJC 那条实测（83% 的失败 run 可追溯到执行了没有环境支撑的摘要条目，
+arXiv 2610.20927），做法不改 agent、不改压缩器，只在压缩之后加一道后处理。
+
+缝是 `surfaceOp:{op:'replace'}` **原地换节点**（先例 `dsh-compaction-tool-result-pruner`），
+不是 `agent/pre-step` 的 decision —— 后者只能替换「待入场的 UserMessage」，碰不到已经落在
+surface 上的节点，第一版接线因此是个**空操作**。触发点 `agent/pre-step` + `agent/request-error`。
+
+三道安全闸：只碰 `user/message` 里的 checkpoint、查不了就留（fail-open）、要删的超过一半
+就整段放弃。删除不静默：正文里写明删了几条并指向 `session_recall`。
+
+`npm test` EXIT=0；接线 8 条变异全部咬住。
+
 ## [2.2.1]
 
 **独立 std 测（第十轮）逮到一个 P0**：`session_recall` 的关键词模式在真实宿主下**一条正文都取不到**。
