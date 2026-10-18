@@ -285,8 +285,9 @@ dsh 0.2.0-rc.x 起，键的归属和我们这份 JSON 不是一回事，务必�
 ### power 怎么判（不带工具，只在重大变化时派）
 
 **它没有工具，这是配置层强制的**，不是提示词里说说：`team/agent-settings.json` 的
-`subagents.toolLessTiers` 让 `preset install` 给这一档生成 `toolFilter: { allow: [] }`，
-dsh 会把过滤掉的工具**从它的提示里去掉、调用直接拒**。为什么这么设计：审查一旦能自己
+`subagents.toolLessTiers` 让 `preset install` 为这一档**另生成一份没有工具行的预设**
+（`team-power`），档位行用 `agentPreset: team-power` 指过去。**0.2.1 起不能再写 `toolFilter`** ——
+那会让整份预设判非法、**新建会话直接失败**（REQ-022）。为什么这么设计：审查一旦能自己
 探索，就会顺着仓库扫到超时（上游 42 次实测，最慢一次 108 轮、80 次 `grep` + 72 次
 `read`，跑满 30 分钟被砍掉）。
 

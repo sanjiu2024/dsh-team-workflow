@@ -736,9 +736,21 @@ function installTeamPresetBundle() {
 			return false;
 		}
 	};
-	const wired =
+	/**
+ * 依赖项里的 `link:<dir>` 是不是就指向 `dir`。
+ *
+ * 为什么不能字面比：pnpm 会把路径写成正斜杠（`link:C:/Users/...`），我们这边拼的是反斜杠 ——
+ * 字面比会误判成「没接好」，于是去跑被 0.2.1 禁止的 pnpm（2026-10-18 实测踩到）。
+ */
+function sameLinkPath(spec, dir) {
+	if (typeof spec !== "string" || !spec.startsWith("link:")) return false;
+	const norm = (p) => path.resolve(p).replace(/[\\/]+$/, "").toLowerCase();
+	return norm(spec.slice(5)) === norm(dir);
+}
+
+const wired =
 		linksHere() &&
-		(before.dependencies ?? {})[PRESET_BUNDLE_NAME] === `link:${teamBundleDir()}` &&
+		sameLinkPath((before.dependencies ?? {})[PRESET_BUNDLE_NAME], teamBundleDir()) &&
 		bundles.includes(PRESET_BUNDLE_NAME);
 	if (wired) {
 		console.log("  已接好（dependencies + bundles + node_modules 都在），跳过 pnpm");

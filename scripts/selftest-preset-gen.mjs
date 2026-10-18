@@ -199,7 +199,8 @@ function findStandardPreset() {
 	assert.match(g.text, /当前模式：团队模式。/, "persona 少了模式标识");
 	assert.match(g.text, /thresholdRatio: 0\.25/, "阈值没写进去");
 	assert.match(g.text, /retainRatio: 0\.05/, "保留比例没写进去");
-	// 档位工具行 + 审查档剥掉工具：三档都挂上，只有 toolLessTiers 里的那条带 toolFilter
+	// 档位工具行 + 审查档不给工具：三档都挂上，toolLessTiers 里那条**指向一个无工具预设**
+	// （0.2.1 起 toolFilter 被废弃 —— 见 REQ-022，别再改回去）
 	const withToolLess = generateRc2TeamPreset(RC2_FIXTURE, {
 		settings: {
 			...rc2Settings,
@@ -213,10 +214,16 @@ function findStandardPreset() {
 	});
 	const rows = withToolLess.text.split("              - id: tool-subagent-");
 	const rowOf = (tier) => rows.find((row) => row.startsWith(`${tier}\n`)) ?? "";
-	assert.match(rowOf("power"), /toolFilter:\n\s+allow: \[\]/, "power 档没被剥掉工具");
-	assert.doesNotMatch(rowOf("std"), /toolFilter/, "std 要带工具（跑测试是它的活）");
-	assert.doesNotMatch(rowOf("max"), /toolFilter/, "max 要带工具（质疑方案得能自己看）");
-	assert.equal(withToolLess.changed, 5, "三档工具行 + 阈值那几处");
+	assert.match(rowOf("power"), /agentPreset: team-power/, "power 档没指向无工具预设");
+	assert.doesNotMatch(rowOf("power"), /toolFilter/, "0.2.1 起 toolFilter 被废弃，不能再生成");
+	assert.doesNotMatch(rowOf("std"), /agentPreset/, "std 要带工具（跑测试是它的活）");
+	assert.doesNotMatch(rowOf("max"), /agentPreset/, "max 要带工具（质疑方案得能自己看）");
+	// 无工具子预设：声明在，且里面**一行工具都没有**（这才是「不给工具」的落地）
+	assert.match(withToolLess.text, /^    - id: preset-team-power$/m, "无工具子预设没生成");
+	assert.match(withToolLess.text, /^        id: team-power$/m, "无工具子预设的 config.id 不对");
+	const subPreset = withToolLess.text.slice(withToolLess.text.indexOf("    - id: preset-team-power"));
+	assert.doesNotMatch(subPreset, /\n\s+- id: (tool-|skill-)/, "无工具子预设里混进了工具行");
+	assert.equal(withToolLess.changed, 6, "三档工具行 + 阈值那几处 + 无工具子预设");
 
 	// 生效值必须能回读（/thrift show 靠它）：5 个键一个都不能少
 	assert.deepEqual(
@@ -300,13 +307,17 @@ function findStandardPreset() {
 		assert.match(real.text, /^    - id: preset-team$/m, "对出厂原文件生成失败");
 		assert.equal(typeof readEffectiveThrift(real.text), "object", "对出厂原文件生成后回读不出生效值");
 		// 审查档（power）必须**一个工具都没有**：团队规范里审查只凭材料判断、不许自己探索。
-		// 这是配置层的落地，不是提示词里说说 —— dsh 会把过滤掉的工具从子代理的提示里去掉、
-		// 调用直接拒（ctx.tools.restrict）。
+		// 0.2.1 的做法是「另开一份没有工具行的预设，档位行用 agentPreset 指过去」（REQ-022）——
+		// 它跟 toolFilter 一样是**配置层的落地**，不是提示词里说说。
 		const rows = real.text.split("              - id: tool-subagent-");
 		const rowOf = (tier) => rows.find((row) => row.startsWith(`${tier}\n`)) ?? "";
-		assert.match(rowOf("power"), /toolFilter:\n\s+allow: \[\]/, "power 档没被剥掉工具");
-		assert.doesNotMatch(rowOf("std"), /toolFilter/, "std 要带工具（跑测试是它的活）");
-		assert.doesNotMatch(rowOf("max"), /toolFilter/, "max 要带工具（质疑方案得能自己看）");
+		assert.match(rowOf("power"), /agentPreset: team-power/, "power 档没指向无工具预设");
+		assert.doesNotMatch(rowOf("power"), /toolFilter/, "0.2.1 起 toolFilter 被废弃，不能再生成");
+		assert.doesNotMatch(rowOf("std"), /agentPreset/, "std 要带工具（跑测试是它的活）");
+		assert.doesNotMatch(rowOf("max"), /agentPreset/, "max 要带工具（质疑方案得能自己看）");
+		assert.match(real.text, /^    - id: preset-team-power$/m, "无工具子预设没生成");
+		const sub = real.text.slice(real.text.indexOf("    - id: preset-team-power"));
+		assert.doesNotMatch(sub, /\n\s+- id: (tool-|skill-)/, "无工具子预设里混进了工具行");
 		console.log("✓ rc.x 生成器对出厂原文件也成立（含：审查档无工具）");
 	} else {
 		console.log("… 跳过「对出厂原文件」那一步：把 DSH_MODULES 指到 .../node_modules/@deepseek-ai 可开启");

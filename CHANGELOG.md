@@ -8,6 +8,26 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.6.3] - 2026-10-18
+
+**修 0.2.1 起 `toolFilter` 被废弃导致的「新建会话失败」。**
+
+0.2.1 的 `dsh-tool-subagent` 在**挂载期**直接拒绝 `toolFilter` 与 `persona`
+（`lib/index.js:355`），而团队预设一直用 `toolFilter: { allow: [] }` 实现「审查档不给工具」——
+于是整份预设被判非法，界面报 `agent-preset/invalid: …`，**新会话直接建不起来**。
+改成它给的替代：`toolLessTiers` 里的档位**另生成一份没有工具行的预设**（`team-power`），
+档位行用 `agentPreset: team-power` 指过去。
+
+坑在于 `Config` schema **不拦**这两个键（实测把 toolFilter / persona / backgroundMode / inject
+一起喂进 schema 全部通过）—— 所以「拿 schema 验一遍」这种测法**测不到**它，只有真挂载才咬得住。
+新增 `scripts/smoke-preset-tier.mjs`：真 cordis + 宿主**真的** `dsh-tool-subagent` 挂载
+**生成出来的**档位行，并带一条反向对照（同一条 config 加回 `toolFilter` 必须挂不上）。
+
+顺带修 2.6.2 引入的 `wired` 判断：它按字面比 `link:<dir>`，而 pnpm 会把路径写成正斜杠，
+于是误判「没接好」→ 去跑被 0.2.1 禁止的 `dsh plugin … install`（必然退出码 1）。
+
+只修 bug → patch。
+
 ## [2.6.2] - 2026-10-18
 
 **适配 dsh 0.2.1-rc.2：`preset install` 又找得到 standard 预设底稿了。**

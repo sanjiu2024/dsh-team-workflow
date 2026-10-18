@@ -115,7 +115,7 @@ dsh-team preset install [--default]   # 生成 + 挂载；--default 顺带设成
 | 操控电脑 | `tools.register`（7 个工具）+ 常驻 PowerShell 守护进程 | 截屏看屏幕（图片直回模型）、鼠标点击/移动/滚动、打字/按键。操控期锁鼠标（WH_MOUSE_LL 钩子拦真实输入、放 AI 注入；Ctrl+Alt+L 紧急解锁）。**默认启用**（`enabled:false` 可关），审批为会话级（批准时弹窗会写明连带放行）；守护进程 spool 可被 bash 直写 = 与 bash 同属既有信任边界。见 [docs/requirements/REQ-002-computer操控电脑.md](docs/requirements/REQ-002-computer操控电脑.md) |
 | 定时任务 | `tools.register`（4 个 `scheduler_*`）+ HTTP 路由 + Web 面板 | 到点在**全新会话**里无人值守跑一段 prompt（8 种计划）。**默认关闭**，`dsh-team scheduler enable` 开。是本包唯一碰 dsh 内部 API 的模块，靠 `ctx.inject` 条件激活。见「## 定时任务调度器」 |
 | 小队 | `tools.register`（8 个 `squad_*`）+ HTTP 路由 + Web 面板 | 主 agent 建多个小队，小队 = 目标 + 成员名册 + 共享黑板。成员是**小队自己驱动的循环**（不是子 agent，不出现在会话列表里），各自钉在一棵 worktree 里干活。状态按工作目录落盘，重启后同 cwd 的新会话接管。见「## 小队（squad）」 |
-| 审查 | `team/RULES.md`（注入系统提示） | 两层分工：**std 测**（带工具，每完成一块跑）／**power 判**（`toolFilter: allow: []`，一个工具都没有，只在重大变化或写完一个大部分时派）。见 [team/RULES.md](team/RULES.md) 的「## 审查（两层：std 测，power 判）」 |
+| 审查 | `team/RULES.md`（注入系统提示） | 两层分工：**std 测**（带工具，每完成一块跑）／**power 判**（`agentPreset: team-power`，一个工具都没有，只在重大变化或写完一个大部分时派）。见 [team/RULES.md](team/RULES.md) 的「## 审查（两层：std 测，power 判）」 |
 | 技能 | `skills/*/SKILL.md` | 复用 dsh 原生 skill 系统，含 `/review`（用户可调用）、`/workflow`（需求→调研→实现→审查→提交的全流程） |
 
 ## 和 pi 版的差异（都是 dsh 的硬约束，不是偷懒）

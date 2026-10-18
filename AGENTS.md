@@ -11,6 +11,8 @@
 ```bash
 npm test                              # 全仓自检：链上 26 条 node 自检，EXIT=0 才算过
 node scripts/selftest-squad.mjs        # 单跑一条（小队：状态机 / 工具 / 面板 / 权限 / 落盘）
+# 档位行能不能被宿主接受（0.2.1 起 toolFilter 被废弃，schema 测不到，必须真挂载）：
+#   ELECTRON_RUN_AS_NODE=1 "<安装目录>\DeepSeek Harness.exe" --expose-internals scripts/smoke-preset-tier.mjs
 node bin/dsh-team.mjs --help           # CLI 全量用法
 node bin/dsh-team.mjs status           # 装到哪个 profile、版本对不对
 node bin/dsh-team.mjs bill --date 2026-10-16   # 某天 token 账单（含小队那半）
@@ -120,5 +122,10 @@ node bin/dsh-team.mjs squad ls [--all] # 落盘的小队（实时那份在 Web �
   `cannot resolve profile bundle "dsh-tauri"`）：那是 **tauri** profile 自己的依赖缺，跟本包无关。
   预设文件在这之前**已经写好**（web profile 用 `link:` 指着它），所以那一步失败不影响生效 ——
   别把它当成「预设没更新」。
+- **0.2.1 起 `dsh-tool-subagent` 废弃了 `toolFilter` 与 `persona`**（`lib/index.js:355` 挂载期直接抛）：
+  写它们会让整份预设判非法、**新建会话失败**（`agent-preset/invalid: …`）。替代是「另开一份没有工具行的
+  预设 + 档位行 `agentPreset` 指过去」，生成逻辑在 `lib/preset-gen.js`，钉它的测试是
+  `scripts/smoke-preset-tier.mjs`（真 cordis + 真宿主插件，带反向对照）。**`Config` schema 不拦这两个键**，
+  拿 schema 验等于没验。
 - `roles.审查` 默认是降级链 `["tier-power","tier-std"]` —— 本机 `tier-power` 报 503，
   会自动退到 `tier-std`（换档写进成员结论栏）。
