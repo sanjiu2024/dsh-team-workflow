@@ -1,6 +1,6 @@
 # AGENTS.md · 给 agent 的项目约定
 
-> **状态**：维护中 · **日期**：2026-10-16 · **版本**：`2.5.0`
+> **状态**：维护中 · **日期**：2026-10-18 · **版本**：`2.6.2`
 >
 > 这份文件只写**这个仓库里必须照做**的事：确切命令、代码约定、禁区。
 > 「这是什么、怎么用」在 [`README.md`](README.md)；「现在哪里是虚的」在 [`docs/状态.md`](docs/状态.md)；
@@ -104,7 +104,16 @@ node bin/dsh-team.mjs squad ls [--all] # 落盘的小队（实时那份在 Web �
 
 ## 6. 本机环境事实
 
-- dsh `0.2.0-rc.2`；本包以 symlink 装在 `~/.dsh/profiles/web/node_modules/` 下。
+- dsh `0.2.1-rc.2`；本包以 symlink 装在 `~/.dsh/profiles/web/node_modules/` 下。
+- **standard 预设底稿要从 `resources/app.asar` 里读**（0.2.1 起）：PATH 上第一个 `dsh` 是启动器目录
+  （`%LOCALAPPDATA%\deepseek-harness\bin\dsh.cmd`），祖先里没有那些包，`app.asar.unpacked` 也没解
+  `dsh-web-app`。查找在 `lib/dsh-install.js`（自己解析 asar 头部，零依赖），候选顺序「真实安装」优先 ——
+  本机 `.dshbin` 那个历史 junction 指向 **0.2.0-rc.2** 的旧底稿，先命中它会静默生成缺三条新行的预设。
+  自检 `selftest-preset-gen.mjs` 的 2c 节跑真底稿；装了 dsh 却读不到 = 红。
+- **0.2.1 起 CLI 不能碰 Electron 独占管理的 profile**：`dsh plugin --profile desktop install` 会被拒
+  （`profile "desktop" is managed exclusively by the Electron application`）。所以 `preset install`
+  在 profile 已经接好（dependencies + bundles + node_modules 都在）时直接跳过那一步 —— 那一步失败
+  只说明它本来就不该跑，**不影响预设已生效**。
 - **`web_search` / `web_fetch` 在本机挂**（`HTTP_PROXY=127.0.0.1:7897` 拒连）→
   直连绕过：`env -u HTTP_PROXY -u HTTPS_PROXY curl -sL '<url>'`。
 - **本机 `dsh-team preset install` 会在最后一步失败**（`dsh plugin --profile tauri install` →

@@ -8,8 +8,13 @@
  * `&&` 链，**断在这儿之后十几个脚本一个都不跑**（2026-10-05 实测：
  * 17 个自检只跑到第 3 个）。
  *
- * 探测顺序与 CLI（`bin/dsh-team.mjs` 的 `whichDsh` / `findRc2StandardPatch`）一致：
- * 环境变量 → PATH 上的 `dsh` 反推 → `$DSH_HOME/profiles/*` 的共享软链层。
+ * 探测顺序与 CLI 的 `whichDsh` 一致：环境变量 → PATH 上的 `dsh` 反推 →
+ * `$DSH_HOME/profiles/*` 的共享软链层。
+ *
+ * **它不跟进 asar**：这里要的是能 `import` 的 `@deepseek-ai/*` 目录，而 Electron 版把包
+ * 打包在 `resources/app.asar` 里（普通 Node 进程 import 不了），所以 0.2.1 起本机
+ * `findDshModules()` 返回 null，依赖它的自检会**明说跳过**。预设底稿那条链走
+ * `lib/dsh-install.js`（自己解析 asar），与本文件无关 —— 别把两者混为一谈。
  */
 import * as fs from "node:fs";
 import * as os from "node:os";

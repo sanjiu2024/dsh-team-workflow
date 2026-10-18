@@ -30,6 +30,7 @@ import {
 	readEffectiveThrift,
 	resolveThriftConfig,
 } from "../lib/preset-gen.js";
+import { dshInstallRoots, findRc2StandardPatch } from "../lib/dsh-install.js";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 
@@ -313,6 +314,45 @@ function findStandardPreset() {
 }
 
 // ── 3. 拿真 standard 预设生成（生成逻辑必须动到真在跑的那两行）─────────────
+
+// ── 2c. 拿**真实安装**的 standard 跑一遍生成（2026-10-18 加）────────────────────
+//
+// 为什么要这一节：第 2b 节用的是手写的最小样本，所以「查找真实底稿」这条链坏掉时它照样绿 ——
+// dsh 升到 0.2.1-rc.2 就是这么溜过去的：`preset install` 报「找不到 standard 预设
+// （新旧两种布局都没找到）」（Electron 版把包放在 `resources/app.asar` **里面**，普通 Node
+// 进程的 `fs.existsSync` 看不见），而全仓自检是绿的。
+//
+// 这一节跑真底稿，顺带把「底稿是不是当前这份安装」也钉住：陈旧底稿（例如本机 `.dshbin`
+// 那个历史 junction 指着 0.2.0-rc.2）会缺下面三条 0.2.1-rc.2 的出厂行。
+{
+	const found = findRc2StandardPatch({ profileDir: process.env.DSH_PROFILE_DIR });
+	if (found === null) {
+		// 本机装了 dsh 却读不到它的预设 = 查找链坏了，必须红；
+		// 只有「本机根本没装 dsh」才允许跳过（并**明说跳过了什么**）。
+		const installed = dshInstallRoots().filter((r) => fs.existsSync(path.join(r, "resources", "app.asar")));
+		if (installed.length > 0) {
+			throw new Error(`本机装了 dsh（${installed[0]}）却读不到它的 standard 预设 —— 查找链坏了`);
+		}
+		console.log("… 跳过 2c：本机没有 dsh 安装（找不到 standard 预设）");
+		console.log("⚠️ 未验证：真实底稿的生成（锚点是否还中、新出厂行有没有被继承）");
+	} else {
+				// 就地读设置：本节排在 teamSettings 定义之前（那个变量在第 3 节之后才赋值）
+		const settings = JSON.parse(fs.readFileSync(path.join(ROOT, "team", "agent-settings.json"), "utf8"));
+		const g = generateRc2TeamPreset(found.text, { settings, overlay: {} });
+		assert.ok(g.changed > 0, "真底稿上没应用任何团队设置");
+		for (const id of ["time-context", "tool-schedule", "tool-plugin-market"]) {
+			assert.match(g.text, new RegExp(`- id: ${id}\\b`), `0.2.1-rc.2 的出厂行 ${id} 没被继承（底稿陈旧？）`);
+		}
+		// 这三条在当前底稿上必然通过（它本来就没有这些行）—— **别当空断言删掉**：
+		// 它们的咬合对象是**陈旧底稿**（0.2.0-rc.2 有这三行），拿旧底稿跑就会红。
+		for (const id of ["tool-subagent-codex", "tool-subagent-claude-code", "tool-ralph"]) {
+			assert.doesNotMatch(g.text, new RegExp(`- id: ${id}\\b`), `已删除的出厂行 ${id} 还在`);
+		}
+		assert.match(g.text, /- id: compaction-fold/, "团队自己的折叠后端行没写进去");
+		assert.match(g.text, /当前模式：团队模式/, "模式标识没写进去");
+		console.log("✓ 真底稿生成：新出厂行继承、已删行清掉、团队行保留");
+	}
+}
 
 const presetPath = findStandardPreset();
 if (!presetPath) {

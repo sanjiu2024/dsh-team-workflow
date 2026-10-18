@@ -8,6 +8,29 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.6.2] - 2026-10-18
+
+**适配 dsh 0.2.1-rc.2：`preset install` 又找得到 standard 预设底稿了。**
+
+0.2.1 起，Electron 版的包在 `resources/app.asar` **里面**，而 PATH 上第一个 `dsh` 是个启动器目录
+（`%LOCALAPPDATA%\deepseek-harness\bin\dsh.cmd`）—— 原来那条「从 PATH 反推安装树、再在真实文件系统里找」
+的链两层同时落空，`dsh-team preset install` 直接报「找不到 standard 预设（新旧两种布局都没找到）」。
+现在自己解析 asar（16 字节头 + 明文 JSON 目录树 + 数据区，零依赖）取底稿，并把**来源与版本号**打在
+「底稿：」那行。候选顺序是「真实安装」优先，原因不是洁癖：本机 `.dshbin` 那个历史 junction 指着
+0.2.0-rc.2 的旧底稿，先命中它就会**静默**生成缺 `time-context` / `tool-schedule` / `tool-plugin-market`
+三条新行的预设，而且没有任何报错。
+
+同一次还修了两处被 0.2.1 的新限制带出来的问题：`dsh plugin --profile <Electron 独占的 profile> install`
+现在会被拒（`profile "desktop" is managed exclusively by the Electron application`），而这条链在
+Electron profile 上**永远**是「已接好」—— 跑它只会把一次成功的 `preset install` 变成退出码 1，现在
+接好就跳过；`--dry-run` 也不再真的执行那一步。
+
+自检补了一节：拿**真实安装**的底稿跑一遍生成。此前只有手写的最小样本，所以「查找链坏了」这件事全仓
+自检照样绿 —— 0.2.1 升级就是这么溜过去的。新那节里，本机装了 dsh 却读不到它的预设会直接红
+（已反向验证：把 asar 读取去掉即变红）。
+
+只修 bug → patch。
+
 ## [2.6.1] - 2026-10-16
 
 **修 2.6.0 基线里那个照做会失败的示例**：`worktree_new` 的名字只收字母数字连字符（中文名消毒后为空、

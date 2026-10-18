@@ -24,6 +24,7 @@ import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
 import { applyPatch, patchStatus, restorePatch } from "../lib/chat-expand.js";
+import { findRc2StandardPatch, whichDsh } from "../lib/dsh-install.js";
 import {
 	checkThresholdInvariant,
 	MC_MANAGED_KEYS,
@@ -630,41 +631,6 @@ function cmdSkills() {	const dir = path.join(PKG_ROOT, "skills");
  * persona/plan-mode 等预设文本全丢（系统提示 20911 → 18070 字），
  * 且 host 层被 disabled、只由预设提供的 `tool-fs`（read/write/edit）等一起消失。
  */
-function findRc2StandardPatch() {
-	const seeds = [];
-	const dshBin = whichDsh();
-	if (dshBin) seeds.push(path.dirname(dshBin));
-	seeds.push(path.join(profileDir, "node_modules", ".bin"));
-	for (const seed of seeds) {
-		let dir = path.resolve(seed);
-		for (let i = 0; i < 8; i++) {
-			const file = path.join(dir, "node_modules", "@deepseek-ai", "dsh-web-app", "presets", "standard.patch.yml");
-			if (fs.existsSync(file)) return file;
-			const parent = path.dirname(dir);
-			if (parent === dir) break;
-			dir = parent;
-		}
-	}
-	return null;
-}
-
-/** PATH 上找 dsh —— 拿它反推安装树（profile 的 node_modules 里没有 @deepseek-ai/*） */
-function whichDsh() {
-	const names = process.platform === "win32" ? ["dsh.cmd", "dsh.exe", "dsh"] : ["dsh"];
-	for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
-		if (dir.trim() === "") continue;
-		for (const name of names) {
-			const file = path.join(dir, name);
-			if (!fs.existsSync(file)) continue;
-			try {
-				return fs.realpathSync(file);
-			} catch {
-				return file;
-			}
-		}
-	}
-	return null;
-}
 
 /** 团队预设 bundle 的落点：放 DSH_HOME 下（无空格，且不往仓库里拉二进制/生成物） */
 function teamBundleDir() {
@@ -686,8 +652,8 @@ function dshInstallRoots() {
 }
 
 /** 生成并写下 bundle 包；返回生成结果（dry-run 时只打印） */
-function writeTeamPresetBundle(standardPatch) {
-	const pristine = fs.readFileSync(standardPatch, "utf8");
+function writeTeamPresetBundle(standard) {
+	const pristine = standard.text;
 	let generated;
 	try {
 		generated = generateRc2TeamPreset(pristine, {
@@ -756,10 +722,35 @@ function installTeamPresetBundle() {
 		writeJsonAtomic(path.join(profileDir, "package.json"), next);
 		console.log(`$ 写 ${path.join(profileDir, "package.json")}`);
 	}
+	// 已经接好线就别再跑 pnpm。dsh 0.2.1-rc.2 起 CLI 拒绝碰 Electron 独占管理的 profile
+	// （`error: profile "desktop" is managed exclusively by the Electron application`），
+	// 而 Electron 版 profile 上这条链**永远**是「已接好」—— 跑它只会把一次成功的
+	// preset install 变成退出码 1（预设文件其实早写好了）。
+	const linked = path.join(profileDir, "node_modules", PRESET_BUNDLE_NAME);
+	// 光「存在」不算接好：node_modules 里若是个**实目录**、或链到别处，跳过 pnpm 就会让
+	// 刚生成的 patch 静默不生效。所以要比 realpath —— 它必须真指着我们那个 bundle 目录。
+	const linksHere = () => {
+		try {
+			return fs.realpathSync(linked) === fs.realpathSync(teamBundleDir());
+		} catch {
+			return false;
+		}
+	};
+	const wired =
+		linksHere() &&
+		(before.dependencies ?? {})[PRESET_BUNDLE_NAME] === `link:${teamBundleDir()}` &&
+		bundles.includes(PRESET_BUNDLE_NAME);
+	if (wired) {
+		console.log("  已接好（dependencies + bundles + node_modules 都在），跳过 pnpm");
+		return;
+	}
+	if (dryRun) {
+		console.log(`[dry-run] dsh plugin --profile ${profile} install`);
+		return;
+	}
 	const result = run("dsh", ["plugin", "--profile", profile, "install"]);
 	if (result.status !== 0) fail(`pnpm install 失败（退出码 ${result.status}）`);
-	const linked = path.join(profileDir, "node_modules", PRESET_BUNDLE_NAME);
-	if (!dryRun && !fs.existsSync(linked)) fail(`装完了但 ${linked} 不存在；检查上面的 pnpm 输出`);
+	if (!fs.existsSync(linked)) fail(`装完了但 ${linked} 不存在；检查上面的 pnpm 输出`);
 }
 
 /**
@@ -810,9 +801,9 @@ function setDefaultPreset() {
 
 /** team 预设 = standard 预设 + 团队 compaction 阈值 + 模式标识 */
 function cmdPresetInstall() {
-	const rc2 = findRc2StandardPatch();
+	const rc2 = findRc2StandardPatch({ profileDir });
 	if (rc2) {
-		console.log(`预设布局：0.2.0-rc.x（声明行 + bundle 承载）\n  底稿：${rc2}`);
+		console.log(`预设布局：0.2.0-rc.x（声明行 + bundle 承载）\n  底稿：${rc2.label}`);
 		const generated = writeTeamPresetBundle(rc2);
 		installTeamPresetBundle();
 		ok(`团队预设已就位：${teamBundleDir()} → profile "${profile}"`);
@@ -928,7 +919,7 @@ function cmdThriftApply() {
 	}
 
 	// rc.x：预设是 bundle patch，所以「应用阈值」= 照当前出厂底稿重生成整份
-	const rc2 = findRc2StandardPatch();
+	const rc2 = findRc2StandardPatch({ profileDir });
 	if (rc2) {
 		const bundlePatch = path.join(teamBundleDir(), "cordis.patch.yml");
 		if (!fs.existsSync(bundlePatch)) {
