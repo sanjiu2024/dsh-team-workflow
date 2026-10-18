@@ -17,7 +17,8 @@
  *
  * 不进 `npm test`：它依赖本机 dsh 安装树（`~/.dsh/profiles/*`）和本机会话日志，是环境相关验证。
  *
- *   node scripts/smoke-fold-host.mjs [会话id]
+ *   node scripts/smoke-fold-host.mjs [会话id]                       # 宿主包在 npx checkout 的旧布局
+ *   ELECTRON_RUN_AS_NODE=1 "<安装目录>\DeepSeek Harness.exe" --expose-internals scripts/smoke-fold-host.mjs   # 0.2.1：包在 app.asar 里
  */
 import { existsSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -25,6 +26,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { readSessionLog } from "../lib/session-log.js";
+import { dshInstallRoots } from "../lib/dsh-install.js";
 
 /**
  * 找两个解析根 —— 它们**不是同一个**：
@@ -48,6 +50,17 @@ function findRoots() {
 		for (const hash of readdirSync(npx)) {
 			const modules = join(npx, hash, "node_modules");
 			if (existsSync(join(modules, "@deepseek-ai", "cordis"))) checkout = modules;
+		}
+	}
+	// 0.2.1 起宿主包搬进安装目录的 resources/app.asar 里，npx checkout 那套没有了。
+	// asar 里的路径只有 **Electron 的 fs** 认，所以命中这一条时必须在 Electron 里跑（见文件头用法）。
+	if (!checkout) {
+		for (const root of dshInstallRoots()) {
+			const modules = join(root, "resources", "app.asar", "dsh", "node_modules");
+			if (existsSync(join(modules, "@deepseek-ai", "cordis"))) {
+				checkout = modules;
+				break;
+			}
 		}
 	}
 	return { profile, checkout };
@@ -74,9 +87,15 @@ function pickSessionLog(wanted) {
 }
 
 const { profile, checkout } = findRoots();
-if (!profile || !checkout) {
+if (checkout?.includes("app.asar") && !process.versions.electron) {
 	console.error(
-		`缺东西：profile=${profile ? "有" : "没找到（先 dsh-team install）"} · checkout=${checkout ? "有" : "没找到（~/.npm/_npx/*/node_modules/@deepseek-ai/cordis）"}`,
+		`宿主包在 ${checkout} 里，asar 路径普通 node 认不了 —— 用 Electron 跑：\n` +
+			`  ELECTRON_RUN_AS_NODE=1 "<安装目录>\\DeepSeek Harness.exe" --expose-internals scripts/smoke-fold-host.mjs`,
+	);
+	process.exitCode = 1;
+} else if (!profile || !checkout) {
+	console.error(
+		`缺东西：profile=${profile ? "有" : "没找到（先 dsh-team install）"} · checkout=${checkout ? "有" : "没找到（~/.npm/_npx/*/node_modules 或 <安装目录>/resources/app.asar/dsh/node_modules）"}`,
 	);
 	process.exitCode = 1;
 } else {
