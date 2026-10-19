@@ -488,7 +488,7 @@ function fakeSession(id, meta, record) {
 /** 假宿主 preset 给成员的那套工具名（真宿主是 fs / fs-search / bash / web 那几个插件）。 */
 const HOST_TOOL_NAMES = ["read", "write", "edit", "grep", "glob", "bash", "pwsh", "web_search", "web_fetch"];
 
-function fakeAgents({ ctx, record, options, stream, config, ownerMode, ownerPreset }) {
+function fakeAgents({ ctx, record, options, stream, config, ownerMode, ownerPreset, toolsFault }) {
 	const sessionsById = new Map();
 	const controllers = new Map();
 	// 假宿主**也有一套自己的工具**（真宿主的 preset 给 fs / bash / web 那一套）——
@@ -569,14 +569,23 @@ function fakeAgents({ ctx, record, options, stream, config, ownerMode, ownerPres
 					return () => {};
 				},
 				restrict(filter) {
+					// 「护栏挂不上」要能被造出来：真宿主的 `restrict` 对未知工具名**直接抛**
+					// （`dsh-tools/lib/index.js:3003-3004`），那时成员**不许**开跑。
+					if (toolsFault === "restrict-throw") throw new Error("假宿主：restrict 拒绝这次过滤");
 					restrictions.push(filter);
 					record.restrictions.push(filter);
 					return () => {};
 				},
-				schemas: () => [
-					...globalSchemas().filter((s) => admits(restrictions, s.name)),
-					...[...scoped.values()].map((d) => ({ name: d.name, description: d.description, parameters: d.parameters })),
-				],
+				schemas: () => {
+					// 拿不到清单的两种真实形态：`schemas()` 抛 / 返回非数组。两种都核对不了护栏，
+					// 所以两种都不许放行 —— 断言靠 `toolsFault` 分别造出来。
+					if (toolsFault === "schemas-throw") throw new Error("假宿主：tools.schemas() 抛了");
+					if (toolsFault === "schemas-nonarray") return undefined;
+					return [
+						...globalSchemas().filter((s) => admits(restrictions, s.name)),
+						...[...scoped.values()].map((d) => ({ name: d.name, description: d.description, parameters: d.parameters })),
+					];
+				},
 			},
 			systemPrompt: {
 				section(section) {
@@ -617,7 +626,18 @@ function fakeAgents({ ctx, record, options, stream, config, ownerMode, ownerPres
 					// 续聊的种子：宿主 resume 会把落盘的消息重新喂回去，替身照做
 					messages: session.messages,
 					task: messageText(message),
-					tools: agentCtx.tools.schemas(),
+					// 模型侧的工具清单：**真宿主是自己从工具层导出的**，不会因为我们读不到
+					// `schemas()` 就不让会话跑。所以这里读不到就退到「没被收窄的那份」——
+					// 否则 `toolsFault` 会把「护栏没挂上但成员照跑」这条真实行为演成「跑不起来」，
+					// 断言就红得没道理（AGENTS.md §3：假替身保证不了「缝」对）。
+					tools: (() => {
+						try {
+							const list = agentCtx.tools.schemas();
+							return Array.isArray(list) ? list : globalSchemas();
+						} catch {
+							return globalSchemas();
+						}
+					})(),
 					executeTool: async (call) => {
 						const definition = scoped.get(call.name);
 						if (definition === undefined) return { text: `[失败] 这个成员没有 \`${call.name}\` 工具`, isError: true };
@@ -684,6 +704,9 @@ function fakeCtx({
 	ownerMode = undefined,
 	ownerPreset = undefined,
 	noAgents = false,
+	// 「宿主那一层坏了」的几种形态（护栏挂不上）：见 `fakeAgents` 里 `agentCtx.tools` 的用法。
+	// 不给 = 宿主正常。
+	toolsFault = undefined,
 } = {}) {
 	const record = { tools: [], routes: [], events: [], logs: [], restrictions: [], sections: [], memberTools: [], created: [], resumed: [], disposed: [], flushed: [], turns: [] };
 	const ctx = {
@@ -758,7 +781,7 @@ function fakeCtx({
 			return undefined;
 		},
 	};
-	const fake = fakeAgents({ ctx, record, stream, config, ownerMode, ownerPreset });
+	const fake = fakeAgents({ ctx, record, stream, config, ownerMode, ownerPreset, toolsFault });
 	// 复刻 cordis 的访问器代理：**没声明 inject 的服务属性，读一下就抛**。
 	// 桩要是不复刻这个，`ctx.llm` 这种写法在自检里照样绿，线上却直接炸
 	// （REQ-011 §5 记过这个教训：上一版的客户端桩就是这么把「进入会话」的 bug 放过去的）。
@@ -1581,6 +1604,52 @@ await checkAsync("装配：宿主没有 agents 服务 → squad_spawn 友好失�
 	assert.equal(member.status, "卡住", "起不来就不能停在「在跑」——否则面板永远显示在跑");
 	assert.match(member.note, /agents/);
 	assert.equal(member.running, undefined);
+	fs.rmSync(wt, { recursive: true, force: true });
+});
+
+/**
+ * 「护栏挂不上就不许开跑」的可观测点（两处都用）：
+ *   - 模型流一次都没被调用（`seen` 空）= 它没开始干活；
+ *   - `record.turns` 空 = 成员循环一步没跑；
+ *   - `sessionId` 没记下 = 会话没建起来（下一轮不会拿盘上不存在的 id 去 resume）。
+ * 光看「状态是卡住」不够：吞掉异常的老代码也会留下「已派…」的样子，只有这三条能咬住它。
+ */
+function assertNeverRan({ squad, record, seen, fault }) {
+	const member = squad.state.get("main-1").get("队").members.get("实现-A");
+	assert.equal(member.status, "卡住", `${fault}：护栏核对不了就不许开跑`);
+	assert.equal(member.running, undefined, `${fault}：不许停在「在跑」`);
+	assert.equal(seen.length, 0, `${fault}：一次模型请求都不该发`);
+	assert.equal(record.turns.length, 0, `${fault}：成员循环一步都不该跑`);
+	assert.equal(member.sessionId, undefined, `${fault}：会话没建起来就不许记 id`);
+	assert.match(member.note, /工具清单|工具限制/, `${fault}：结论要说清是工具护栏没挂上，实际：${member.note}`);
+	return member;
+}
+
+await checkAsync("装配·护栏：拿不到 tools.schemas() → 不许建会话（护栏核对不了就不放行）", async () => {
+	// 2026-10-19 独立审查逮到的 P0：原来 `restrictTools` 把这处**吞掉**了，于是护栏没挂上
+	// 成员照常开跑（最坏能递归建队）。现在 fail-closed —— 两种形态都必须让本轮不执行。
+	for (const fault of ["schemas-throw", "schemas-nonarray"]) {
+		const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-guard-"));
+		const seen = [];
+		const { squad, call, settle, record } = install({ toolsFault: fault, stream: scriptedStream([{ text: "不该跑到这里" }], seen) });
+		await call("squad_new", { name: "队", objective: "o" }, "main-1");
+		await call("squad_spawn", { squad: "队", member: "实现-A", role: "实现", task: "t", worktree: wt }, "main-1");
+		await settle();
+		assertNeverRan({ squad, record, seen, fault });
+		fs.rmSync(wt, { recursive: true, force: true });
+	}
+});
+
+await checkAsync("装配·护栏：tools.restrict() 抛 → 同样不许建会话（护栏挂不上就不跑）", async () => {
+	const wt = fs.mkdtempSync(path.join(os.tmpdir(), "squad-guard-"));
+	const seen = [];
+	const { squad, call, settle, record } = install({ toolsFault: "restrict-throw", stream: scriptedStream([{ text: "不该跑到这里" }], seen) });
+	await call("squad_new", { name: "队", objective: "o" }, "main-1");
+	await call("squad_spawn", { squad: "队", member: "实现-A", role: "实现", task: "t", worktree: wt }, "main-1");
+	await settle();
+	const member = assertNeverRan({ squad, record, seen, fault: "restrict-throw" });
+	// 错要从 `setup` 原样冒出来（吞掉的话这里只会剩一条 log）
+	assert.match(member.note, /准备成员会话失败/);
 	fs.rmSync(wt, { recursive: true, force: true });
 });
 

@@ -26,10 +26,17 @@
 - **队长通知**：订 `agent/status`（成员会话空闲）与 `agent/error`，各往黑板写一行，不再靠人肉盯。
   成员会话 id 落盘，重启后 `squad_send` 能 resume 回同一个会话。
 - 成员工具面：作用域注册 `board` / `check` / `say` / `wait`（身份由闭包给，不动 `authorize`），
-  并用 `restrict` 掐掉十个 `squad_*` —— 否则成员能递归建队。
+  并用 `restrict` 掐掉十个 `squad_*` —— 否则成员能递归建队。**护栏挂不上就不许跑**：
+  拿不到 `tools.schemas()`、或 `restrict` 自己抛（宿主对**任一**列表里的未知工具名直接抛，
+  `dsh-tools/lib/index.js:3003-3004`），本轮直接不执行 —— 独立审查逮到的 P0 是原来这里吞掉异常、
+  只记一行日志就放行，最坏能让成员留着 `squad_*` 递归建队。
 
 ### 变更（行为）
 
+- **成员继承所属会话的沙箱档位**（这既是上面那把钥匙能插进去的原因，也是刻意的）：owner 是
+  `danger-full-access` 时成员就是全盘可写 —— `cwd = worktree` 只是工作目录，**不是沙箱边界**
+  （与 REQ-011 §6.4 的既有结论一致：那个档位下 dsh 直接跳过 confine）。要让成员受限，
+  就把 captain 那个会话的档位调低；成员不是「比 captain 权限更低的东西」，它替 captain 干活。
 - 成员的工具表变成**宿主 preset 给的那套**（fs / bash / web）+ 上面那四个。`sandbox.bash: false`
   与 `sandbox.roleTools` 改由 `restrict` 的 `allow` / `deny` 实现（Windows 上 `bash` 与 `pwsh` 一起掐）。
 - `squad_send` / 唤醒 / 换档重试都改成**接着同一个会话**跑，不再自己拼假历史；没有会话
