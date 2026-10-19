@@ -8,6 +8,18 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.6.5] - 2026-10-19
+
+### 修复
+
+- **小队成员跑不了任何命令**：`dsh-shell` 的契约写明 `result()` 是异步的（非零退出/超时都
+  resolve 成描述性结果），成员循环漏了 `await`，拿到的是 Promise —— `exitCode` 是 undefined、
+  stdout/stderr 都空，而 `isError: result.exitCode !== 0` 恒真，于是**每条命令都被判成失败**，
+  症状是「退出码 undefined /（没有输出）」。补上 await 后退出码变成真实值。
+- 「进程起不来」加一条自诊断：把沙箱策略的 `mode` 打进失败详情。成员拿到的是部署默认档
+  `workspace-write` 而不是会话的 `danger-full-access`，子进程因此拿到受限令牌，在桌面（被 DSH
+  打过 Low 完整性标签）下连 `cmd.exe` 都起不来（`STATUS_DLL_INIT_FAILED`）。不打出 mode 只能靠猜。
+
 ## [2.6.4] - 2026-10-19
 
 ### 修复
