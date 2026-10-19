@@ -8,6 +8,16 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.8.0] - 2026-10-19
+
+### 变更（行为）
+
+- **小队入口从侧栏挪到会话头**（用户要求：「小队的图标应该在这里而不是那里」）。图标现在挂在
+  `conversation.session.header.utilities` —— 宿主 `client-ui-conversation` 声明的子槽位
+  （`{kind:"list", scope:"session"}`，与「标准模式」「N 个子智能体」同一排），侧栏那行不再有。
+  这个槽位**不会**像 `sidebar.panellist` 那样按「id 与 main 的 key 相同」自动连到面板页，
+  所以按钮自己调 `layout.selectPanel("team-squad")` —— 客户端半区的 `inject` 因此多了 `layout`。
+
 ## [2.7.0] - 2026-10-19
 
 ### 新增

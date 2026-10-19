@@ -2149,7 +2149,9 @@ check("客户端模块：契约与「只 require baseline」", () => {
 	assert.equal(typeof exports.apply, "function");
 	// REQ-025：`uiWorkspace` 是「打开成员会话」要用的。REQ-011 查实过：漏声明 →
 	// 读属性直接抛 → onClick 静默失败，表现只是「按钮点了没反应」。
-	assert.deepEqual(exports.inject, ["slots", "uiWorkspace"]);
+	// `layout` 是「会话头那个图标打开小队面板」要用的（`selectPanel`）—— 同一个坑，
+	// 漏声明的话按钮同样是「点了没反应」。
+	assert.deepEqual(exports.inject, ["slots", "uiWorkspace", "layout"]);
 	assert.deepEqual(required, ["react"], `只该 require react，实际 require 了 ${required.join(", ")}`);
 	assert.equal(typeof exports.SquadPage, "function", "小队页要导出来，测试才能直接渲染");
 });
@@ -2174,7 +2176,7 @@ await checkAsync("客户端面板：小队探活 404 → 只有小队面板不�
 	);
 });
 
-await checkAsync("客户端面板：探活 200 → 侧栏入口 + 主面板，且 id 与 key 自洽", async () => {
+await checkAsync("客户端面板：探活 200 → 会话头入口 + 主面板，且 id 与 key 自洽", async () => {
 	const rt = createReact();
 	const { exports } = loadClient(rt.React);
 	const { ctx, record } = fakeClientCtx();
@@ -2184,14 +2186,21 @@ await checkAsync("客户端面板：探活 200 → 侧栏入口 + 主面板，�
 	});
 	rt.cleanup();
 
-	const entry = record.registrations.find((r) => r.options.name === "sidebar.panellist" && r.options.id === "team-squad");
+	// 用户 2026-10-19 要求：入口在**会话头工具区**（跟「标准模式」「N 个子智能体」同一排），
+	// 不在侧栏。宿主不会像 sidebar.panellist 那样按 id 自动连到 main —— 所以那个组件
+	// 自己 selectPanel（`layout` 的 inject 断言在上面那条契约里钉着）。
+	const entry = record.registrations.find(
+		(r) => r.options.name === "conversation.session.header.utilities" && r.options.id === "team-squad",
+	);
 	const page = record.registrations.find((r) => r.options.name === "main" && r.options.key === "team-squad");
-	assert.ok(entry !== undefined, "缺侧栏入口");
+	assert.ok(entry !== undefined, "缺会话头入口");
 	assert.ok(page !== undefined, "缺主面板");
-	assert.equal(entry.options.label, "小队", "label 用纯字符串，免得依赖 locale 注册");
-	assert.equal(typeof entry.options.order, "number", "order 决定侧栏里的位置");
+	assert.equal(typeof entry.options.order, "number", "order 决定这一排里的位置");
 	assert.equal(typeof entry.component, "function");
 	assert.equal(typeof page.component, "function");
+	// 侧栏那行**不该**再有了 —— 「放这里而不是那里」。
+	const stale = record.registrations.find((r) => r.options.name === "sidebar.panellist" && r.options.id === "team-squad");
+	assert.equal(stale, undefined, "小队不该再占侧栏一行");
 });
 
 await checkAsync("客户端面板：真渲染 —— 成员、任务、状态、worktree、黑板都在", async () => {
