@@ -8,6 +8,38 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.7.0] - 2026-10-19
+
+### 新增
+
+- **成员改用原生 dsh 根会话**（REQ-025）。驱动层从「小队自己发模型请求、自己执行工具」换成
+  `ctx.agents.create` 建一个普通根会话：`setup` 里钉沙箱档位与 `approval: never` 并**回读核对**、
+  `followup` 投任务、`whenIdle` 与超时 race、收尾 `sessions.flush` + `handle.dispose` ——
+  逐条照 `lib/scheduler.js` 的先例（新文件 `lib/squad-agent.js`）。修的是那把一直插不进去的钥匙：
+  成员跑 `echo hi` 从 2026-10-18 起就报 `STATUS_DLL_INIT_FAILED`，因为自持 loop 拼出来的沙箱策略
+  和会话的 `danger-full-access` 不是一回事。
+- **权限随所属会话**：成员的沙箱档位从 `squad.owner` 那个会话取
+  （`sandboxPolicy.resolve({ session })` → 回落到会话日志里的 `sandbox/mode`），读不到就按
+  `read-only` 跑 —— **绝不写死 danger-full-access**。preset 同样跟随所属会话。
+- 成员会话出现在 GUI 会话列表里、按 worktree 分组；面板成员行加了**「打开会话」**
+  （`uiWorkspace.openSession`），客户端半区补上 `inject: ["uiWorkspace"]`。
+- **队长通知**：订 `agent/status`（成员会话空闲）与 `agent/error`，各往黑板写一行，不再靠人肉盯。
+  成员会话 id 落盘，重启后 `squad_send` 能 resume 回同一个会话。
+- 成员工具面：作用域注册 `board` / `check` / `say` / `wait`（身份由闭包给，不动 `authorize`），
+  并用 `restrict` 掐掉十个 `squad_*` —— 否则成员能递归建队。
+
+### 变更（行为）
+
+- 成员的工具表变成**宿主 preset 给的那套**（fs / bash / web）+ 上面那四个。`sandbox.bash: false`
+  与 `sandbox.roleTools` 改由 `restrict` 的 `allow` / `deny` 实现（Windows 上 `bash` 与 `pwsh` 一起掐）。
+- `squad_send` / 唤醒 / 换档重试都改成**接着同一个会话**跑，不再自己拼假历史；没有会话
+  （重启且没落盘）才退回「原任务 + 上次结论」。
+- **已知退化**（原生会话里没有这些边界，`docs/状态.md` §4 也记了）：
+  - token 预算从「发下一次请求之前」退到**事件边界**结算 —— 超了仍会判停，但一轮可能先跑到
+    `maxSteps`；
+  - `maxSteps` 由 `session/event` 上的步数护栏兜（宿主自己没有步数上限）；
+  - 转录在**一轮收尾时**从会话事件折出来（不再逐步推），续聊是追加。
+
 ## [2.6.5] - 2026-10-19
 
 ### 修复
