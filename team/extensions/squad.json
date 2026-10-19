@@ -91,9 +91,9 @@
     "model": "tier-std"
   },
   "limits": {
-    "maxSteps": 30,
+    "maxSteps": 120,
     "retries": 1,
-    "memberTimeoutMinutes": 20,
+    "memberTimeoutMinutes": 45,
     "tokenBudget": 0,
     "memberTokenBudget": 0,
     "maxRunning": 0

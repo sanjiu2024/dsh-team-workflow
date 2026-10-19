@@ -2519,7 +2519,8 @@ await checkAsync("REQ-015·重试：基础设施失败重试一次并带上原�
 	await second.call("squad_spawn", { squad: "队", member: "A", role: "实现", task: "t", worktree: wt }, "main-1");
 	await second.settle();
 	const stuck = second.squad.state.get("main-1").get("队").members.get("A");
-	assert.equal(stuck.status, "卡住");
+	// 「步数用尽」不是「卡住」：2026-10-19 起状态词按 kind 分开（截断/超时/真卡住）。
+	assert.equal(stuck.status, "步数用尽");
 	assert.equal(stuck.attempts, 1, "maxSteps 耗尽不重试");
 });
 
@@ -2533,7 +2534,8 @@ await checkAsync("REQ-015·超时：超过墙钟上限就 abort，判卡住并�
 	await call("squad_spawn", { squad: "队", member: "A", role: "实现", task: "t", worktree: wt }, "main-1");
 	await settle();
 	const member = squad.state.get("main-1").get("队").members.get("A");
-	assert.equal(member.status, "卡住");
+	// 「超时」不是「卡住」：2026-10-19 起状态词按 kind 分开。
+	assert.equal(member.status, "超时");
 	assert.match(member.note, /分钟上限/, `note 要写明超时，实际：${member.note}`);
 	assert.equal(member.attempts, 1, "超时不重试（重试只会再等一遍）");
 });
