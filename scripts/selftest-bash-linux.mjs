@@ -335,7 +335,18 @@ console.log("done");
 	const back = await revived.send("pwd", 15000);
 	check("重建后回到上次的目录", () => {
 		const got = back.text.trim();
-		if (isWindows) return assert.equal(got, expectedCwd, `实际 ${JSON.stringify(got)}`);
+		if (isWindows) {
+			// bash 的 `pwd` 打的是 **MSYS 风格**（`/c/Users`），而记下的 cwd 是原生风格
+			// （`C:/Users`，L291 已经断言过）—— 要的性质是「回到同一个目录」，不是字面相等。
+			// 2026-10-19 实测：本机 bash 一直不在 PATH 上，这条断言从没真跑过；把
+			// `C:\Program Files\Git\bin` 加进 PATH 之后它立刻红了 —— 红的是**比法**，不是产品。
+			const native = /^\/[a-zA-Z]\//.test(got) ? `${got[1].toUpperCase()}:${got.slice(2)}` : got;
+			return assert.equal(
+				fs.realpathSync(native),
+				fs.realpathSync(expectedCwd),
+				`实际 ${JSON.stringify(got)}`,
+			);
+		}
 		// Linux/macOS：`pwd` 打的是逻辑路径，同样比 realpath
 		assert.equal(fs.realpathSync(got), fs.realpathSync(expectedCwd), `实际 ${JSON.stringify(got)}`);
 	});
