@@ -68,7 +68,6 @@ const {
 	usageLine,
 	isSettled,
 	TERMINAL_STATUS,
-	MEMBER_STATUS,
 } = await import(new URL("lib/squad.js", ROOT).href);
 const { flattenSquadConfig } = await import(new URL("lib/squad-config.js", ROOT).href);
 const { formatReport, parseReport } = await import(new URL("lib/squad-report.js", ROOT).href);
