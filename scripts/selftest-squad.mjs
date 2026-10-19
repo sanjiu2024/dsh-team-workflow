@@ -2846,10 +2846,10 @@ check("出厂 squad.json 是 v2 形状且能过校验（文件与 schema 不许�
 	const said = [];
 	const cfg = readJsonConfig(file, SQUAD_DEFAULTS, SQUAD_FIELDS, (m) => said.push(m), flattenSquadConfig);
 	assert.equal(cfg.model, "tier-std");
-	assert.equal(cfg.maxSteps, 30);
+	assert.equal(cfg.maxSteps, 120);
 	assert.equal(cfg.bash, true);
 	assert.equal(cfg.retries, 1);
-	assert.equal(cfg.memberTimeoutMinutes, 20);
+	assert.equal(cfg.memberTimeoutMinutes, 45);
 	assert.deepEqual(cfg.roles.审查, ["tier-power", "tier-std"], "审查走降级链：主档用不了就退到标准档");
 	assert.equal(cfg.roles.侦察, "tier-std");
 	assert.deepEqual(said, [], `出厂文件不该有任何提示：${JSON.stringify(said)}`);
