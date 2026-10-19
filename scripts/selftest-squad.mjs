@@ -168,16 +168,22 @@ check("加成员：worktree 必填、建行即「在跑」；队内名字唯一�
 	assert.equal(spaced.member.worktree, "/tmp/a  b", "路径里的连续空格必须原样留着");
 });
 
-check("改成员那一行：状态只认三个词，角色/任务/worktree 可改，成员名不可改", () => {
+check("改成员那一行：状态只认终态词，角色/任务/worktree 可改，成员名不可改", () => {
 	const { state, squad } = fixture();
 	addMember(state, squad, { label: "实现-A", role: "实现", task: "改代码", worktree: "/tmp/wt-a" });
 	// REQ-016 A3 起多了「排队」：并发满了的名册行先建好、不跑，有人收工自动补位
 	// REQ-016 A3/A6 起多了「排队」与「等待」：都是**进程内**状态，重启后都判「卡住」
-	assert.deepEqual(MEMBER_STATUS, ["在跑", "排队", "等待", "完成", "卡住"], "状态词表是面板与工具的共同契约（没有「待派」——建行即开跑）");
+	assert.deepEqual(MEMBER_STATUS, ["在跑", "排队", "等待", "完成", "步数用尽", "超时", "卡住"], "状态词表是面板与工具的共同契约（没有「待派」——建行即开跑）");
 
 	assert.equal(updateMember(squad, "实现-A", { status: "完成" }).ok, true);
 	assert.equal(squad.members.get("实现-A").status, "完成");
 	assert.equal(updateMember(squad, "实现-A", { status: "做完了" }).ok, false, "状态词表外一律拒");
+	// 终态词都能手判（截断 / 超时也是终态）；非终态一律拒 —— 改成「在跑」是句假话，
+	// 改成「排队」会让 drainQueue 把它重新点着（见 lib/squad.js 里那段注释）
+	assert.equal(updateMember(squad, "实现-A", { status: "步数用尽" }).ok, true);
+	assert.equal(updateMember(squad, "实现-A", { status: "超时" }).ok, true);
+	assert.equal(updateMember(squad, "实现-A", { status: "在跑" }).ok, false, "非终态不许手判");
+	assert.equal(updateMember(squad, "实现-A", { status: "排队" }).ok, false, "非终态不许手判");
 	// 超长状态：`oneLine` 失败时没有 `.value`，报错文案不能变成「收到的是「undefined」」
 	const tooLong = updateMember(squad, "实现-A", { status: "很".repeat(MAX_NAME + 1) });
 	assert.equal(tooLong.ok, false, "超长状态要拒");
