@@ -66,6 +66,9 @@ const {
 	roleModelChain,
 	updateMember,
 	usageLine,
+	isSettled,
+	TERMINAL_STATUS,
+	MEMBER_STATUS,
 } = await import(new URL("lib/squad.js", ROOT).href);
 const { flattenSquadConfig } = await import(new URL("lib/squad-config.js", ROOT).href);
 const { formatReport, parseReport } = await import(new URL("lib/squad-report.js", ROOT).href);
@@ -2853,6 +2856,21 @@ check("出厂 squad.json 是 v2 形状且能过校验（文件与 schema 不许�
 	assert.deepEqual(cfg.roles.审查, ["tier-power", "tier-std"], "审查走降级链：主档用不了就退到标准档");
 	assert.equal(cfg.roles.侦察, "tier-std");
 	assert.deepEqual(said, [], `出厂文件不该有任何提示：${JSON.stringify(said)}`);
+});
+
+check("终态判据只有一处：截断/超时也算落定（别把被截断的成员当成还在跑）", () => {
+	// 2026-10-19：状态词从「完成/卡住」两值扩到七个。散落的
+	// `status === "完成" || status === "卡住"` 会把「步数用尽」「超时」的成员当成**还在跑**
+	// —— 队列不补位、等待不放行（正是 AGENTS.md §2 说的口径不一致）。判据收进 isSettled。
+	assert.deepEqual(TERMINAL_STATUS, ["完成", "步数用尽", "超时", "卡住"]);
+	for (const word of TERMINAL_STATUS) {
+		assert.ok(isSettled({ status: word }), `${word} 该算落定`);
+		assert.ok(MEMBER_STATUS.includes(word), `${word} 该在 MEMBER_STATUS 里（两处不许漂移）`);
+	}
+	for (const word of ["在跑", "排队", "等待"]) {
+		assert.equal(isSettled({ status: word }), false, `${word} 不该算落定`);
+	}
+	assert.equal(isSettled(undefined), false, "没有成员对象时不该抛，也不该算落定");
 });
 
 check("配置：v2 文件里的坏值仍会被字段校验拦下并报出来（归一不绕过校验）", () => {
