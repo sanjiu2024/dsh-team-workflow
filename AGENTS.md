@@ -1,6 +1,6 @@
 # AGENTS.md · 给 agent 的项目约定
 
-> **状态**：维护中 · **日期**：2026-10-18 · **版本**：`2.6.2`
+> **状态**：维护中 · **日期**：2026-10-19 · **版本**：`2.7.0`
 >
 > 这份文件只写**这个仓库里必须照做**的事：确切命令、代码约定、禁区。
 > 「这是什么、怎么用」在 [`README.md`](README.md)；「现在哪里是虚的」在 [`docs/状态.md`](docs/状态.md)；
@@ -107,6 +107,12 @@ node bin/dsh-team.mjs squad ls [--all] # 落盘的小队（实时那份在 Web �
 ## 6. 本机环境事实
 
 - dsh `0.2.1-rc.2`；本包以 symlink 装在 `~/.dsh/profiles/web/node_modules/` 下。
+- **本机有 bash，只是曾经不在 PATH 上**（2026-10-19 查实并修）：Git for Windows 自带
+  `C:\Program Files\Git\bin\bash.exe`（`usr\bin\bash.exe` 也在，跑起来是 `MINGW64_NT-10.0-22631`），
+  但 Machine 与 User 的 PATH 都只有 `C:\Program Files\Git\cmd`（那是给 `git.exe` 的），**没有 `Git\bin`**。
+  所以任何走 PATH 找 bash 的工具都报「PATH 里找不到 bash；Windows 上装 Git for Windows 即有」——
+  那是**配置问题不是缺软件**。已把 `C:\Program Files\Git\bin` 追加进 **User** PATH；
+  **已运行的 dsh 进程环境不会更新，必须重启 dsh 才生效**（子进程继承宿主的 env）。
 - **standard 预设底稿要从 `resources/app.asar` 里读**（0.2.1 起）：PATH 上第一个 `dsh` 是启动器目录
   （`%LOCALAPPDATA%\deepseek-harness\bin\dsh.cmd`），祖先里没有那些包，`app.asar.unpacked` 也没解
   `dsh-web-app`。查找在 `lib/dsh-install.js`（自己解析 asar 头部，零依赖），候选顺序「真实安装」优先 ——
