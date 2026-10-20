@@ -343,6 +343,27 @@ assert.equal(RTK_FIELDS.compactTools("bash"), undefined, "非数组应被拒");
 assert.equal(RTK_FIELDS.compactTools([1, 2]), undefined, "非字符串元素应被拒");
 assert.deepEqual(RTK_FIELDS.compactTools(["grep"]), ["grep"], "合法数组应放行");
 
+// 可执行文件解析：包里**有**它就必须解析到（baseUrl 缺失也算）。
+// 2026-10-20 实测 dsh 0.2.1 不再注入 ctx.baseUrl，只靠它会让「装了但没生效」静默发生：
+// active=false → 系统提示写「没找到 rtk.exe」→ 整段输出压缩被 if(active) 挡住，一次没跑过。
+{
+	const { resolveRtk } = await import("../lib/rtk.js");
+	const { fileURLToPath } = await import("node:url");
+	const fsMod = await import("node:fs");
+	const exe = fileURLToPath(new URL(`../tools/${process.platform === "win32" ? "rtk.exe" : "rtk"}`, import.meta.url));
+	const installed = fsMod.existsSync(exe);
+	assert.equal(
+		resolveRtk(undefined) !== null,
+		installed,
+		`包里${installed ? "有" : "没有"} rtk 可执行文件，解析结果必须一致（baseUrl 缺失时也一样）`,
+	);
+	assert.equal(
+		resolveRtk("file:///definitely-not-here/") !== null,
+		installed,
+		"baseUrl 指向不存在的目录时，仍要回落到本包的 tools/",
+	);
+}
+
 // —— 8. tools/post-execute 挂上了 ——
 
 assert.ok(ctx._handlers.has("tools/post-execute"), "没订阅 tools/post-execute");
@@ -353,6 +374,29 @@ assert.ok(ctx._handlers.has("tools/post-execute"), "没订阅 tools/post-execute
 	const found = resolveLens(new URL("../", import.meta.url));
 	if (found) assert.ok(ctx._tools.some((t) => t.name === "lens_check"), `装了 pi-lens（${found.dir}）却没注册 lens_check`);
 	else console.log("… 跳过 lens_check 断言：这台机器没装 pi-lens（vendor/ 或 ~/.pi 都没有）");
+}
+
+// 报告裁剪：warning 明细折成一行计数，blocking 与汇总行必须留。
+// 依据（2026-10-20 量账）：lens 注入 49,358 字符/会话，是固定的第二大块，绝大多数是
+// 「0 blocking, 24 warning(s)」这类没人会照它改的明细，而每一步都要被重发一次。
+{
+	const { trimLensReport } = await import(new URL("../lib/lens.js", import.meta.url).href);
+	const report = [
+		"🔎 pi-lens: lib/x.js — 1 blocking, 24 warning(s), 0 advisory(ies)",
+		"  ⚠ L541 MD036: 强调当标题",
+		"  ⚠ L542 MD032: 列表前后要空行",
+		"  🔴 L2005 no-global-eval-js: 别用 eval",
+	].join("\n");
+	const trimmed = trimLensReport(report);
+	assert.ok(trimmed.includes("🔴"), "blocking 明细必须留");
+	assert.ok(!trimmed.includes("MD036"), "warning 明细不该留");
+	assert.ok(trimmed.includes("另有 2 条 warning 省略"), `削掉多少要说出来，否则模型以为没提示：${trimmed}`);
+	assert.ok(trimmed.includes("1 blocking"), "汇总行必须留：看一眼就知道有没有 block");
+	assert.ok(trimLensReport(report, { onlyBlocking: false }).includes("MD036"), "关掉过滤时要原样给");
+	const long = trimLensReport(`🔴 ${"x".repeat(9000)}`);
+	assert.ok(long.length < 8000, "超过 maxChars 要截断");
+	assert.match(long, /已截断/, "截断要说明还有原文");
+	assert.equal(trimLensReport(""), "", "空报告不该产出空壳消息");
 }
 
 // —— 9. 版本号两处一致 ——
