@@ -2138,7 +2138,9 @@ check("客户端模块：契约（id / apply / inject）与「只 require baseli
 	assert.equal(definition.id, "dsh-team-workflow", "id 必须是包名");
 	assert.equal(typeof definition.factory, "function");
 	assert.equal(typeof exports.apply, "function");
-	assert.deepEqual(exports.inject, ["slots"], "客户端只该声明 slots");
+	// slots = 注册槽位；uiWorkspace = 「打开成员会话」（REQ-025）；layout = 点会话头图标后选中面板。
+	// 都是**真用到**的服务：少一个就在真宿主里静默失败（读未 inject 的服务直接抛）。
+	assert.deepEqual(exports.inject, ["slots", "uiWorkspace", "layout"], "客户端只该声明它真用的三个服务");
 	assert.deepEqual(required, ["react"], `只该 require react，实际 require 了 ${required.join(", ")}`);
 });
 
@@ -2153,7 +2155,7 @@ await checkAsync("客户端模块：宿主没启用（404）→ 一个槽位都�
 	assert.deepEqual(record.injects, [], "连槽位都不该去 inject");
 });
 
-await checkAsync("客户端模块：宿主启用了 → 挂 sidebar.panellist + main，且 id 与 key 自洽", async () => {
+await checkAsync("客户端模块：宿主启用了 → 定时任务挂侧栏 + 主面板、小队挂会话头 + 主面板", async () => {
 	const { exports } = loadClient();
 	const { ctx, record } = fakeClientCtx();
 	const requested = [];
@@ -2168,7 +2170,14 @@ await checkAsync("客户端模块：宿主启用了 → 挂 sidebar.panellist + 
 	// 前缀。这条断言只管调度器那一条：它必须在，且前缀不能变。
 	// （小队那条由 scripts/selftest-squad.mjs 自己验。）
 	assert.ok(requested.includes("/api/team/scheduler/options"), "探活必须打宿主那条路由前缀");
-	assert.deepEqual(record.injects.sort(), ["main", "main", "sidebar.panellist", "sidebar.panellist"]);
+	// 两个面板各自 inject 自己的槽位：定时任务 = 侧栏 + main，小队 = 会话头 + main
+	// （小队入口 2026-10-19 从侧栏挪到会话头，所以这里只有一次 sidebar.panellist）。
+	assert.deepEqual(record.injects.sort(), [
+		"conversation.session.header.utilities",
+		"main",
+		"main",
+		"sidebar.panellist",
+	]);
 
 	const panel = record.registrations.find((r) => r.options.name === "sidebar.panellist");
 	const page = record.registrations.find((r) => r.options.name === "main");
@@ -2197,9 +2206,13 @@ await checkAsync("客户端模块：槽位未声明（register 抛）→ 不连�
 		console.warn = warn;
 	}
 	assert.deepEqual(record.registrations, []);
-	// 第二个面板（小队 REQ-009）也会 inject 同样的两个槽位名，所以去重看：
-	// 这条要的是「两个槽位都试过了」，不是「一共 inject 了几次」。
-	assert.deepEqual([...new Set(record.injects)].sort(), ["main", "sidebar.panellist"], "两个槽位都该试过");
+	// 两个面板（定时任务 + 小队）各自 inject 自己的槽位名，所以去重看：
+	// 这条要的是「槽位都试过了」，不是「一共 inject 了几次」。
+	assert.deepEqual(
+		[...new Set(record.injects)].sort(),
+		["conversation.session.header.utilities", "main", "sidebar.panellist"],
+		"三个槽位都该试过",
+	);
 });
 
 check("客户端模块：宿主侧读得到它（exports[\"./client\"] + dsh.client 清单）", () => {
