@@ -207,6 +207,36 @@ assert.match(g.text, /^              - id: compaction-fold$/m, "预设内部那�
 	assert.match(g.text, /当前模式：团队模式。/, "persona 少了模式标识");
 	assert.match(g.text, /thresholdRatio: 0\.25/, "阈值没写进去");
 	assert.match(g.text, /retainRatio: 0\.05/, "保留比例没写进去");
+
+	// MCP 挂成插件行。三条断言各自咬住一个**会让新会话建不起来或悄悄连不上**的错法：
+	// ① 没写 `failOnStartupError: false` → server 起不来会连坐整份预设（插件激活失败 =
+	//    预设非法 = 新会话建不起来）；② 传输没写 stdio → 真机连不上；③ serverName 非法
+	//    字符不拦 → 工具名 `mcp__<name>__<tool>` 会生成不合法标识符。
+	{
+		const withMcp = generateRc2TeamPreset(RC2_FIXTURE, {
+			settings: { ...rc2Settings, mcp: [{ serverName: "devtools", command: "npx", args: ["-y", "x@1"] }] },
+			overlay: {},
+		});
+		assert.match(withMcp.text, /^    - id: mcp-devtools$/m, "MCP 行没挂上");
+		assert.match(withMcp.text, /name: '@deepseek-ai\/dsh-mcp-client'/, "MCP 行用的不是宿主自带客户端");
+		assert.match(withMcp.text, /transport: stdio/, "stdio 传输没写");
+		assert.match(
+			withMcp.text,
+			/failOnStartupError: false/,
+			"少了 failOnStartupError: false —— 一台 server 起不来会连坐整份预设",
+		);
+		assert.match(withMcp.text, /args: \['-y', 'x@1'\]/, "args 没按 YAML 列表写");
+		// 反向对照：serverName 带非法字符必须**抛**，不能悄悄改名
+		assert.throws(
+			() =>
+				generateRc2TeamPreset(RC2_FIXTURE, {
+					settings: { ...rc2Settings, mcp: [{ serverName: "bad name!" }] },
+					overlay: {},
+				}),
+			/serverName/,
+			"非法 serverName 必须拦住（工具名前缀会不合法）",
+		);
+	}
 	// 档位工具行 + 审查档不给工具：三档都挂上，toolLessTiers 里那条**指向一个无工具预设**
 	// （0.2.1 起 toolFilter 被废弃 —— 见 REQ-022，别再改回去）
 	const withToolLess = generateRc2TeamPreset(RC2_FIXTURE, {

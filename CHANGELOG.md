@@ -8,6 +8,26 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.10.0] - 2026-10-30
+
+### 新增
+
+- **MCP server 可以挂成预设里的插件行**：`team/agent-settings.json` 里写 `mcp: [{ serverName, command, args }]`
+  （或 `url`/`headers` 走 streamable-http），`dsh-team preset install` 就把它生成成
+  `@deepseek-ai/dsh-mcp-client` 那几行。工具对模型可见的名字是 `mcp__<serverName>__<tool>`。
+
+  三件写死的事，都是 2026-10-30 本机实测出来的：**① `failOnStartupError: false`** ——
+  设 true 时 server 起不来会让插件激活失败，而插件激活失败 = 整份预设判非法 = **新会话建不起来**
+  （一台 server 挂掉不该连坐）。**② `command` 可以写 `npx`** —— 宿主 stdio transport 用的是
+  `cross-spawn`，Windows 上会自己找到 `npx.cmd`；而原生 `spawn` 对 `.cmd` 直接 EINVAL，
+  所以**别**改写成绝对路径。**③ 子进程换一套环境** —— SDK 只继承白名单（APPDATA/PATH/USERPROFILE…），
+  不继承 `HTTP_PROXY`，要代理得在 `env` 里显式给。
+
+  代价（同一轮实测）：工具声明进**每次调用**的地板，且`dsh-mcp-client` **没有工具白名单**
+  （Config 只有 transport/serverName/command/args/env/cwd/toolCallTimeoutMs/failOnStartupError/
+  maxInstructionBytes/reconnect）。实测 `chrome-devtools-mcp@1.12.0` = 32 工具 / 29661 字符 ≈ 9.3k token，
+  `server-filesystem@2.1.0` = 14 工具 / 12569 字符 ≈ 3.9k token —— 只挂真的会用、且工具数少的。
+
 ## [2.9.1] - 2026-10-20
 
 ### 修复
