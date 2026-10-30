@@ -706,6 +706,10 @@ function fakeCtx({
 	stream = () => {
 		throw new Error("这个测试没给假模型流");
 	},
+	// 「宿主没有 llm」：`dsh-llm` 那条 import 直接抛。A2 断言一直挂着 `noLlm: true`，
+	// 可这个开关原来**没人读**（静默忽略），于是它验的其实是一条谁都没走过的路 ——
+	// 2026-10-30 加 probe() 之后才暴露出来。假替身要照真实造：缺包 = import 抛。
+	noLlm = false,
 	shell = undefined,
 	sandboxPolicy = { mode: "workspace-write", workspaceRoot: "/tmp" },
 	config = {},
@@ -748,6 +752,8 @@ function fakeCtx({
 		loader: {
 			import: async (specifier) => {
 				if (specifier === "@deepseek-ai/dsh-llm") {
+					// 宿主里没有这个包时 loader 是**抛**，不是返回空对象（A2 靠这条）
+					if (noLlm) throw new Error("No module named '@deepseek-ai/dsh-llm'");
 					return {
 						__esModule: true,
 						default: function dshLlmPlugin() {},
@@ -2518,7 +2524,9 @@ await checkAsync("REQ-015·重试：基础设施失败重试一次并带上原�
 	assert.equal(member.attempts, 2, "失败一次 + 重试一次");
 	assert.match(JSON.stringify(seen[0].messages), /上一次因为/, "重试要带上中断原因（不是闷头重来）");
 
-	// maxSteps 耗尽**不**重试（那是模型真在绕圈，重试等于继续烧钱）
+	// maxSteps 耗尽的规则 2026-10-30 变了：原来「不重试」（当成模型在绕圈），
+	// 实测三次成员全被步数上限截断、零产出、合计 3500 万 token —— 截断其实是**有进展**，
+	// 会话还在盘上，续一轮就接着干。所以现在**占用重试名额自动续**，续跑文案说「接着做」。
 	const second = install({
 		stream: scriptedStream([{ text: "还在干", calls: [{ id: "c1", name: "board", arguments: '{"text":"x"}' }] }]),
 		config: { persist: false, retries: 3, maxSteps: 1 },
@@ -2529,7 +2537,9 @@ await checkAsync("REQ-015·重试：基础设施失败重试一次并带上原�
 	const stuck = second.squad.state.get("main-1").get("队").members.get("A");
 	// 「步数用尽」不是「卡住」：2026-10-19 起状态词按 kind 分开（截断/超时/真卡住）。
 	assert.equal(stuck.status, "步数用尽");
-	assert.equal(stuck.attempts, 1, "maxSteps 耗尽不重试");
+	assert.equal(stuck.attempts, 4, "撞上限要自动续（1 正轮 + retries 个续轮），不是一撞就判死");
+	assert.match(JSON.stringify(seen[seen.length - 1].messages), /接着.*做|不要重头再来/, "续跑文案要说「接着做」，不能让它重读一遍需求");
+	assert.match(String(stuck.note ?? ""), /已自动续 3 轮/, `note 要说清续了几轮还没收工：${stuck.note}`);
 });
 
 await checkAsync("REQ-015·超时：超过墙钟上限就 abort，判卡住并写明是超时", async () => {
