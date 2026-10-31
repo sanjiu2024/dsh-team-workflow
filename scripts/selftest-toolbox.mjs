@@ -19,7 +19,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const { installToolbox, OPS, TOOLBOX_ROUTE } = await import("../lib/toolbox.js");
+const { installToolbox, classifyApplyReport, OPS, TOOLBOX_ROUTE } = await import("../lib/toolbox.js");
 
 let passed = 0;
 const ok = (label) => {
@@ -121,6 +121,32 @@ async function call(spec, options) {
 	assert.equal(unknown.status, 400, "未知 op 必须 400");
 	assert.match(unknown.json.error, /没有这个操作/, "要说清是哪个 op 不认识");
 	ok("白名单：未知 op 一律 400，前端传不了任意命令");
+}
+
+// ── ①b 「应用补丁」的结果判定：na / skipped 不是失败 ───────────────────────
+{
+	const core = await import("../lib/purge/core.js");
+	const report = [
+		{ patch_id: 1, status: "applied" },
+		{ patch_id: 2, status: "already" },
+		{ patch_id: 28, status: "na" },
+		{ patch_id: 88, status: "skipped" },
+	];
+	const verdict = classifyApplyReport(report, core);
+	assert.equal(verdict.ok, true, "na / skipped 被当成失败 → 面板整行标红（2026-10-31 实测 9 条假失败）");
+	assert.equal(verdict.applied, 1);
+	assert.equal(verdict.already, 1);
+	assert.deepEqual(verdict.soft.map((r) => r.patch_id), [28, 88], "na / skipped 要单列成「不适用/跳过」");
+	assert.deepEqual(verdict.failed, [], "这批里没有真失败");
+
+	const real = classifyApplyReport([...report, { patch_id: 99, status: "pattern_not_found" }], core);
+	assert.equal(real.ok, false, "pattern_not_found 是真失败，不能被吞");
+
+	// 兜底分支（不传 core）必须与 core 的口径一致，否则换个实现就悄悄改判。
+	const fallback = classifyApplyReport(report);
+	assert.deepEqual(fallback.soft.map((r) => r.patch_id), verdict.soft.map((r) => r.patch_id));
+	assert.equal(fallback.ok, verdict.ok);
+	ok("补丁结果判定：na / skipped 不算失败、pattern_not_found 才算；兜底口径与 core 一致");
 }
 
 // ── ② 危险 op 的第二次确认 ─────────────────────────────────────────────────

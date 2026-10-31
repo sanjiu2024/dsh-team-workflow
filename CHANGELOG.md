@@ -8,6 +8,32 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.16.1] - 2026-10-31
+
+### 修复
+
+- **「应用补丁」把 `na` / `skipped` 也算成失败，整行标红。** 真机上点完看到的是
+  `applied=70 already=7 失败=9`，其中 8 条是 `na`（hooks 插件没装、梁神主题不在、
+  预设里没有那段标定句、工具层不是这个形状）、1 条是 `skipped`（#88 的挂针官方在 rc.5
+  里自己拿掉了）—— **没有一条是补丁没打上**。
+  工具箱原来自己发明了判据（`status !== "applied" && status !== "already"` 就算失败），
+  现在抽出 `classifyApplyReport()` 复用 `core.summarizeApplyReport` 的口径：
+  `na` / `skipped` / `partial` / `off` 归到「不适用/跳过」单列，只有
+  `pattern_not_found` / `missing_file` / `read_error` 这类才算失败，`ok` 也只由它们决定。
+  `/purge apply` 的逐条输出同样把这两档从 `✗` 改成 `· 不适用` / `· 未命中`。
+
+  自检钉了两件事：na/skipped 不算失败、pattern_not_found 算；以及兜底分支（不传 core 时）
+  与 core 口径一致 —— 否则换个实现就悄悄改判。
+
+- **工具箱「应用补丁」没有让 `app.asar` 让位，补丁打了等于没打。** rc.5 的官方宿主整树在
+  `resources/app.asar` 里，解包后补丁写进了 `resources/app`，但 Electron 下次启动**优先加载
+  asar** —— 实测面板报 `applied=70`，而 `resources/app.asar` 时间戳没动、182MB 原封不动，
+  用户重启后一条都不生效。`/purge apply` 命令本来会走 `restartSealedDesktopIfNeeded`
+  （改名 asar + 优雅重启），工具箱漏了这一步。现在补上，并把响应先回给前端、300ms 后再动宿主，
+  免得「打了多少条」还没来得及显示进程就没了。
+  `purge_apply` 工具不自动重启（模型调一次工具就把宿主掐掉太粗暴），改为在结果里明说
+  「还封在 app.asar 里，用 /purge apply 或工具箱完成最后一步」。
+
 ## [2.16.0] - 2026-10-31
 
 ### 变更
