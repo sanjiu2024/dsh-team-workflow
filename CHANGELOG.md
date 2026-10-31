@@ -8,6 +8,47 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.18.0] - 2026-10-31
+
+### 新增
+
+- **`dsh-purge` 补 5 条上游 P1 缺陷（#93–#97）**。都是 2026-10-31 审计实测出来的，
+  每条改完都只是回到上游自己注释里承诺的行为，revert 时不丢任何「我们的偏好」：
+
+  - **#93 `FS_LINE_ENDINGS_FULL_SCAN`**（`dsh-fs-local:587`）—— 行尾检测只看前 4096
+    字节，而写回按判断结果重写**全文**。首个换行在 4096 字节之后的文件（长头注释、
+    minified 前缀）被判成 LF，一次改一个词的 edit 就把全文 CRLF 改成 LF。
+    改成全文统计。
+  - **#94 `FS_BOM_PRESERVED`**（`dsh-fs-local:331`）—— `TextDecoder` 的 `ignoreBOM`
+    缺省 false = **吞掉 BOM**，写回走纯 utf8 不补。一次 edit 永久丢 BOM，模型与用户
+    都无从察觉（Windows 上 `.ps1`/`.bat`/`.reg` 的编码判定会变）。改成在字节层记
+    `bom` 标记、写回补上；不动 `decodeUtf8`，read 路径因此不受影响。
+  - **#95 `GREP_IGNORE_HIDDEN_ALIGNED`**（`dsh-tool-fs-search:933`）—— glob 的 argv
+    带 `--no-ignore --hidden`，grep 没有 → glob 列出来的 `dist/`、`.env`、`app.log`
+    之类 grep 永远搜不到，还只回 `No matches found`。两侧口径取齐。
+  - **#96 `PWSH_ENCODING_CONSTRAINED`**（`dsh-pwsh-local:100`）—— UTF-8 前置语句用
+    `[System.Text.UTF8Encoding]::new($false)`，在 **ConstrainedLanguage**（工具自己
+    声明的只读沙箱模式）下直接抛 `CannotCreateTypeConstrainedLanguage`：每次调用两条
+    假错误，UTF-8 钉死静默失效。换成静态属性 `[Text.Encoding]::UTF8` 并整体包 try/catch。
+  - **#97 `TOOL_TIMEOUT_CAUGHT`**（`dsh-tool-call-timeout-policy:130`）—— 工具按
+    `exec.signal` 主动 reject（fetch/stream 的常见形态）时，原来那条 `if` 永远走不到，
+    超时被抛成原始 `AbortError`：模型拿不到 `TOOL_TIMEOUT` 结构化 code，还会被当成
+    「用户取消」。加 `catch` 先判自己的 deadline。
+
+  验证一律用原审计脚本跑（改前红、改后绿）：
+
+  ```text
+  E1 4096-sample blind spot: CRLF count after edit = 3 (original 3)   # 原 0
+  A2 on-disk hex after edit = efbbbf616c7068610a424554 | BOM = true   # 原 616c7068610a…
+  grep files hit = ['.env','app.log','src\main.js','dist\bundle.js']  # 原只有 src\main.js
+  ConstrainedLanguage 下 preamble → ok                                 # 原两条 CannotCreate…
+  T1/T1b path: resolved                                                # 原 threw
+  ```
+
+  **已知未修**：混合行尾文件仍按多数派统一（#93 只修采样范围；按行恢复要改
+  `restoreLineEndings` 的契约，改动面大，留作后续）；`timeout-policy` 的嵌套归属
+  （同插件挂两份时外层到期被内层认成自己的）也没动。
+
 ## [2.17.1] - 2026-10-31
 
 ### 修复
