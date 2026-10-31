@@ -8,6 +8,30 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.11.0] - 2026-10-31
+
+### 新增
+
+- **仓库外的个人指令可以注入系统提示**（`lib/instructions.js` + `team/extensions/instructions.json`）：
+  默认读 `<DSH_HOME>/team-workflow/instructions.md`，order 650（紧跟 `team:baseline`）。
+  与 `team/RULES.md` 的分工是有意的 —— RULES.md 进 git、全团队共享、走评审；这份不进 git，
+  放本机偏好与临时约定。按 mtime 缓存，改文件不用重启；超过 `maxBytes`（默认 16 KB）会截断并注明。
+
+  为什么加它：这件事以前由第三方插件 dsh-purge 干，实测两个问题 —— ① 它把同一段文本
+  **注了两遍**（`addPromptSection` 被 `apply()` 和每轮 `prepareAssemble()` 各调一次，
+  两处宿主代理不同；purge 内部日志每次请求 3 条 `inject.read rawBytes=21803`，会话日志
+  `type=system/message` 那行 69,364 字符、同一段出现 2 次 → 每次调用白付约 6.4k token）；
+  ② 它为了改文件把宿主代码打了 86 条补丁，宿主一升级就碎。本模块**只做注入**，并按 host 幂等。
+
+### 变更
+
+- **档位模型改成 opencode-go 的真模型 id**：`defaultProvider`/`subagents.provider` 从
+  `new-api` 改为 `opencode-go`；`tierTools` 从自建网关别名改为
+  `std=deepseek-v4.1-flash`、`power=gpt-6.1-sol`。**`max` 故意不写**（暂时没有对应模型，
+  硬写一个猜的 id 只会让成员起不来；preset-gen 因此不生成 `subagent_max` 那行）。
+  不改的后果：`tier-std`/`tier-power` 在 opencode-go 下不存在，`squad_spawn` 会把成员
+  派到一个不存在的模型 id 上。
+
 ## [2.10.0] - 2026-10-30
 
 ### 新增

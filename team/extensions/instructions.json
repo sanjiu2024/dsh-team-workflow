@@ -1,0 +1,6 @@
+{
+  "_说明": "仓库外的个人指令注入系统提示（order 650，紧跟 team/RULES.md 的 baseline 段之后）。它读的是 <DSH_HOME>/team-workflow/instructions.md —— **不进 git**，所以本机偏好、临时约定放这里；全团队共享的规矩仍然写 team/RULES.md。文件不存在 = 没配（安静跳过，不在系统提示里留空段）。为什么要有它：以前这件事由第三方插件 dsh-purge 干，它把同一段注两遍（实测每次调用白付约 6.4k token），而且为了改文件把宿主代码打了 86 条补丁。这里只做注入，且按段名幂等。",
+  "enabled": true,
+  "file": "",
+  "maxBytes": 16384
+}
