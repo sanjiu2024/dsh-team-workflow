@@ -8,6 +8,24 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.17.1] - 2026-10-31
+
+### 修复
+
+- **rtk 压缩把 spill 的恢复路径吞了**（`lib/rtk.js:196`）。
+
+  `tools/post-execute` 是 waterfall，`tool-fs-search` 也挂在上面：grep / glob 命中
+  超上限时，它把完整结果落进 spill，再把 `content` 换成带
+  `Full grep result stored at: <路径>` 的版本。rtk 拿 `result.content`（渲染原文）
+  去压、又整体覆盖 `decision.content`，那条恢复路径就没了。
+
+  实测（2026-10-31）：5000 行命中被截到 250 条，完整结果**确实落盘 167824 字节**，
+  模型看到的却是「The complete result could not be saved」——于是它去缩小搜索范围，
+  而不是读那个文件。文件白存。
+
+  修法：压 `decision.content ?? result.content`，`before/after` 统计同步换口径。
+  自检新增 8b 段钉住（改回 `result.content` 会红）。
+
 ## [2.17.0] - 2026-10-31
 
 ### 新增

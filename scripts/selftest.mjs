@@ -368,6 +368,49 @@ assert.deepEqual(RTK_FIELDS.compactTools(["grep"]), ["grep"], "合法数组应�
 // —— 8. tools/post-execute 挂上了 ——
 
 assert.ok(ctx._handlers.has("tools/post-execute"), "没订阅 tools/post-execute");
+
+// —— 8b. rtk 压缩必须作用在「下游换过的」content 上 ——
+//
+// tool-fs-search 也挂在 tools/post-execute 上：grep/glob 命中超上限时，它把完整
+// 结果落进 spill，再把 content 换成带 `Full grep result stored at: …` 的版本。
+// rtk 若拿 result.content（渲染原文）去压、再整体覆盖 decision.content，那条恢复
+// 路径就被吞掉 —— 2026-10-31 实测：完整结果确实落盘 167824 字节，模型看到的却是
+// 「The complete result could not be saved」，于是去缩小搜索而不是读那个文件。
+{
+	const { installRtk } = await import("../lib/rtk.js");
+	const hooks = new Map();
+	const rtk = installRtk(
+		{
+			on(event, handler) {
+				hooks.set(event, handler);
+				return () => {};
+			},
+			systemPrompt: { section: () => () => {} },
+			logger: { warn() {} },
+			baseUrl: undefined,
+		},
+		{ ...RTK_DEFAULTS },
+	);
+	assert.ok(rtk.active, "本机 tools/rtk.exe 在，active 必须为 true —— 否则下面这条测不到");
+	const handler = hooks.get("tools/post-execute");
+	assert.equal(typeof handler, "function", "rtk 必须挂 tools/post-execute");
+
+	// 两份都超过 maxLines(220)，都会被压；差别只在尾部那句话。
+	const body = Array.from({ length: 300 }, (_, i) => `src/f${i}.ts:${i}: 命中行`).join("\n");
+	const rendered = [{ type: "text", text: `${body}\n(The complete result could not be saved; narrow pattern.)` }];
+	const replaced = [
+		{ type: "text", text: `${body}\n(Full grep result stored at: /tmp/spill/grep-results.txt. Use read with offset/limit.)` },
+	];
+
+	const decision = await handler({ name: "grep" }, { content: rendered }, async () => ({ kind: "accept", content: replaced }));
+	const text = (decision.content ?? []).map((b) => b?.text ?? "").join("\n");
+	assert.ok(text.includes("省略"), "压缩本身仍要发生，否则这条测不到覆盖问题");
+	assert.ok(
+		text.includes("Full grep result stored at:"),
+		"压缩必须作用在下游换过的 content 上：压没了 spill 恢复路径，模型就不知道完整结果在哪",
+	);
+	assert.ok(!text.includes("could not be saved"), "渲染原文里那句不该出现在最终结果里");
+}
 // pi-lens 是**可选**能力（`lib/lens.js` 的查找顺序就写着：显式配置 → vendor → ~/.pi → profile）。
 // 干净 clone 里 vendor/ 是 gitignore 的，~/.pi 也未必有 —— 那种情况下不该红，说一声跳过。
 {
