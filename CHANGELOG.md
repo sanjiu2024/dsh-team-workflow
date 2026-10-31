@@ -45,6 +45,11 @@
   宏/装饰器生成物/重载看不见；跳过 `node_modules`/`dist`/`.git` 等，三层体积上限
   （单文件字节、文件数、输出字符）防止把一个仓库灌进一条工具结果。
 
+  地图只列**模块级**符号：函数内的 `const localX = …` 不进地图（实测第一版把
+  `pkgRoot=`、`bundleDir=` 这类局部常量也列了出来，地图退化成噪音）；同一文件内
+  函数/类/类型排在模块级常量之前，否则 `const` 一多就把函数挤出每文件配额。
+  而 `symbol_refs` 仍把局部声明算作定义 —— 用户可能要找的就是那个局部变量。
+
   配置：`team/extensions/codeintel.json`（`enabled`、`maxFiles`、`maxFileBytes`、
   `maxOutputChars`、`maxSymbolsPerFile`、`maxHits`、`defaultDepth`）。
   自检：`scripts/selftest-codeintel.mjs`（第 33 条）。

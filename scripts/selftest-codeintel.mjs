@@ -43,7 +43,8 @@ const write = (rel, text) => {
 
 write("src/a.js", [
 	"export function alpha(x) {",
-	"\treturn alphabet(x) + alphaBeta;",
+	"\tconst localOnly = 1;",
+	"\treturn alphabet(x) + alphaBeta + localOnly;",
 	"}",
 	"export const gamma = 1;",
 	"class Delta {}",
@@ -94,6 +95,7 @@ const files = scanFiles(tmp, scanOpts);
 	assert.equal(names.filter((n) => n === "alpha").length, 1, "同名只留第一次");
 	assert.equal(syms.find((s) => s.name === "alpha").kind, "fn");
 	assert.equal(syms.find((s) => s.name === "Delta").kind, "class");
+	assert.ok(!names.includes("localOnly"), `函数内局部 const 不应进地图（否则地图退化成噪音）：${names.join(",")}`);
 
 	const py = extractSymbols(fs.readFileSync(path.join(tmp, "src/b.py"), "utf8"), 20);
 	assert.deepEqual(py.map((s) => s.name), ["alpha", "Epsilon"], `python 符号：${py.map((s) => s.name).join(",")}`);
@@ -173,6 +175,9 @@ const files = scanFiles(tmp, scanOpts);
 
 	const capped = findReferences(files, "alpha", { maxHits: 1, maxOutputChars: 24_000 });
 	assert.equal(capped.split("\n").filter((l) => l.includes("src/") || l.includes("lib/")).length, 1, "maxHits 必须生效");
+	// 地图不列局部量，但**定位**仍把局部声明算定义 —— 用户可能就在找那个局部变量
+	const localRep = findReferences(files, "localOnly", { maxHits: 10, maxOutputChars: 4000 });
+	assert.ok(localRep.includes("定义 1 处"), `局部声明在定位里应算定义：${localRep.slice(0, 80)}`);
 	console.log("✓ symbol_refs：定义/引用分组、词边界、零命中、上限");
 }
 
