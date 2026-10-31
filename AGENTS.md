@@ -110,7 +110,8 @@ node bin/dsh-team.mjs squad ls [--all] # 落盘的小队（实时那份在 Web �
 
 ## 6. 本机环境事实
 
-- dsh `0.2.1-rc.2`；本包以 symlink 装在 `~/.dsh/profiles/web/node_modules/` 下。
+- dsh `0.2.1-rc.5`（2026-10-31 从 rc.2 升级）；本包以 symlink 装在 `~/.dsh/profiles/desktop/node_modules/` 下。
+  `web` 那个 profile 目录已经不存在了，别照旧笔记去找。档位模型走 `opencode-go`。
 - **本机有 bash，只是曾经不在 PATH 上**（2026-10-19 查实并修）：Git for Windows 自带
   `C:\Program Files\Git\bin\bash.exe`（`usr\bin\bash.exe` 也在，跑起来是 `MINGW64_NT-10.0-22631`），
   但 Machine 与 User 的 PATH 都只有 `C:\Program Files\Git\cmd`（那是给 `git.exe` 的），**没有 `Git\bin`**。
