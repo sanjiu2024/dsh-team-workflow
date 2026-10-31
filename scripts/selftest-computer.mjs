@@ -4,7 +4,7 @@
  *
  * 五段：
  *   1. 纯函数（组合键解析 / 钩子事件分类 / 命令编码 / 应答解析）。
- *   2. 默认启用 + 工具面（不带覆盖恰好 7 个；显式 enabled:false 一个不注册）。
+ *   2. 默认启用 + 工具面（不带覆盖恰好 8 个；显式 enabled:false 一个不注册）。
  *   3. 审批语义：首次问、本会话放行、新会话重新问、拒绝即拒绝（fail-safe）。
  *   4. 路由门禁：模型不支持 image 输入时截屏必须拒绝（反向可红）。
  *   5. **真跑守护进程**：坐标读写、AI 注入放行、fakehuman（不带标记）被拦、
@@ -169,9 +169,10 @@ const makeCtx = () => {
 	return ctx;
 };
 
-const EXPECTED_TOOLS = ["screenshot", "cursor_position", "mouse_move", "mouse_click", "scroll", "type_text", "key_press"];
+// 7 个 REQ-002 动作集 + 1 个 REQ-024 步骤 6 的观测工具（带编号截图 + 元素清单）
+const EXPECTED_TOOLS = ["screenshot", "observe_screen", "cursor_position", "mouse_move", "mouse_click", "scroll", "type_text", "key_press"];
 
-check("默认启用（1.7.0 起）：不带覆盖恰好注册 7 个工具（REQ 动作集）", () => {
+check("默认启用：不带覆盖恰好注册 8 个工具（REQ-002 动作集 + 步骤 6 的 observe_screen）", () => {
 	const ctx = makeCtx();
 	const on = installComputer(ctx, { config: { ...COMPUTER_DEFAULTS } });
 	if (process.platform === "win32") {
