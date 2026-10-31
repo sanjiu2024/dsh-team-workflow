@@ -12,5 +12,7 @@
   "_maxHits 说明": "symbol_refs 单次命中上限，超了提示收窄。",
   "maxHits": 60,
   "_defaultDepth 说明": "目录树默认深度，防止在深嵌套仓库里把整棵树拉进来。",
-  "defaultDepth": 8
+  "defaultDepth": 8,
+  "_maxDirs 说明": "目录遍历上限。maxFiles 只限「找到的文件」，空目录不计数（实测 3000 个空目录走了 484ms），所以单独给一个兜底。",
+  "maxDirs": 20000
 }

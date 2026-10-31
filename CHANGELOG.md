@@ -91,9 +91,16 @@
   函数/类/类型排在模块级常量之前，否则 `const` 一多就把函数挤出每文件配额。
   而 `symbol_refs` 仍把局部声明算作定义 —— 用户可能要找的就是那个局部变量。
 
+  **截断必须说得出来**：`maxFiles`、默认 `depth=8`、`maxDirs` 任一命中时，
+  地图头部与「没找到」文案都会带「扫描不完整（…）」—— 审查实测过，符号只在第 9 层时
+  `symbol_refs` 原本回「没找到（符号名区分大小写）」，把「没扫到」说成「不存在」，
+  模型据此换个写法去猜。同理 `focus` 现在参与遍历（`maxFiles=2` + focus 指向第 3 个文件
+  时，先截断再过滤会回「0 个源文件」），超长行（压缩产物）被跳过时也会计数报出。
+
   配置：`team/extensions/codeintel.json`（`enabled`、`maxFiles`、`maxFileBytes`、
-  `maxOutputChars`、`maxSymbolsPerFile`、`maxHits`、`defaultDepth`）。
-  自检：`scripts/selftest-codeintel.mjs`（第 33 条）。
+  `maxOutputChars`、`maxSymbolsPerFile`、`maxHits`、`defaultDepth`、`maxDirs`）。
+  自检：`scripts/selftest-codeintel.mjs`（第 33 条），并已接入
+  `scripts/selftest-tool-schema.mjs` 的真 schema 校验（23 个工具）。
 
 ## [2.16.3] - 2026-10-31
 

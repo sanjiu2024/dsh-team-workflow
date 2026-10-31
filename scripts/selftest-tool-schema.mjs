@@ -198,17 +198,21 @@ const { installBashLinux, BASH_DEFAULTS } = await import(new URL("lib/bash-linux
 const { installWorktree, WORKTREE_DEFAULTS } = await import(new URL("lib/worktree.js", ROOT).href);
 const { installComputer, COMPUTER_DEFAULTS } = await import(new URL("lib/computer.js", ROOT).href);
 const { installSquad, SQUAD_DEFAULTS } = await import(new URL("lib/squad.js", ROOT).href);
+const { installCodeintel } = await import(new URL("lib/codeintel.js", ROOT).href);
 
 // 条数按平台算：computer 是 Windows-only（lib/computer.js 非 win32 直接 disabled），
 // 写死 15 在 Linux 上必红 —— 那是断言过时，不是「工具没装上」。
-// 非 win32：bash×4 + worktree×4 + squad×6；win32 再加上 computer 的 7 个。
-const expectedTools = process.platform === "win32" ? 21 : 14;
+// 非 win32：bash×4 + worktree×4 + squad×6 + codeintel×2；win32 再加上 computer 的 7 个。
+const expectedTools = process.platform === "win32" ? 23 : 16;
 
 {
 	const { ctx, tools } = collector();
 	installBashLinux(ctx, { config: { ...BASH_DEFAULTS } });
 	installWorktree(ctx, { config: { ...WORKTREE_DEFAULTS } });
 	installSquad(ctx, { config: { ...SQUAD_DEFAULTS } });
+	// codeintel 的两个工具（REQ-033）：它们是纯本地正则工具，但 output.schema 一样要过
+	// register() 的真校验 —— 假 ctx 只存 Map，这里才验得出来。
+	installCodeintel(ctx, {});
 	// computer 默认关（1.6.x），这里显式打开才能把 7 个工具装进来被扫到。
 	const computer = installComputer(ctx, { config: { ...COMPUTER_DEFAULTS, enabled: true } });
 

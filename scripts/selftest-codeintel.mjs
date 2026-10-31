@@ -67,7 +67,8 @@ const scanOpts = {
 	maxFileBytes: CODEINTEL_DEFAULTS.maxFileBytes,
 	depth: 12,
 };
-const files = scanFiles(tmp, scanOpts);
+const scanned = scanFiles(tmp, scanOpts);
+const files = scanned.files;
 
 // ── 1. 扫描：跳过表 ──────────────────────────────────────────────────────────
 
@@ -79,6 +80,9 @@ const files = scanFiles(tmp, scanOpts);
 	assert.ok(!rels.some((r) => r.startsWith(".git/")), ".git 不应被扫进来");
 	assert.ok(!rels.includes("src/fake.js"), "含 NUL 的文件应被判为二进制并跳过");
 	assert.ok(!rels.includes("assets/logo.png"), "非源码扩展名不应被扫");
+	assert.deepEqual(rels, [...rels].sort(), "结果必须按 rel 排序：readdir 顺序跨平台不一致，maxHits 砍哪条会随平台变");
+	assert.equal(scanned.truncated.files, false, "没设上限时不该报文件数截断");
+	assert.equal(scanned.truncated.depth, false, "没设上限时不该报深度截断");
 	console.log("✓ 跳过表：node_modules/dist/.git/二进制/非源码");
 }
 
@@ -181,6 +185,35 @@ const files = scanFiles(tmp, scanOpts);
 	console.log("✓ symbol_refs：定义/引用分组、词边界、零命中、上限");
 }
 
+// ── 5b. 截断必须报出来（审查 P1：静默截断 = 把「没扫到」说成「不存在」）──────
+
+{
+	const limited = scanFiles(tmp, { ...scanOpts, maxFiles: 2 });
+	assert.equal(limited.files.length, 2, "maxFiles 应恰好截到 2 个");
+	assert.equal(limited.truncated.files, true, "maxFiles 命中必须标记截断");
+	const limitedMap = buildRepoMap(limited.files, { maxSymbolsPerFile: 10, maxOutputChars: 4000, truncated: limited.truncated });
+	assert.ok(limitedMap.includes("扫描不完整"), `地图要提示扫描不完整：${limitedMap.slice(0, 90)}`);
+
+	const deep = scanFiles(tmp, { ...scanOpts, depth: 1 });
+	assert.equal(deep.files.some((x) => x.rel.includes("sub/deep")), false, "depth=1 时第 3 层文件不该被扫到");
+	assert.equal(deep.truncated.depth, true, "深度截断必须标记");
+	const zeroRep = findReferences(deep.files, "deepOne", { maxHits: 10, maxOutputChars: 2000, truncated: deep.truncated });
+	assert.ok(zeroRep.includes("扫描不完整"), `零命中时必须带上截断提示，否则模型会以为符号不存在：${zeroRep.slice(0, 90)}`);
+
+	// focus 必须参与遍历：maxFiles=2 时靠 focus 仍要找回「本该被截掉」的文件
+	const focusedScan = scanFiles(tmp, { ...scanOpts, maxFiles: 2, focus: "sub/deep" });
+	assert.deepEqual(focusedScan.files.map((x) => x.rel), ["src/sub/deep/c.ts"], "focus 应参与遍历，而不是扫完再过滤");
+
+	// 超长行（压缩产物）静默跳过会把「有」说成「没有」，必须计数报出
+	const longDir = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-codeintel-long-"));
+	fs.writeFileSync(path.join(longDir, "x.js"), `const y = alpha; ${"//".repeat(400)}
+`);
+	const longRep = findReferences(scanFiles(longDir, scanOpts).files, "alpha", { maxHits: 10, maxOutputChars: 4000 });
+	assert.ok(longRep.includes("行过长未扫"), `超长行要计数报出：${longRep.slice(0, 90)}`);
+	fs.rmSync(longDir, { recursive: true, force: true });
+	console.log("✓ 截断：maxFiles/depth/focus/超长行都报得出来");
+}
+
 // ── 6. 真挂两个工具（假 ctx 照 cordis 语义：没有任何多余属性）──────────────
 
 {
@@ -220,6 +253,12 @@ const files = scanFiles(tmp, scanOpts);
 	const off = installCodeintel({ tools: { register: (d) => (empty.set(d.name, d), () => {}) }, logger: {} }, { enabled: false });
 	assert.equal(off.enabled, false);
 	assert.equal(empty.size, 0, "enabled=false 时不应注册工具");
+	// exec 里没有 session.cwd 时回落 process.cwd() —— 这条分支之前零断言（审查 P2）。
+	// 只验「不抛且给正常输出」，不验内容：内容取决于测试进程的 cwd，钉死它会变成脆断言。
+	const fallback = await mapTool.execute({ path: "." }, {});
+	assert.equal(typeof fallback.map, "string", "缺 session.cwd 时应回落 process.cwd 且不抛");
+	assert.ok(fallback.map.startsWith("repo_map"), `回落分支也要给正常输出：${String(fallback.map).slice(0, 60)}`);
+
 	inst.dispose();
 	console.log("✓ 真挂载：两个工具、相对路径、关闭开关");
 }
