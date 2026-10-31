@@ -8,6 +8,41 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.20.1] - 2026-11-01
+
+### 新增
+
+- **Ralph 循环 / Workflow 编排两个新模式**（REQ-034）。把两个**工具**做成两个**预设**：
+
+  - `ralph`：编排工具只有 `dsh-tool-ralph` —— 一个目标反复迭代，每轮开一个干净子代理，
+    只带目标与上一轮的结构化交接
+  - `workflow`：只有 `dsh-tool-workflow` —— 写 JS 脚本扇出多个子代理，带阶段与结构化结果
+
+  两者都完整继承团队预设的其余能力（压缩阈值、档位工具行、红队工具），**工具面互斥**，
+  所以模型不会把两种编排混着用。`workflow-ptc` 在两边都留着 —— 它提供 `workflowEngine`
+  服务，`dsh-tool-ralph` 的 `inject` 里就有它。
+
+  入口：`/mode list | team | ralph | workflow`。切换沿用 REQ-030 的「开新会话 + 交接预填」
+  —— 宿主 `AgentPresetRegistry.select()` 在会话开始后抛 `agent-preset/locked`，不绕。
+
+- **`preset install` 现在写三份 bundle**：`preset-team` / `preset-ralph` / `preset-workflow`，
+  各自一条 profile 接线（`dependencies` + `dsh.profile.bundles` + `node_modules` 链接）。
+  一个 bundle 只能声明一个 preset（`dsh.bundle.patch` 指向单个 YAML），所以它们各占一个目录。
+
+### 修复
+
+- **解包布局下找不到 standard 底稿**（`lib/dsh-install.js`）。`dsh-purge apply` 会把
+  `app.asar` 解开，之后 `standardFromInstall` 只认 `resources/app.asar`，于是
+  `dsh-team preset install` 报「找不到 standard 预设」—— 而解出来的文件明明在
+  （2026-11-01 实测）。现在补了已解包分支，并**优先读 `.dshpurge.bak`**：purge 改过
+  standard（去掉身份句），拿改过的那份当「出厂底稿」会让 `generateRc2TeamPreset` 的
+  persona 匹配直接失败。
+
+- **新增 bundle 时 pnpm 必然被拒**（`bin/dsh-team.mjs`）。Electron 独占管理的 profile 上
+  CLI 的 pnpm 从 0.2.1 起必然失败，以前只影响 team 那一个 bundle（早就接好、走不到这条），
+  新增两个模式 bundle 后第一次必然走到 —— 会把一次成功的 install 变成退出码 1。
+  现在 pnpm 失败时自己建 junction（绝对路径，Windows 上不需要开发者模式或管理员权限）。
+
 ## [2.20.0] - 2026-11-01
 
 ### 新增
@@ -30,6 +65,7 @@
 
 - 这套部署（Morphic + oc-proxy + mihomo + search-api）目前跑在一台外部服务器上，
   仓库里只有调用侧；服务端脚本没有进仓库。
+
 
 ## [2.19.0] - 2026-11-01
 

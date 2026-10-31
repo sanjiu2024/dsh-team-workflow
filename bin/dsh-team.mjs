@@ -36,8 +36,10 @@ import {
 	upsertSettings,
 } from "../lib/mc-config.js";
 import {
+	generateModePreset,
 	generateRc2TeamPreset,
 	generateTeamPreset,
+	MODE_PRESETS,
 	readEffectiveThrift,
 	resolveThriftConfig,
 } from "../lib/preset-gen.js";
@@ -633,8 +635,21 @@ function cmdSkills() {	const dir = path.join(PKG_ROOT, "skills");
  */
 
 /** 团队预设 bundle 的落点：放 DSH_HOME 下（无空格，且不往仓库里拉二进制/生成物） */
+/**
+ * 某个预设 bundle 的目录。`team` 是默认那个；两个编排模式（REQ-034）各占一个 ——
+ * 一个 bundle 只能声明一个 preset（`package.json` 的 `dsh.bundle.patch` 指向单个 YAML），
+ * 所以它们不能塞进同一个目录。
+ */
+function presetBundleDir(kind = "team") {
+	return path.join(dshHome, "team-workflow", `preset-${kind}`);
+}
 function teamBundleDir() {
-	return path.join(dshHome, "team-workflow", "preset-team");
+	return presetBundleDir("team");
+}
+
+/** bundle 包名：team 沿用旧名（已装过的人不必重新接线），模式预设各一个。 */
+function presetBundleName(kind = "team") {
+	return kind === "team" ? PRESET_BUNDLE_NAME : `${PRESET_BUNDLE_NAME}-${kind}`;
 }
 
 /**
@@ -651,24 +666,33 @@ function dshInstallRoots() {
 	return roots;
 }
 
-/** 生成并写下 bundle 包；返回生成结果（dry-run 时只打印） */
-function writeTeamPresetBundle(standard) {
+/** 生成并写下 bundle 包；返回生成结果（dry-run 时只打印）。kind = "team" | "ralph" | "workflow" */
+function writeTeamPresetBundle(standard, { kind = "team" } = {}) {
 	const pristine = standard.text;
+	const label = kind === "team" ? "团队模式" : (MODE_PRESETS[kind]?.name ?? kind);
 	let generated;
 	try {
-		generated = generateRc2TeamPreset(pristine, {
-			settings: readTeamSettings(),
-			overlay: readThriftOverlay(),
-		});
+		generated =
+			kind === "team"
+				? generateRc2TeamPreset(pristine, {
+						settings: readTeamSettings(),
+						overlay: readThriftOverlay(),
+					})
+				: generateModePreset(pristine, {
+						mode: kind,
+						settings: readTeamSettings(),
+						overlay: readThriftOverlay(),
+					});
 	} catch (error) {
 		// 不合法就在这里死：写进去 dsh 加载期会直接抛错，比现在报错严重得多
-		fail(`预设生成失败：${error.message}`);
+		fail(`${label}预设生成失败：${error.message}`);
 	}
-	if (generated.changed === 0) {
+	if (generated.changed === 0 && kind === "team") {
 		console.log("  警告：team/agent-settings.json 里没有 compaction，阈值保持 standard 默认");
 	}
 
-	const dir = teamBundleDir();
+	const dir = presetBundleDir(kind);
+	const bundleName = presetBundleName(kind);
 	if (dryRun) {
 		console.log(`[dry-run] 写 ${dir}/{package.json, lib/index.js, cordis.patch.yml}`);
 		return generated;
@@ -678,10 +702,10 @@ function writeTeamPresetBundle(standard) {
 		path.join(dir, "package.json"),
 		`${JSON.stringify(
 			{
-				name: PRESET_BUNDLE_NAME,
+				name: bundleName,
 				version: pkg.version,
 				private: true,
-				description: "团队模式 agent 预设（由 dsh-team preset install 生成，勿手改）",
+				description: `${label} agent 预设（由 dsh-team preset install 生成，勿手改）`,
 				type: "module",
 				main: "./lib/index.js",
 				exports: { ".": "./lib/index.js" },
@@ -693,7 +717,7 @@ function writeTeamPresetBundle(standard) {
 	);
 	fs.writeFileSync(
 		path.join(dir, "lib", "index.js"),
-		`export const name = ${JSON.stringify(PRESET_BUNDLE_NAME)};\n`,
+		`export const name = ${JSON.stringify(bundleName)};\n`,
 	);
 	fs.writeFileSync(path.join(dir, "cordis.patch.yml"), generated.text, "utf8");
 	console.log(`$ 写 ${dir}`);
@@ -701,23 +725,25 @@ function writeTeamPresetBundle(standard) {
 }
 
 /** 把 bundle 挂进 profile（dependencies + bundles + pnpm）；已装过就只更新内容 */
-function installTeamPresetBundle() {
+function installTeamPresetBundle(kind = "team") {
+	const bundleName = presetBundleName(kind);
+	const bundleDir = presetBundleDir(kind);
 	const before = readProfilePkg();
 	const deps = before.dependencies ?? {};
 	const bundles = before.dsh?.profile?.bundles ?? [];
 	const next = {
 		...before,
-		dependencies: { ...deps, [PRESET_BUNDLE_NAME]: `link:${teamBundleDir()}` },
+		dependencies: { ...deps, [bundleName]: `link:${bundleDir}` },
 		dsh: {
 			...before.dsh,
 			profile: {
 				...before.dsh?.profile,
-				bundles: bundles.includes(PRESET_BUNDLE_NAME) ? bundles : [...bundles, PRESET_BUNDLE_NAME],
+				bundles: bundles.includes(bundleName) ? bundles : [...bundles, bundleName],
 			},
 		},
 	};
 	if (dryRun) {
-		console.log(`[dry-run] 写 ${path.join(profileDir, "package.json")}（dependencies + bundles 加 ${PRESET_BUNDLE_NAME}）`);
+		console.log(`[dry-run] 写 ${path.join(profileDir, "package.json")}（dependencies + bundles 加 ${bundleName}）`);
 	} else if (JSON.stringify(next) !== JSON.stringify(before)) {
 		writeJsonAtomic(path.join(profileDir, "package.json"), next);
 		console.log(`$ 写 ${path.join(profileDir, "package.json")}`);
@@ -726,12 +752,12 @@ function installTeamPresetBundle() {
 	// （`error: profile "desktop" is managed exclusively by the Electron application`），
 	// 而 Electron 版 profile 上这条链**永远**是「已接好」—— 跑它只会把一次成功的
 	// preset install 变成退出码 1（预设文件其实早写好了）。
-	const linked = path.join(profileDir, "node_modules", PRESET_BUNDLE_NAME);
+	const linked = path.join(profileDir, "node_modules", bundleName);
 	// 光「存在」不算接好：node_modules 里若是个**实目录**、或链到别处，跳过 pnpm 就会让
 	// 刚生成的 patch 静默不生效。所以要比 realpath —— 它必须真指着我们那个 bundle 目录。
 	const linksHere = () => {
 		try {
-			return fs.realpathSync(linked) === fs.realpathSync(teamBundleDir());
+			return fs.realpathSync(linked) === fs.realpathSync(bundleDir);
 		} catch {
 			return false;
 		}
@@ -750,8 +776,8 @@ function sameLinkPath(spec, dir) {
 
 const wired =
 		linksHere() &&
-		sameLinkPath((before.dependencies ?? {})[PRESET_BUNDLE_NAME], teamBundleDir()) &&
-		bundles.includes(PRESET_BUNDLE_NAME);
+		sameLinkPath((before.dependencies ?? {})[bundleName], bundleDir) &&
+		bundles.includes(bundleName);
 	if (wired) {
 		console.log("  已接好（dependencies + bundles + node_modules 都在），跳过 pnpm");
 		return;
@@ -761,7 +787,22 @@ const wired =
 		return;
 	}
 	const result = run("dsh", ["plugin", "--profile", profile, "install"]);
-	if (result.status !== 0) fail(`pnpm install 失败（退出码 ${result.status}）`);
+	if (result.status !== 0) {
+		// Electron 独占管理的 profile 上，CLI 的 pnpm 从 0.2.1 起必然被拒
+		// （`profile "desktop" is managed exclusively by the Electron application`）。
+		// 以前这条只影响 team 那一个 bundle，而它早就接好了、走不到这里；
+		// REQ-034 新增两个模式 bundle 之后第一次必然走到 —— 所以这里自己补 link。
+		// 用 junction（绝对路径）：Windows 上它不需要开发者模式或管理员权限，
+		// 而 `symlink(..., "dir")` 需要。
+		if (!fs.existsSync(linked)) {
+			try {
+				fs.symlinkSync(bundleDir, linked, "junction");
+			} catch (error) {
+				fail(`pnpm 被拒（退出码 ${result.status}），手动建 link 也失败：${error.message}`);
+			}
+			console.log(`  注意：pnpm 被拒（Electron 独占 profile），已手动建 junction ${bundleName} → ${bundleDir}`);
+		}
+	}
 	if (!fs.existsSync(linked)) fail(`装完了但 ${linked} 不存在；检查上面的 pnpm 输出`);
 }
 
@@ -816,9 +857,14 @@ function cmdPresetInstall() {
 	const rc2 = findRc2StandardPatch({ profileDir });
 	if (rc2) {
 		console.log(`预设布局：0.2.0-rc.x（声明行 + bundle 承载）\n  底稿：${rc2.label}`);
-		const generated = writeTeamPresetBundle(rc2);
-		installTeamPresetBundle();
-		ok(`团队预设已就位：${teamBundleDir()} → profile "${profile}"`);
+		// 三个预设各写一份 bundle（REQ-034）：team 是默认，ralph / workflow 是编排模式。
+		// 一个 bundle 只能声明一个 preset，所以它们各占一个目录 + 一条 profile 接线。
+		let generated;
+		for (const kind of ["team", ...Object.keys(MODE_PRESETS)]) {
+			generated = writeTeamPresetBundle(rc2, { kind });
+			installTeamPresetBundle(kind);
+			ok(`${kind} 预设已就位：${presetBundleDir(kind)} → profile "${profile}"`);
+		}
 		if (generated.changed > 0) console.log(`  已应用 ${generated.changed} 处团队设置。`);
 		if (has("default")) setDefaultPreset();
 		else if (isDefaultPreset()) ok(`默认预设已经是 ${PRESET_ID}`);
