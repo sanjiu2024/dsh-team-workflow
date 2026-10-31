@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "_说明": "代码情报两个原生工具（repo_map / symbol_refs）。不走 MCP、不引依赖、不发网络请求；符号识别是正则级近似，不起 LSP。",
+  "_maxFiles 说明": "一次最多扫多少源文件。2000 个约 1~2 秒；大仓库用 path/focus 收窄，别靠调大这个数。",
+  "maxFiles": 2000,
+  "_maxFileBytes 说明": "单文件不读上限。打包产物/压缩 js 常在这个量级以上，读了只会把上下文灌满。",
+  "maxFileBytes": 524288,
+  "_maxOutputChars 说明": "输出硬上限。24000 字符约 6000 tok，相当于一次「读 5 个文件」的成本；再高就不划算了。",
+  "maxOutputChars": 24000,
+  "_maxSymbolsPerFile 说明": "每个文件最多列几个符号。地图是索引不是文档，列全了没人看。",
+  "maxSymbolsPerFile": 10,
+  "_maxHits 说明": "symbol_refs 单次命中上限，超了提示收窄。",
+  "maxHits": 60,
+  "_defaultDepth 说明": "目录树默认深度，防止在深嵌套仓库里把整棵树拉进来。",
+  "defaultDepth": 8
+}

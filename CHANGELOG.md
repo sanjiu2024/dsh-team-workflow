@@ -8,6 +8,29 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.17.0] - 2026-10-31
+
+### 新增
+
+- **代码情报：`repo_map` / `symbol_refs` 两个原生工具**（REQ-033）。
+  过去的探查路径是「glob 一圈 → 读几个文件 → 不对 → 再 grep → 再读」，
+  一次「这个符号在哪、谁在调它」常常吃掉 6~10 步，而每步都要重付整份上下文地板。
+  现在一次调用拿全：`repo_map` 给「有哪些源文件、每个文件导出什么」，
+  `symbol_refs` 给「这个符号的全部定义行与引用行（`文件:行 + 源码`）」。
+
+  **为什么不做成 MCP**：社区对应物是 Serena / repomix 两个 MCP server，
+  但接 MCP 要把每个 server 的 tool schema 常驻上下文（几百到几千 token，逐步重付），
+  还要多一层 `mcp__server__tool` 桥接。两个原生工具加起来约 240 tok，后续走 cacheRead 0.1x ——
+  与本包 `docs`（context7）、`lens_*` 是同一套取舍。
+
+  能力边界写在工具描述里：符号识别是**正则级近似**（不起 LSP），
+  宏/装饰器生成物/重载看不见；跳过 `node_modules`/`dist`/`.git` 等，三层体积上限
+  （单文件字节、文件数、输出字符）防止把一个仓库灌进一条工具结果。
+
+  配置：`team/extensions/codeintel.json`（`enabled`、`maxFiles`、`maxFileBytes`、
+  `maxOutputChars`、`maxSymbolsPerFile`、`maxHits`、`defaultDepth`）。
+  自检：`scripts/selftest-codeintel.mjs`（第 33 条）。
+
 ## [2.16.3] - 2026-10-31
 
 ### 修复
