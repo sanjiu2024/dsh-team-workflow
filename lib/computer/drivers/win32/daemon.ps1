@@ -3,14 +3,18 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
 
 $src = @'
 using System;
 using System.IO;
+using System.Text;
 using System.Threading;
 using System.Runtime.InteropServices;
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.Windows.Automation;
 
 public static class DshGuard {
     public const int MAGIC = 1146314819; // 0x44534843 = "DSHC" —— 与宿主 lib/computer.js 的 MAGIC 一致
@@ -206,9 +210,105 @@ public static class DshGuard {
             bmp.Save(file, ImageFormat.Png);
         }
     }
+
+    // ── UIA 观测（SoM 的地基，REQ-024 步骤 6）──────────────────────────────
+    // 只回「能操作」或「有名字且有意义」的元素：整棵树按 REQ §5 实测是 10 万字符
+    // 量级，直接塞进模型上下文比截图贵 20 倍。过滤在服务端做，模型只看编号表。
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+
+    static string Esc(string s) {
+        if (string.IsNullOrEmpty(s)) return "";
+        var sb = new StringBuilder(s.Length + 8);
+        foreach (char c in s) {
+            if (c == '"' || c == '\\') { sb.Append('\\').Append(c); }
+            else if (c == '\n') sb.Append("\\n");
+            else if (c == '\r') sb.Append("\\r");
+            else if (c == '\t') sb.Append("\\t");
+            else if (c < ' ') { sb.Append("\\u").Append(((int)c).ToString("x4")); }
+            else sb.Append(c);
+        }
+        return sb.ToString();
+    }
+
+    static string PatternsOf(AutomationElement e) {
+        // GetSupportedPatterns 一次跨进程调用拿全，比逐个 TryGetCurrentPattern 快得多
+        var sb = new StringBuilder();
+        try {
+            foreach (var p in e.GetSupportedPatterns()) {
+                string n = p.ProgrammaticName.Replace("PatternIdentifiers.Pattern", "").ToLowerInvariant();
+                if (n.Length == 0) continue;
+                if (sb.Length > 0) sb.Append(",");
+                sb.Append('"').Append(n).Append('"');
+            }
+        } catch { }
+        return sb.ToString();
+    }
+
+    /// 遍历窗口的无障碍树，把可交互元素写成 JSON 到 OutDir/observe.json，返回元素数。
+    /// hwnd=0 表示用当前前台窗口。返回 -1 表示拿不到窗口/树。
+    public static int Observe(int hwnd) {
+        IntPtr h = hwnd > 0 ? (IntPtr)hwnd : GetForegroundWindow();
+        if (h == IntPtr.Zero) return -1;
+        AutomationElement root;
+        try { root = AutomationElement.FromHandle(h); } catch { return -1; }
+        if (root == null) return -1;
+        AutomationElementCollection all;
+        try { all = root.FindAll(TreeScope.Descendants, Condition.TrueCondition); } catch { return -1; }
+
+        // 窗口矩形：元素必须与它有交集才算「看得见」。滚动列表里的屏外项
+        // UIA 照样给真实坐标（经常是负的），只按 -10000 过滤会漏掉一大批。
+        System.Windows.Rect win;
+        try { win = root.Current.BoundingRectangle; } catch { win = System.Windows.Rect.Empty; }
+
+        var sb = new StringBuilder(8192);
+        int n = 0;
+        foreach (AutomationElement e in all) {
+            System.Windows.Rect r;
+            // BoundingRectangle 是唯一可靠的失效/屏外判据：实测进程被杀后
+            // Name 回空串、IsOffscreen 仍返回 false（骗人），只有读它才抛。
+            try { r = e.Current.BoundingRectangle; } catch { continue; }
+            if (r.IsEmpty || r.Width <= 0 || r.Height <= 0) continue;
+            if (r.X < -10000 || r.Y < -10000) continue;   // 最小化窗口落在 (-32000,-32000)
+            if (!win.IsEmpty) {
+                // 与窗口可视区无交集 = 屏外（滚动列表的虚拟化项常呈负坐标）
+                if (r.X + r.Width <= win.X || r.X >= win.X + win.Width) continue;
+                if (r.Y + r.Height <= win.Y || r.Y >= win.Y + win.Height) continue;
+            }
+
+            System.Windows.Automation.ControlType ct;
+            try { ct = e.Current.ControlType; } catch { continue; }
+            string role = ct.ProgrammaticName.Replace("ControlType.", "");
+            string name = "";
+            try { name = e.Current.Name ?? ""; } catch { }
+            string pats = PatternsOf(e);
+
+            // 只认「能操作」的模式。text / scrollitem 是只读的：
+            // 一段静态文字也支持 TextPattern、一个列表项也支持 ScrollItemPattern，
+            // 把它们当「可交互」会一口气留下几百个 Text（实测 683 个元素里 247 个是 Text）。
+            bool interactive = false;
+            foreach (string p in new string[] { "invoke", "value", "toggle", "selectionitem", "expandcollapse", "scroll", "rangevalue" }) {
+                if (pats.IndexOf("\"" + p + "\"", StringComparison.Ordinal) >= 0) { interactive = true; break; }
+            }
+            // 只留能操作的；纯标签（Text/Image/Document）除非自身可操作否则一律丢
+            if (!interactive) continue;
+            if (name.Length == 0 && role != "Edit") continue;   // 无名又不可操作的没意义
+
+            if (n > 0) sb.Append(",");
+            sb.Append("{\"role\":\"").Append(Esc(role)).Append("\"");
+            sb.Append(",\"name\":\"").Append(Esc(name)).Append("\"");
+            sb.Append(",\"x\":").Append((int)r.X).Append(",\"y\":").Append((int)r.Y);
+            sb.Append(",\"w\":").Append((int)r.Width).Append(",\"h\":").Append((int)r.Height);
+            sb.Append(",\"patterns\":[").Append(pats).Append("]}");
+            n++;
+        }
+        string json = "{\"hwnd\":" + h.ToInt64() + ",\"count\":" + n + ",\"elements\":[" + sb.ToString() + "]}";
+        File.WriteAllText(Path.Combine(OutDir, "observe.json"), json, new UTF8Encoding(false));
+        return n;
+    }
+
 }
 '@
-Add-Type -TypeDefinition $src -ReferencedAssemblies System.Drawing
+Add-Type -TypeDefinition $src -ReferencedAssemblies System.Drawing, UIAutomationClient, UIAutomationTypes, WindowsBase
 
 [DshGuard]::OutDir = $OutDir
 # 钩子跑在守护进程自己的独立线程上（紧消息循环）；下面的主循环只管文件轮询。
@@ -236,6 +336,14 @@ function Invoke-Body([string]$body) {
             [DshGuard]::Keys([uint16[]]$vks); return ''
         }
         'shot'    { [DshGuard]::Shot(($tok[1..($tok.Length - 1)] -join ' ')); return '' }
+        'observe' {
+            # observe [hwnd] —— 不给 hwnd 就观测前台窗口。结果写到 $OutDir/observe.json。
+            $h = 0
+            if ($tok.Length -ge 2) { $h = [int]$tok[1] }
+            $n = [DshGuard]::Observe($h)
+            if ($n -lt 0) { throw 'observe 失败：拿不到窗口或无障碍树' }
+            return 'observe ' + $n
+        }
         'fakehuman' {
             # 自检专用：模拟一条不带 MAGIC 的真实输入，用来端到端验证「钩子拦人放 AI」。
             #
