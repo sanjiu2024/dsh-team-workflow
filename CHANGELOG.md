@@ -8,6 +8,29 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.13.0] - 2026-10-31
+
+### 新增
+
+- **会话级换模式 `/preset`**（`lib/preset-switch.js` + `lib/commands.js`，REQ-030 方案 B）。
+  `/preset list` 看可用模式，`/preset use <id>` 换。
+
+  为什么不是原地换：宿主 `AgentPresetRegistry.select()` 在会话开始过之后直接抛
+  `agent-preset/locked`（`dsh-agent-preset-registry/lib/index.js:753-770`），fork 出来的会话
+  继承同一个边界也换不了；`create` 是**唯一**能带 `agentPreset` 的入口。所以这条路是
+  「写交接 → 用新 preset 建新会话 → 交接预填进新会话输入框 → 归档旧会话」。
+  交接只搬**最近几条人打的请求 + 上一步结论**（不搬全量 transcript，那等于把地板翻倍），
+  并且**不自动发送** —— 交接里可能含凭据/靶标，自动跑等于替你按了回车。
+
+- **子会话不再背破甲人格**（`purge.injectSubagents`，默认 false）。主会话永远保留全文
+  （用户明确要求），子会话（`subagent` / 红队执行角色）只要角色稿 + 任务书 —— 21.8k 字符的
+  人格稿每轮进子代理地板，等于让每次派活贵一倍。实现上除了不传 fallback，还要把
+  `dsh-purge` 段从装配里剔掉：只清文本不清段的话，`ensureFullInject` 会把全文再塞回去
+  （实测踩过一次，自检钉住了）。
+
+- `scripts/selftest-preset-switch.mjs`（8 项：交接内容/截断/条数、不碰 select、预填、归档、
+  边界、服务缺失降级）；`selftest-purge.mjs` 加一条「子会话剥离人格、团队基线保留」。
+
 ## [2.12.0] - 2026-10-31
 
 ### 新增

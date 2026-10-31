@@ -233,4 +233,31 @@ assert.ok(
 );
 ok("融合：团队预设带红队工具行，红队预设不再重复 persona 稿");
 
+// ── ⑦ 破甲人格只进主会话（REQ-031）─────────────────────────────────────
+
+// 子会话（subagent / 红队执行角色）拿的是角色稿 + 任务书；21.8k 字符的人格稿
+// 每轮进子代理地板，等于让每次派活贵一倍。主会话永远保留（用户 2026-10-31 明确）。
+{
+	const identity = await import("../lib/purge/identity.js");
+	const FULL = "BROKEN-ARMOR-PERSONA-".repeat(40);
+	const assembled = {
+		sections: [
+			{ name: "harness:identity", text: "official" },
+			{ name: "dsh-purge", text: FULL, order: 100 },
+			{ name: "team:baseline", text: "团队规矩" },
+		],
+	};
+	const main = identity.rewritePromptAssembly(assembled, { fallbackInject: FULL, context: null });
+	const sub = identity.rewritePromptAssembly(assembled, {
+		fallbackInject: FULL,
+		stripPurgeInject: true,
+		context: null,
+	});
+	assert.ok(JSON.stringify(main).includes("BROKEN-ARMOR"), "主会话该保留破甲人格");
+	// 关键回归：只删段不清文本时\`ensureFullInject\` 会把全文塞回去 —— 实测过。
+	assert.ok(!JSON.stringify(sub).includes("BROKEN-ARMOR"), "子会话不该带破甲人格");
+	assert.ok(JSON.stringify(sub).includes("团队规矩"), "剥离人格时不能把团队基线一起删了");
+	ok("子会话：破甲人格被剥离，团队基线保留");
+}
+
 console.log(`\nselftest-purge：${passed} 项全过`);

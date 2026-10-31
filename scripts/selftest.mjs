@@ -160,7 +160,8 @@ assert.ok(
 // —— 2. 命令 ——
 
 const names = ctx._commands.map((c) => c.name).sort();
-assert.deepEqual(names, ["audit-log", "team-baseline", "team-scheduler", "thrift"], `命令不对：${names}`);
+// `preset` 是 REQ-030 的会话级换模式命令（/preset list | use <id>）。
+assert.deepEqual(names, ["audit-log", "preset", "team-baseline", "team-scheduler", "thrift"], `命令不对：${names}`);
 
 // —— 3. 审计日志：真喂事件 ——
 
