@@ -1074,6 +1074,9 @@ function cmdHelp() {
   dsh-team purge [--status|--apply|--revert|--edit]   # 宿主清洗（从 dsh-purge 移植）
   dsh-team bill    [--date YYYY-MM-DD] [--json]
                                     某天的 token 账单（读审计日志；含小队那半）
+  dsh-team search  "问题" [--limit 6] [--json]
+                                    AI 搜索：返回带 [n] 引用的答案
+                                    要配 DSH_SEARCH_URL（和可选的 DSH_SEARCH_TOKEN）
   dsh-team squad ls [--cwd <目录>] [--all]
                                     看**落盘**的小队状态（不是活着的进程；实时在面板）
                                       定时任务调度器开关（默认关，改完重启 dsh）
@@ -1470,6 +1473,65 @@ function cmdBill() {
 }
 
 /**
+ * `dsh-team search "问题" [--limit 6] [--json]`
+ *
+ * 调远程 AI 搜索服务（SearXNG 学术引擎 + Tavily 免 key + 模型生成），
+ * 返回带 [n] 引用的答案。给 agent 在这个 web_search 挂掉的环境里一个能用的检索口。
+ *
+ * 地址与令牌只走环境变量（DSH_SEARCH_URL / DSH_SEARCH_TOKEN），不落盘：
+ * 那台服务器是私人的，写进仓库就等于公开。
+ */
+async function cmdSearch() {
+	const query = positional.slice(1).join(" ").trim();
+	if (!query) fail('用法：dsh-team search "问题" [--limit 6] [--json]');
+
+	const base = (process.env.DSH_SEARCH_URL || "").replace(/\/+$/, "");
+	if (!base) fail("没配 DSH_SEARCH_URL（例：http://127.0.0.1:8200）");
+	const token = process.env.DSH_SEARCH_TOKEN || "";
+	const n = Number(flags.limit);
+	const limit = Number.isFinite(n) && n > 0 ? Math.min(n, 10) : 6;
+
+	const url = `${base}/search?q=${encodeURIComponent(query)}&limit=${limit}`;
+	let res;
+	try {
+		res = await fetch(url, {
+			headers: token ? { Authorization: `Bearer ${token}` } : {},
+			signal: AbortSignal.timeout(180000),
+		});
+	} catch (e) {
+		fail(`连不上搜索服务 ${base}：${e.message}`);
+	}
+
+	const text = await res.text();
+	if (!res.ok) fail(`搜索服务返回 ${res.status}：${text.slice(0, 200)}`);
+
+	let data;
+	try {
+		data = JSON.parse(text);
+	} catch {
+		fail(`搜索服务返回的不是 JSON：${text.slice(0, 200)}`);
+	}
+
+	if (has("json")) {
+		console.log(JSON.stringify(data, null, 1));
+		return;
+	}
+
+	const answer = String(data.answer || "").trim();
+	if (answer) console.log(answer);
+	else console.log(`没有生成答案${data.note ? `（${data.note}）` : ""}`);
+
+	if (Array.isArray(data.sources) && data.sources.length) {
+		console.log("");
+		console.log("来源：");
+		data.sources.forEach((s, i) => {
+			console.log(`[${i + 1}] ${s.title}`);
+			console.log(`    ${s.url}`);
+		});
+	}
+}
+
+/**
  * `dsh-team squad ls [--cwd <目录>] [--all]`（REQ-016 · B6）。
  *
  * 看的是**落盘**的小队（`<DSH_HOME>/team-workflow/squads/`），不是某个进程里活着的那些 ——
@@ -1553,6 +1615,9 @@ const [command, sub] = positional;
 switch (command) {
 	case "bill":
 		cmdBill();
+		break;
+	case "search":
+		await cmdSearch();
 		break;
 	case "squad":
 		cmdSquad(sub);

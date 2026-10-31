@@ -1,0 +1,12 @@
+{
+  "enabled": true,
+  "_url 说明": "搜索服务地址。留空则读环境变量 DSH_SEARCH_URL。那台服务器是私人的，地址和令牌都不要写进仓库。",
+  "url": "",
+  "_token 说明": "服务端令牌。留空则读 DSH_SEARCH_TOKEN；服务端没开鉴权时两边都可以不填。",
+  "token": "",
+  "defaultLimit": 6,
+  "_defaultLimit 说明": "默认召回条数。实测每次问答 prompt 约 7000~8000 token，条数再多只是把上下文塞满，答案质量不会更好。",
+  "maxLimit": 10,
+  "timeoutMs": 180000,
+  "_timeoutMs 说明": "一次问答实测 10~20s（检索 + 生成），给足余量；超时会返回 error 而不是抛异常。"
+}

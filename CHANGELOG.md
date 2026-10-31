@@ -8,6 +8,29 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.20.0] - 2026-11-01
+
+### 新增
+
+- **`ai_search` 工具：本机 `web_search` 挂掉之后的替代入口**。
+
+  `web_search` / `web_fetch` 长期卡在代理上（`HTTP_PROXY=127.0.0.1:7897` 拒连），
+  agent 真要查外部事实时没有可用入口。这个工具把「检索 → 读页 → 生成带引用答案」
+  收在一次调用里，返回结构化的 `answer` + `sources`，模型拿到直接能用。
+
+  - **为什么是工具不是 CLI**：CLI 要模型自己拼命令、再从文本里解析引用编号；
+    工具是结构化参数 + 结构化返回，少一次 shell 往返，也少一次解析出错的机会。
+  - **后端**：远程服务里 SearXNG（`cn.bing.com` 直连 + arxiv / crossref / openalex /
+    pubmed 学术引擎）与 Tavily 免 key 并行召回，再由 `deepseek-v4.1-flash` 生成。
+    实测一次 10~20 秒、答案 400~500 字、带 `[n]` 引用。
+  - **地址与令牌只走配置/环境变量**（`team/extensions/ai-search.json` 的 `url`/`token`，
+    或 `DSH_SEARCH_URL`/`DSH_SEARCH_TOKEN`）：那台服务器是私人的，写进仓库等于公开。
+
+### 说明
+
+- 这套部署（Morphic + oc-proxy + mihomo + search-api）目前跑在一台外部服务器上，
+  仓库里只有调用侧；服务端脚本没有进仓库。
+
 ## [2.19.0] - 2026-11-01
 
 ### 新增
