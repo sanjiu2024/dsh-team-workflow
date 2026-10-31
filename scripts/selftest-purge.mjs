@@ -69,6 +69,26 @@ for (const cmd of ["purge", "rules", "skills", "rewind"]) {
 }
 ok("命令表：/purge /rules /skills /rewind 都在");
 
+// 命令注册必须走去重包装（2026-10-31 实测：dsh 按 agent 重复 apply，而 commands 是全局服务，
+// 裸注册在第二个 agent 上抛 already registered → 整个 purge 半边记成「挂载失败」）。
+// 断言按**代码行**数、跳过注释 —— 注释里引用了原来的写法，直接全文搜会永远命中。
+const purgeCodeLines = purgeIndex.split("\n").filter((line) => !/^\s*(\*|\/\/)/.test(line));
+const purgeCode = purgeCodeLines.join("\n");
+const bareCommandRegisters = purgeCode.match(/commands\.register\(/g) || [];
+// 允许恰好 1 处：那是在去重包装 registerCommandOnce 体内真正调宿主的那一次。
+assert.equal(
+	bareCommandRegisters.length,
+	1,
+	`裸的 commands.register 有 ${bareCommandRegisters.length} 处，应当只有包装函数体内那 1 处`,
+);
+const guardedCommandRegisters = purgeCode.match(/registerCommandOnce\(commands, \{/g) || [];
+assert.ok(
+	guardedCommandRegisters.length >= 4,
+	`命令去重只包了 ${guardedCommandRegisters.length} 处（/purge /rules /skills /rewind 四处都要）`,
+);
+assert.ok(purgeIndex.includes("const PURGE_COMMANDS_ON = new Set()"), "命令去重集合 PURGE_COMMANDS_ON 不见了");
+ok(`命令注册：${guardedCommandRegisters.length} 处全走去重，没有裸注册`);
+
 const routeCount = (purgeIndex.match(/registerPluginRoute\(/g) || []).length;
 // 实际是 13 条（`/purge/*` 状态页与注入编辑、`/redteam/*` 桥接等）。这里不写死 20+ ——
 // 上游本来就只有这些；断言的是「没有被搬丢」，不是某个凭印象的数字。

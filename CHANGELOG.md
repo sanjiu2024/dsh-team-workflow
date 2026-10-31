@@ -8,6 +8,19 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.14.1] - 2026-10-31
+
+### 修复
+
+- **purge 半边一直显示「挂载失败：command "purge" is already registered」**：根因是 dsh 按
+  **agent** 调 `apply` —— 同一进程里主代理挂一次、每个子代理再各挂一次 —— 而 `commands` 是
+  **全局**服务，第二次 `commands.register({ name: "purge" })` 直接抛，整个 apply 因此失败
+  （工具箱那行就是它；但工具已由第一遍注册，所以 `purge_status` 看着是好的，只有状态是坏的）。
+  段注册（`addPromptSection`）早就有同样的保护，命令这边一直没有。
+  现在四处命令（`/purge` `/rules` `/skills` `/rewind`）统一走 `registerCommandOnce`：
+  按**命令名**记「已经注册过」，并且把宿主抛的 `already registered` 当成"已经有了"，
+  不让它把整个半边拖垮。自检加了对应断言（按代码行数、跳过注释，因为注释里引用了原写法）。
+
 ## [2.14.0] - 2026-10-31
 
 ### 新增
