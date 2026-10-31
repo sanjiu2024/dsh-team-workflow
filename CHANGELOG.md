@@ -8,6 +8,24 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.16.2] - 2026-10-31
+
+### 修复
+
+- **点「应用补丁」后 dsh 直接消失，而补丁一条都没生效。** 让位脚本（`ASAR_SWAP_PS1`）里
+  `Move-Item` 失败在 PowerShell 里是**非终止错误**，`try/catch` 根本抓不到 —— 脚本照样把
+  `$moved` 写成 `true`、删掉 pending 标记、`Start-Process` 把 dsh 拉起来。真实结果是：
+  进程被 `Stop-Process -Force` 杀掉（用户看到的就是「崩溃」）、`app.asar` 原封不动、
+  新进程又从 asar 加载 → 77 条补丁全躺在 `resources/app` 里不生效。
+  （实测验证：`Move-Item` 到不存在的源时，旧写法的 `try` 块走完、`catch` 不触发；
+  加上 `-ErrorAction Stop` 才会进 `catch`。）
+
+  两处改：
+  ① `Move-Item ... -ErrorAction Stop`，并且改名后再验一次磁盘（`.bak` 在、`asar` 不在）才算成功；
+  ② 改名成不成功都 `Start-Process` 拉起 dsh —— 以前失败分支只写个标记就退出，用户连 dsh 都回不来。
+
+  自检钉住这两条（脚本不好做行为测，用文本断言 + 反向变异验证过会红）。
+
 ## [2.16.1] - 2026-10-31
 
 ### 修复

@@ -154,6 +154,32 @@ assert.ok(
 );
 ok("桌面封包：apply 前先解 app.asar（与 /purge apply 共用一条解包路）");
 
+// 让位脚本（PowerShell）钉两条，都是 2026-10-31 真机踩出来的：
+// ① Move-Item 失败是**非终止错误**，try/catch 抓不到 —— 不加 -ErrorAction Stop 就当成功；
+// ② 改名成不成功都得把 dsh 拉回来，否则用户只看到窗口消失、asar 还在、补丁一条没生效。
+const desktopSrc = read("lib/purge/desktop.js");
+const swapPs1 = desktopSrc.slice(
+	desktopSrc.indexOf("const ASAR_SWAP_PS1 = ["),
+	desktopSrc.indexOf("const ASAR_RENAME_WHEN_IDLE_PS1"),
+);
+assert.ok(swapPs1.length > 0, "ASAR_SWAP_PS1 找不到了");
+assert.ok(
+	swapPs1.includes("Move-Item -LiteralPath $AsarPath -Destination $bak -Force -ErrorAction Stop"),
+	"让位脚本的 Move-Item 少了 -ErrorAction Stop —— 失败会被当成成功（实测：dsh 被杀、asar 没动）",
+);
+assert.ok(
+	/if \(\$moved\) \{ Remove-Item -LiteralPath \$lock/.test(swapPs1),
+	"lock 要按 $moved 分流，否则失败也当成成功",
+);
+const relaunchAt = swapPs1.indexOf("Start-Process -FilePath $ExePath");
+const guardAt = swapPs1.indexOf("if ($moved) {");
+assert.ok(relaunchAt > guardAt, "Start-Process 找不到");
+assert.ok(
+	!/\}\s*else\s*\{[\s\S]*Start-Process -FilePath \$ExePath/.test(swapPs1.slice(guardAt)),
+	"Start-Process 还写在 if ($moved) 里面 —— 改名失败时 dsh 不会回来",
+);
+ok("让位脚本：Move-Item 失败能被 catch 到，且改名失败也会拉起 dsh");
+
 // 去重实现的行为断言（不是文本断言）：同服务同名只落一次，宿主自己抛 already registered 不拖垮 apply。
 const once = await import("../lib/purge/register-once.js");
 let hostRegisters = 0;
