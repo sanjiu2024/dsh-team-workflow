@@ -69,25 +69,39 @@ for (const cmd of ["purge", "rules", "skills", "rewind"]) {
 }
 ok("命令表：/purge /rules /skills /rewind 都在");
 
-// 命令注册必须走去重包装（2026-10-31 实测：dsh 按 agent 重复 apply，而 commands 是全局服务，
-// 裸注册在第二个 agent 上抛 already registered → 整个 purge 半边记成「挂载失败」）。
+// 命令 / 工具注册必须走去重包装（2026-10-31，dsh 0.2.1-rc.5 实测）：宿主按 **agent**
+// 重复 apply，而 commands / tools 是全局服务，裸注册在第二个 agent 上抛 already registered
+// → 整个 purge 半边记成「挂载失败」，命令与 20+ 个工具全都拿不到。
 // 断言按**代码行**数、跳过注释 —— 注释里引用了原来的写法，直接全文搜会永远命中。
-const purgeCodeLines = purgeIndex.split("\n").filter((line) => !/^\s*(\*|\/\/)/.test(line));
-const purgeCode = purgeCodeLines.join("\n");
+const codeLines = (src) =>
+	src.split("\n").filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line)).join("\n");
+const purgeCode = codeLines(purgeIndex);
 const bareCommandRegisters = purgeCode.match(/commands\.register\(/g) || [];
-// 允许恰好 1 处：那是在去重包装 registerCommandOnce 体内真正调宿主的那一次。
-assert.equal(
-	bareCommandRegisters.length,
-	1,
-	`裸的 commands.register 有 ${bareCommandRegisters.length} 处，应当只有包装函数体内那 1 处`,
-);
+assert.equal(bareCommandRegisters.length, 0, `index.js 里还有 ${bareCommandRegisters.length} 处裸的 commands.register`);
 const guardedCommandRegisters = purgeCode.match(/registerCommandOnce\(commands, \{/g) || [];
 assert.ok(
 	guardedCommandRegisters.length >= 4,
 	`命令去重只包了 ${guardedCommandRegisters.length} 处（/purge /rules /skills /rewind 四处都要）`,
 );
-assert.ok(purgeIndex.includes("const PURGE_COMMANDS_ON = new Set()"), "命令去重集合 PURGE_COMMANDS_ON 不见了");
-ok(`命令注册：${guardedCommandRegisters.length} 处全走去重，没有裸注册`);
+const bareToolRegisters = purgeCode.match(/ctx\.tools\.register\(/g) || [];
+assert.equal(bareToolRegisters.length, 0, `index.js 里还有 ${bareToolRegisters.length} 处裸的 ctx.tools.register`);
+const guardedPurgeTools = purgeCode.match(/registerToolOnce\(ctx\.tools, \{/g) || [];
+assert.ok(guardedPurgeTools.length >= 3, `purge_status/apply/revert 三处工具注册要去重，实际 ${guardedPurgeTools.length}`);
+
+// 红队工具表 56 个工具同样按 agent 重复注册 —— 一处漏掉就是「purge 挂载失败」。
+const redteamCode = codeLines(toolsSrc);
+assert.equal((redteamCode.match(/ctx\.tools\.register\(/g) || []).length, 0, "redteam/tools.js 里还有裸的 ctx.tools.register");
+const guardedRedteamTools = redteamCode.match(/registerToolOnce\(ctx\.tools, /g) || [];
+assert.ok(guardedRedteamTools.length >= 50, `红队工具只去重了 ${guardedRedteamTools.length} 处（56 个都要）`);
+
+// 去重实现只能有一份宿主调用：包装体之外的任何裸注册都等于绕过了它。
+const onceSrc = codeLines(read("lib/purge/register-once.js"));
+assert.equal((onceSrc.match(/commands\.register\(/g) || []).length, 1, "register-once.js 里的 commands.register 应当恰好 1 处");
+assert.equal((onceSrc.match(/tools\.register\(/g) || []).length, 1, "register-once.js 里的 tools.register 应当恰好 1 处");
+assert.ok(onceSrc.includes("new WeakMap()"), "去重要按服务对象记（WeakMap），模块级 Set 挡不住两份模块实例");
+ok(
+	`注册去重：命令 ${guardedCommandRegisters.length} 处 + 工具 ${guardedPurgeTools.length + guardedRedteamTools.length} 处全走去重，没有裸注册`,
+);
 
 const routeCount = (purgeIndex.match(/registerPluginRoute\(/g) || []).length;
 // 实际是 13 条（`/purge/*` 状态页与注入编辑、`/redteam/*` 桥接等）。这里不写死 20+ ——
@@ -117,6 +131,40 @@ assert.ok(
 );
 assert.ok(exists("lib/purge/cordis.patch.yml"), "lib/purge/cordis.patch.yml 缺失");
 ok("bundle patch 底稿随包放在 lib/purge/ 且路径对");
+
+// 桌面官方包的宿住在 app.asar 里：没解开时 findAiBase()/listDesktopPackageRoots() 都返回空，
+// enumeratePatchAiBases() 于是是空数组 →「点应用」静默 applied=0 还报成功（2026-10-31，rc.5 实测）。
+assert.ok(
+	coreSrc.includes("if (options.forApply === true) await openSealedHostForApply();"),
+	"applyPatchesAllHosts 没在 forApply 时先解包 app.asar —— 桌面上点应用会 applied=0 却报成功",
+);
+assert.ok(
+	coreSrc.includes("async function openSealedHostForApply()") && coreSrc.includes("resolveOfficialAiBase(findAiBase(), { forApply: true })"),
+	"openSealedHostForApply 没复用 resolveOfficialAiBase —— 会和 /purge apply 走两套解包逻辑",
+);
+ok("桌面封包：apply 前先解 app.asar（与 /purge apply 共用一条解包路）");
+
+// 去重实现的行为断言（不是文本断言）：同服务同名只落一次，宿主自己抛 already registered 不拖垮 apply。
+const once = await import("../lib/purge/register-once.js");
+let hostRegisters = 0;
+const fakeCommands = {
+	register: () => {
+		hostRegisters += 1;
+		if (hostRegisters > 1) throw new Error('command "purge" is already registered (per-agent variant)');
+	},
+};
+assert.equal(once.registerCommandOnce(fakeCommands, { name: "purge" }), true, "第一次注册应当真的调宿主");
+assert.equal(once.registerCommandOnce(fakeCommands, { name: "purge" }), false, "第二次同服务同名必须短路");
+assert.equal(hostRegisters, 1, `同名命令让宿主注册了 ${hostRegisters} 次，第二个 agent 会把它抛成挂载失败`);
+const anotherService = { register: () => {} };
+assert.equal(once.registerToolOnce(anotherService, { name: "purge_status" }), true, "换了服务对象要重新记一份（跨模块副本）");
+const preTaken = {
+	register: () => {
+		throw new Error('tool "purge_apply" is already registered (per-agent variant)');
+	},
+};
+assert.equal(once.registerToolOnce(preTaken, { name: "purge_apply" }), false, "宿主已注册过同名工具时不能把 apply 拖垮");
+ok("注册去重：同服务同名只落一次；宿主报 already registered 时让位");
 
 // ── ③ 幂等注入补丁还在 ──────────────────────────────────────────────────────
 

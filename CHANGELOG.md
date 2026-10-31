@@ -8,6 +8,32 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.14.2] - 2026-10-31
+
+### 修复
+
+- **rc.5 上 purge 还是「挂载失败」：工具注册没有跟着去重。** 2.14.1 只包了 `commands`，可宿主
+  按 agent 重复 apply 时 `tools` 同样是**全局**服务，第二次 `tools.register({ name: "purge_status" })`
+  照样抛 `tool "purge_status" is already registered`。这次连红队那 56 个 `redteam_*` 一起包上，
+  `lib/purge/index.js` 3 处 + `lib/purge/redteam/tools.js` 56 处全走 `registerToolOnce`。
+  去重实现抽到 `lib/purge/register-once.js`，并把模块级 `Set` 换成 **`WeakMap<服务对象, Set<名字>>`**
+  —— 插件被 loader 用两条 specifier 加载时会有两份模块实例，各自一份 Set 挡不住，而服务对象
+  在进程里唯一。
+
+- **桌面上点「应用补丁」静默 applied=0 却报成功（rc.5 起官方宿主整树在 `app.asar` 里）。**
+  `findAiBase()` / `listDesktopPackageRoots()` 在 asar 没解开时都返回空，
+  `enumeratePatchAiBases()` 于是是空数组，`applyPatchesAllHosts()` 一个宿主都不打，
+  report 是空的 —— 工具箱照样显示「applied=0 already=0」+「重启后完全生效」。
+  `/purge apply` 命令那条路本来就会先 `resolveOfficialAiBase(..., { forApply: true })` 解包，
+  工具箱与 `purge_apply` 工具没有。现在把解包挪进 `applyPatchesAllHosts()` 自身
+  （`options.forApply === true` 时），三条路共用同一处，自检钉住。
+
+### 验证
+
+- 宿主 **dsh 0.2.1-rc.5**（`resources/app.asar` 里的 86 条补丁目标）实测：把 asar 解到临时目录后
+  跑 `applyPatches`，86 条里 **66 applied / 6 already / 13 na / 1 skipped**（#88 挂针在 rc.5 里
+  已被官方移除，optional，无害）。结论：锚点本身不需要重写，缺的只是「先把包解开」。
+
 ## [2.14.1] - 2026-10-31
 
 ### 修复
