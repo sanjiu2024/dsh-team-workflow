@@ -245,6 +245,58 @@ public static class DshGuard {
         return sb.ToString();
     }
 
+
+    static bool Matches(AutomationElement e, string role, string name) {
+        try {
+            string r = e.Current.ControlType.ProgrammaticName.Replace("ControlType.", "");
+            string n = e.Current.Name ?? "";
+            return r == role && n == name;
+        } catch { return false; }
+    }
+
+    /// 在 (x,y) 处反查元素，**先校验 role/name 与观测时一致**，再走可编程 pattern。
+    /// 校验不过就直接报错 —— 绝不做「坐标大概还在就点一下」那种事：
+    /// 观测与点击之间界面变了（列表重排、弹窗覆盖），按旧坐标点下去会点到别的按钮，
+    /// 而且这种错是静默的（点了、有反应、只是点错了东西）。
+    public static string InvokeInWindow(int hwnd, int x, int y, string expectRole, string expectName) {
+        // 为什么不用 AutomationElement.FromPoint：它取的是**屏幕上**那个点，与
+        // 「观测的是哪个窗口」无关。实测靶窗口被遮挡时，点下去命中的是前台窗口的元素,
+        // 于是「校验通过」的对象根本不是我们要操作的那个。
+        // 这里把搜索范围钉死在目标窗口子树内，再叠三重校验：
+        // role 一致、name 一致、坐标落在元素矩形内。三者都过才动手。
+        IntPtr h = (IntPtr)hwnd;
+        if (h == IntPtr.Zero) return "err 缺少窗口句柄";
+        AutomationElement root;
+        try { root = AutomationElement.FromHandle(h); } catch { return "err 拿不到窗口"; }
+        if (root == null) return "err 窗口已不存在";
+        AutomationElementCollection all;
+        try { all = root.FindAll(TreeScope.Descendants, Condition.TrueCondition); } catch { return "err 遍历窗口失败"; }
+
+        int seen = 0;
+        foreach (AutomationElement e in all) {
+            System.Windows.Rect r;
+            try { r = e.Current.BoundingRectangle; } catch { continue; }
+            if (r.IsEmpty) continue;
+            if (x < r.X || x > r.X + r.Width || y < r.Y || y > r.Y + r.Height) continue;
+            seen++;
+            if (!Matches(e, expectRole, expectName)) continue;
+
+            object pat;
+            try {
+                if (e.TryGetCurrentPattern(InvokePattern.Pattern, out pat)) { ((InvokePattern)pat).Invoke(); return "ok invoke"; }
+                if (e.TryGetCurrentPattern(SelectionItemPattern.Pattern, out pat)) { ((SelectionItemPattern)pat).Select(); return "ok select"; }
+                if (e.TryGetCurrentPattern(TogglePattern.Pattern, out pat)) { ((TogglePattern)pat).Toggle(); return "ok toggle"; }
+                if (e.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out pat)) {
+                    var ec = (ExpandCollapsePattern)pat;
+                    if (ec.Current.ExpandCollapseState == ExpandCollapseState.Collapsed) ec.Expand(); else ec.Collapse();
+                    return "ok expand";
+                }
+            } catch (Exception ex) { return "err 动作失败：" + ex.Message; }
+            return "err 该元素不支持可编程操作（只有 Invoke/Select/Toggle/Expand 走得了这条路）";
+        }
+        return "err 目标元素已不在原位（该坐标上" + (seen > 0 ? "有 " + seen + " 个元素，但没有 " + expectRole + " / " + expectName : "没有任何元素") + "），请重新观测";
+    }
+
     /// 在截图上给每个元素画方框与编号。编号从 1 开始，与 observe.json 里的顺序一一对应。
     static void DrawMarks(List<System.Drawing.Rectangle> boxes, System.Windows.Rect win, string outPath) {
         // 只截目标窗口，不截整屏：整屏会把屏幕上其它窗口一起交给模型
@@ -373,6 +425,13 @@ function Invoke-Body([string]$body) {
             [DshGuard]::Keys([uint16[]]$vks); return ''
         }
         'shot'    { [DshGuard]::Shot(($tok[1..($tok.Length - 1)] -join ' ')); return '' }
+        'invoke' {
+            # invoke <hwnd> <x> <y> <b64role> <b64name> —— 限定窗口内、三重校验通过才动手。
+            $h = [int]$tok[1]; $x = [int]$tok[2]; $y = [int]$tok[3]
+            $role = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($tok[4]))
+            $name = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($tok[5]))
+            return [DshGuard]::InvokeInWindow($h, $x, $y, $role, $name)
+        }
         'observe' {
             # observe [hwnd] —— 不给 hwnd 就观测前台窗口。结果写到 $OutDir/observe.json。
             $h = 0
