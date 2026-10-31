@@ -27,6 +27,7 @@ import * as path from "node:path";
 
 import { COMPUTER_DEFAULTS } from "../lib/computer/core/config.js";
 import { createDaemonClient } from "../lib/computer/core/daemon-client.js";
+import { win32Driver } from "../lib/computer/drivers/win32.js";
 import { createLock } from "../lib/computer/core/lock.js";
 import { buildCommand, parseStatus } from "../lib/computer/core/protocol.js";
 
@@ -95,7 +96,7 @@ fs.mkdirSync(path.join(dir, "in"), { recursive: true });
 fs.mkdirSync(path.join(dir, "out"), { recursive: true });
 
 const config = { ...COMPUTER_DEFAULTS, startTimeoutMs: 60000 };
-const daemon = createDaemonClient(dir, config);
+const daemon = createDaemonClient(dir, config, win32Driver.host);
 fs.writeFileSync(daemon.scriptPath, `\uFEFF${DAEMON_PS}`, "utf8");
 
 const warnings = [];

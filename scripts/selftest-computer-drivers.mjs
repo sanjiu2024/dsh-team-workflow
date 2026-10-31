@@ -126,6 +126,21 @@ check("computer.js 不再硬编码平台判断（判据走驱动）", () => {
 	assert.ok(src.includes("isImplementable(driver)"), "computer.js 应该用 isImplementable 判断");
 });
 
+// 只禁「会被执行的平台命令」，不禁注释里的交叉引用 ——
+// 例如 core/config.js 的注释要说明 MAGIC 与 daemon.ps1 里的常量一致，那是必要信息。
+check("core/ 里不许出现平台专有命令（powershell / taskkill）", () => {
+	const coreDir = new URL("lib/computer/core/", ROOT);
+	const offenders = [];
+	for (const f of fs.readdirSync(coreDir)) {
+		if (!f.endsWith(".js")) continue;
+		const text = fs.readFileSync(new URL(f, coreDir), "utf8");
+		for (const bad of ["powershell", "taskkill"]) {
+			if (text.includes(bad)) offenders.push(`core/${f}: ${bad}`);
+		}
+	}
+	assert.deepEqual(offenders, [], `core 层出现了平台专有字样（应只存在于 drivers/）：${offenders.join(", ")}`);
+});
+
 if (failures > 0) {
 	console.error(`\n✗ ${failures} 项失败`);
 	process.exitCode = 1;
