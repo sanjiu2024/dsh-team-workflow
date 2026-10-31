@@ -80,19 +80,19 @@ const bareCommandRegisters = purgeCode.match(/commands\.register\(/g) || [];
 assert.equal(bareCommandRegisters.length, 0, `index.js 里还有 ${bareCommandRegisters.length} 处裸的 commands.register`);
 const guardedCommandRegisters = purgeCode.match(/registerCommandOnce\(commands, \{/g) || [];
 assert.ok(
-	guardedCommandRegisters.length >= 4,
+	guardedCommandRegisters.length === 4,
 	`命令去重只包了 ${guardedCommandRegisters.length} 处（/purge /rules /skills /rewind 四处都要）`,
 );
 const bareToolRegisters = purgeCode.match(/ctx\.tools\.register\(/g) || [];
 assert.equal(bareToolRegisters.length, 0, `index.js 里还有 ${bareToolRegisters.length} 处裸的 ctx.tools.register`);
 const guardedPurgeTools = purgeCode.match(/registerToolOnce\(ctx\.tools, \{/g) || [];
-assert.ok(guardedPurgeTools.length >= 3, `purge_status/apply/revert 三处工具注册要去重，实际 ${guardedPurgeTools.length}`);
+assert.ok(guardedPurgeTools.length === 3, `purge_status/apply/revert 三处工具注册要去重，实际 ${guardedPurgeTools.length}`);
 
 // 红队工具表 56 个工具同样按 agent 重复注册 —— 一处漏掉就是「purge 挂载失败」。
 const redteamCode = codeLines(toolsSrc);
 assert.equal((redteamCode.match(/ctx\.tools\.register\(/g) || []).length, 0, "redteam/tools.js 里还有裸的 ctx.tools.register");
 const guardedRedteamTools = redteamCode.match(/registerToolOnce\(ctx\.tools, /g) || [];
-assert.ok(guardedRedteamTools.length >= 50, `红队工具只去重了 ${guardedRedteamTools.length} 处（56 个都要）`);
+assert.ok(guardedRedteamTools.length === 56, `红队工具只去重了 ${guardedRedteamTools.length} 处（56 个都要）`);
 
 // 去重实现只能有一份宿主调用：包装体之外的任何裸注册都等于绕过了它。
 const onceSrc = codeLines(read("lib/purge/register-once.js"));
@@ -134,9 +134,19 @@ ok("bundle patch 底稿随包放在 lib/purge/ 且路径对");
 
 // 桌面官方包的宿住在 app.asar 里：没解开时 findAiBase()/listDesktopPackageRoots() 都返回空，
 // enumeratePatchAiBases() 于是是空数组 →「点应用」静默 applied=0 还报成功（2026-10-31，rc.5 实测）。
+// 断言的是**顺序**，不是「有没有这句话」：把它挪进枚举循环体（枚举完才解包）等于没修，
+// 而 includes 那种写法对顺序完全瞎（审查测出的假绿）。
+const sealedCallAt = coreSrc.indexOf("options.forApply === true ? await openSealedHostForApply()");
+const enumerateAt = coreSrc.indexOf("const enumerated = enumeratePatchAiBases(");
+assert.ok(sealedCallAt > 0, "applyPatchesAllHosts 里找不到 forApply 时解包 app.asar 的那一次调用");
+assert.ok(enumerateAt > 0, "applyPatchesAllHosts 里找不到 enumeratePatchAiBases 的调用");
 assert.ok(
-	coreSrc.includes("if (options.forApply === true) await openSealedHostForApply();"),
-	"applyPatchesAllHosts 没在 forApply 时先解包 app.asar —— 桌面上点应用会 applied=0 却报成功",
+	sealedCallAt < enumerateAt,
+	`解包必须发生在枚举之前（解包在 ${sealedCallAt}、枚举在 ${enumerateAt}）—— 枚举完再解包照样是空宿主`,
+);
+assert.ok(
+	coreSrc.includes("opened?.aiBase ? [opened.aiBase, ...enumerated] : enumerated"),
+	"解包得到的 aiBase 没并入本次枚举 —— 二次探测有偏差时补丁会落到宿主不加载的目录",
 );
 assert.ok(
 	coreSrc.includes("async function openSealedHostForApply()") && coreSrc.includes("resolveOfficialAiBase(findAiBase(), { forApply: true })"),
