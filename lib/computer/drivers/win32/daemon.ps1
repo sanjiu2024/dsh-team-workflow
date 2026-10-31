@@ -8,6 +8,7 @@ Add-Type -AssemblyName UIAutomationTypes
 
 $src = @'
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Threading;
@@ -244,6 +245,36 @@ public static class DshGuard {
         return sb.ToString();
     }
 
+    /// 在截图上给每个元素画方框与编号。编号从 1 开始，与 observe.json 里的顺序一一对应。
+    static void DrawMarks(List<System.Drawing.Rectangle> boxes, System.Windows.Rect win, string outPath) {
+        // 只截目标窗口，不截整屏：整屏会把屏幕上其它窗口一起交给模型
+        // （实测样本里连别的会话内容、剪贴板里的 key 都在画面里），
+        // 既是隐私问题也是浪费 —— 模型只需要看它要操作的那一个窗口。
+        int wx = (int)win.X, wy = (int)win.Y, ww = (int)win.Width, wh = (int)win.Height;
+        if (ww <= 0 || wh <= 0) return;
+        using (var bmp = new Bitmap(ww, wh))
+        using (var g = Graphics.FromImage(bmp)) {
+            g.CopyFromScreen(wx, wy, 0, 0, new Size(ww, wh));
+            using (var pen = new Pen(Color.FromArgb(230, 220, 30, 30), 1))
+            using (var font = new Font("Consolas", 9, FontStyle.Bold))
+            using (var fg = new SolidBrush(Color.FromArgb(255, 220, 30, 30)))
+            using (var bg2 = new SolidBrush(Color.FromArgb(210, 255, 255, 255))) {
+                for (int i = 0; i < boxes.Count; i++) {
+                    var b = boxes[i];
+                    int x = b.X - wx, y = b.Y - wy;
+                    try {
+                        g.DrawRectangle(pen, x, y, Math.Max(1, b.Width - 1), Math.Max(1, b.Height - 1));
+                        string label = (i + 1).ToString();
+                        var sz = g.MeasureString(label, font);
+                        g.FillRectangle(bg2, x, y, sz.Width + 2, sz.Height);
+                        g.DrawString(label, font, fg, x + 1, y);
+                    } catch { }
+                }
+            }
+            bmp.Save(outPath, ImageFormat.Png);
+        }
+    }
+
     /// 遍历窗口的无障碍树，把可交互元素写成 JSON 到 OutDir/observe.json，返回元素数。
     /// hwnd=0 表示用当前前台窗口。返回 -1 表示拿不到窗口/树。
     public static int Observe(int hwnd) {
@@ -261,6 +292,7 @@ public static class DshGuard {
         try { win = root.Current.BoundingRectangle; } catch { win = System.Windows.Rect.Empty; }
 
         var sb = new StringBuilder(8192);
+        var boxes = new List<System.Drawing.Rectangle>();
         int n = 0;
         foreach (AutomationElement e in all) {
             System.Windows.Rect r;
@@ -299,10 +331,15 @@ public static class DshGuard {
             sb.Append(",\"x\":").Append((int)r.X).Append(",\"y\":").Append((int)r.Y);
             sb.Append(",\"w\":").Append((int)r.Width).Append(",\"h\":").Append((int)r.Height);
             sb.Append(",\"patterns\":[").Append(pats).Append("]}");
+            boxes.Add(new System.Drawing.Rectangle((int)r.X, (int)r.Y, (int)r.Width, (int)r.Height));
             n++;
         }
         string json = "{\"hwnd\":" + h.ToInt64() + ",\"count\":" + n + ",\"elements\":[" + sb.ToString() + "]}";
         File.WriteAllText(Path.Combine(OutDir, "observe.json"), json, new UTF8Encoding(false));
+
+        // 顺带产出「带编号的截图」：模型拿到的是一张图上标着 1..n 的画面 + 一份同名清单。
+        // 没有这张图，编号就是纯抽象符号，模型没法把「第 7 个按钮」对应到屏幕上的位置。
+        try { if (!win.IsEmpty) DrawMarks(boxes, win, Path.Combine(OutDir, "observe.png")); } catch { }
         return n;
     }
 

@@ -20,7 +20,8 @@
  *   · 去掉窗口矩形裁剪那两行 → **在本自检里不会红**（记事本内容小，本来就没有屏外项）。
  *     这条裁剪是为大列表窗口（DSH / Edge，实测 683 个元素里 463 个屏外）写的，
  *     要覆盖它需要拿一个可滚动的长列表当靶 —— 目前没做到，如实记在这里；
- *   · 把 pattern 白名单里的 "invoke" 删掉 → 断言 4 红（Button 变成无名被丢，count 崩）。
+ *   · 把 pattern 白名单里的 "invoke" 删掉 → 断言 4 红（Button 变成无名被丢，count 崩）；
+ *   · 把 DrawMarks 的窗口裁剪去掉（改回截整屏）→ 这条 PNG 断言在窗口非全屏时变红。
  *
  *   node scripts/selftest-computer-observe.mjs
  */
@@ -137,6 +138,17 @@ try {
 	await check("每个元素都有名字（匿名又不可操作的没意义）", async () => {
 		const nameless = data.elements.filter((e) => !e.name && e.role !== "Edit");
 		assert.equal(nameless.length, 0, `有无名元素 ${nameless.length} 个：${JSON.stringify(nameless[0])}`);
+	});
+
+	await check("产出带编号的截图：合法 PNG，且尺寸小于整屏（只截目标窗口）", async () => {
+		const png = path.join(dir, "out", "observe.png");
+		assert.ok(fs.existsSync(png), "没有产出 observe.png —— 模型就拿不到带编号的画面");
+		const buf = fs.readFileSync(png);
+		assert.equal(buf.subarray(0, 8).toString("hex"), "89504e470d0a1a0a", "产出的不是合法 PNG");
+		const w = buf.readUInt32BE(16);
+		const h = buf.readUInt32BE(20);
+		assert.ok(w > 50 && h > 50, `截图尺寸异常：${w}x${h}`);
+		console.log(`      （截图 ${w}x${h}，${(buf.length / 1024).toFixed(0)} KB）`);
 	});
 
 	await check("总数有上界（过滤一旦失效这条先红）", async () => {
