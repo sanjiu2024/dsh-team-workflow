@@ -32,6 +32,24 @@
   之后照样 17/17（正是它要防的 bug）—— 改成断言**解包调用早于枚举**；② 计数 `>=` 放宽到
   50/4/3，少几处也绿 —— 改成 56/4/3 精确值。
 
+## [2.16.0] - 2026-10-31
+
+### 变更
+
+- **派活默认载体从「小队」换成「子代理」**：`team/extensions/squad.json` 的 `enabled` 置 `false`，
+  `squad_*` 工具不再注册；派活改走 `subagent_std` / `subagent_power` / `subagent_fork`。
+  用户原话：「先不用小队了，bug 太多了」—— 那套状态机的排查成本超过了它省下的。
+  要切回去：`enabled` 改回 `true` + `dsh-team preset install` + 重启。
+
+- **档位终于指向 opencode-go**：上一版改了 `team/agent-settings.json` 却**没重生成预设**，
+  产物里 `subagent_std` 仍钉着 `new-api / tier-std` —— 那个 provider 和模型 id 在 opencode-go 下
+  都不存在，派子代理会直接失败。这次 `preset install` 之后是
+  `std = opencode-go/deepseek-v4.1-flash`、`power = opencode-go/gpt-6.1-sol`，`max` 行按之前的
+  决定不生成（opencode-go 下没有对应模型，硬写猜的 id 只会让成员起不来）。
+
+- **自检放宽 `enabled` 的出厂值比较**：它和 `team/extensions/scheduler.json` 的 `enabled`
+  一样是**本机开关**，换机器可以不一样，不该进「出厂值必须对齐」的比较。校验器那一关仍然要过。
+
 ## [2.15.0] - 2026-10-31
 
 ### 新增

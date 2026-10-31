@@ -1525,8 +1525,11 @@ check("装配：team/extensions/squad.json 的每个键都有校验器，且出�
 	for (const key of keys) {
 		assert.equal(typeof SQUAD_FIELDS[key], "function", `${key} 没有校验器`);
 		assert.notEqual(SQUAD_FIELDS[key](flat[key]), undefined, `${key} 的现值被自己的校验器拒了：${JSON.stringify(flat[key])}`);
-		// roles 是**分工**、templates 是**分工模板**：出厂文件里给了真表，而 SQUAD_DEFAULTS 故意是空表 —— 不比这两项
-		if (key === "roles" || key === "templates") continue;
+		// 不比出厂值的三项：
+		//   roles/templates —— 出厂文件里给了真表，而 SQUAD_DEFAULTS 故意是空表；
+		//   enabled —— **本机开关**（和 team/extensions/scheduler.json 的 enabled 同一个约定：
+		//   换机器可以不一样，所以不进"出厂值必须对齐"的比较）。校验器那一关仍然要过。
+		if (key === "roles" || key === "templates" || key === "enabled") continue;
 		assert.deepEqual(SQUAD_DEFAULTS[key], flat[key], `${key} 的出厂值与 SQUAD_DEFAULTS 不一致`);
 	}
 	// 越界的值要拒（免得「能写进 JSON 就能生效」）
