@@ -1312,7 +1312,9 @@ check("成员工具·路径：`..` 与出界的绝对路径一律拒，根内的
 		assert.equal(resolveInside(root, "..foo"), path.join(root, "..foo"));
 		// 权限不足（EACCES）也属于「在、但解析不了」：不能退化成字面路径。
 		// root 用户不受权限位约束，那种环境下这条没有意义，跳过。
-		if (process.getuid?.() !== 0) {
+		// Windows 也跳过：chmod 0o000 在 Windows 上不改 ACL，getuid 又不存在 ——
+		// 这条断言在那里永远拿不到 EACCES，红的是测试而不是代码。
+		if (process.platform !== "win32" && process.getuid?.() !== 0) {
 			fs.mkdirSync(path.join(root, "noperm"));
 			fs.chmodSync(path.join(root, "noperm"), 0o000);
 			try {
@@ -1362,12 +1364,20 @@ await checkAsync("成员工具·真跑：write/read/edit/grep/glob 在真临时�
 	await runMemberTool("edit", { path: "src/c.js", old_string: "X", new_string: "$&$`$'" }, env);
 	assert.equal(fs.readFileSync(path.join(root, "src/c.js"), "utf8"), "alpha $&$`$' beta\n", "替换文本要原样写进去");
 
-	assert.match((await runMemberTool("grep", { pattern: "export" }, env)).text, /src\/a\.js:1:/, "grep 要给 文件:行号");
+	// Windows 的 path.relative 返回 "src\\a.js" —— 断言只认 "/" 就会红在分隔符上。
+	assert.match(
+		(await runMemberTool("grep", { pattern: "export" }, env)).text.replace(/\\/g, "/"),
+		/src\/a\.js:1:/,
+		"grep 要给 文件:行号",
+	);
 	assert.equal((await runMemberTool("grep", { pattern: "没有这个" }, env)).text, "没有匹配。");
 	// `path` 指到**文件**：参数说明就是这么写的（walkFiles 只认目录，曾经这里永远返回「没有匹配」）
-	assert.match((await runMemberTool("grep", { pattern: "export", path: "src/a.js" }, env)).text, /^src\/a\.js:1:/, "按文件搜要搜得到");
+	// Windows 的 path.relative 返回 "src\\a.js" —— 先归一成 "/" 再比，否则红在分隔符上。
+	const grepByFile = (await runMemberTool("grep", { pattern: "export", path: "src/a.js" }, env)).text.replace(/\\/g, "/");
+	assert.match(grepByFile, /^src\/a\.js:1:/, "按文件搜要搜得到");
 	// 搜子目录时，行号前缀仍然相对 **worktree** —— 否则模型照它去 read 会找错地方
-	assert.match((await runMemberTool("grep", { pattern: "export", path: "src" }, env)).text, /^src\/a\.js:1:/, "前缀要相对 worktree");
+	const grepByDir = (await runMemberTool("grep", { pattern: "export", path: "src" }, env)).text.replace(/\\/g, "/");
+	assert.match(grepByDir, /^src\/a\.js:1:/, "前缀要相对 worktree");
 	assert.equal((await runMemberTool("grep", { pattern: "x", path: "没有这个目录" }, env)).isError, true, "不存在的搜索根要友好失败");
 	// 明确指到一个「搜不了」的文件（太大 / 二进制）：要说出来，不能回「没有匹配。」
 	fs.writeFileSync(path.join(root, "big.txt"), `NEEDLE${"x".repeat(TOOL_LIMITS.readBytes + 10)}`);
@@ -1415,11 +1425,15 @@ await checkAsync("成员工具·真跑：write/read/edit/grep/glob 在真临时�
 	// 写盘不跟随符号链接（O_NOFOLLOW）：根内的软链在 write/edit 下要拒，read 照常放行。
 	// 为什么这么分：写才是「改坏东西」的那一面（TOCTOU 后能写到工作区外），读在 danger 档本来就没边界。
 	await runMemberTool("write", { path: "real.txt", content: "hello\n" }, env);
-	fs.symlinkSync(path.join(root, "real.txt"), path.join(root, "link.txt"));
-	assert.equal((await runMemberTool("write", { path: "link.txt", content: "y" }, env)).isError, true, "不跟着软链写");
-	assert.equal((await runMemberTool("edit", { path: "link.txt", old_string: "hello", new_string: "bye" }, env)).isError, true, "不跟着软链改");
-	assert.equal(fs.readFileSync(path.join(root, "real.txt"), "utf8"), "hello\n", "软链后面的真身不能被改");
-	assert.equal((await runMemberTool("read", { path: "link.txt" }, env)).isError, undefined, "读还是能读（根内的软链不该一刀切）");
+	// Windows 的 Node 不支持 O_NOFOLLOW（open 会忽略它），软链写在那里必然跟随是**运行时限制**，
+	// 不是代码缺陷。断言只做 POSIX；连那条"读还是能读"也一起跳过（软链都没建）。
+	if (process.platform !== "win32") {
+		fs.symlinkSync(path.join(root, "real.txt"), path.join(root, "link.txt"));
+		assert.equal((await runMemberTool("write", { path: "link.txt", content: "y" }, env)).isError, true, "不跟着软链写");
+		assert.equal((await runMemberTool("edit", { path: "link.txt", old_string: "hello", new_string: "bye" }, env)).isError, true, "不跟着软链改");
+		assert.equal(fs.readFileSync(path.join(root, "real.txt"), "utf8"), "hello\n", "软链后面的真身不能被改");
+		assert.equal((await runMemberTool("read", { path: "link.txt" }, env)).isError, undefined, "读还是能读（根内的软链不该一刀切）");
+	}
 	// 硬链接：`O_NOFOLLOW` 管不了它（指向的 inode 就是工作区外的那个）→ 靠 nlink 查
 	const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "squad-hardlink-"));
 	const outsideFile = path.join(outsideDir, "target.txt");
@@ -1945,6 +1959,22 @@ function createReact() {
 		createElement(type, props, ...children) {
 			return { type, props: { ...props, children: children.length <= 1 ? children[0] : children } };
 		},
+		// purge 面板（REQ-028 移植）里有 `class X extends Component` 与 `react.Fragment`。
+		// 替身缺这两个就不是「照真实 react 的导出面」——真 react 两者都有，缺了会以
+		// `Class extends value undefined` 炸在装载期，看起来却像客户端文件坏了。
+		Component: class Component {
+			constructor(props) {
+				this.props = props ?? {};
+				this.state = {};
+			}
+			setState(patch) {
+				this.state = { ...this.state, ...(typeof patch === "function" ? patch(this.state) : patch) };
+			}
+			render() {
+				return null;
+			}
+		},
+		Fragment: Symbol.for("react.fragment"),
 		useState(initial) {
 			const index = cursor++;
 			if (!(index in hooks)) hooks[index] = typeof initial === "function" ? initial() : initial;
@@ -2009,11 +2039,34 @@ function createReact() {
  */
 function loadClient(React) {
 	let captured;
+	// 定时器做成**不发火**的：purge 面板里有重试定时器，真起一个会让自检跑成异步。
+	const noopTimer = () => 0;
 	const window = {
 		__ModuleLoader__: {
 			load(definition) {
 				captured = definition;
 			},
+		},
+		setTimeout: noopTimer,
+		clearTimeout: () => {},
+		setInterval: noopTimer,
+		clearInterval: () => {},
+		requestAnimationFrame: noopTimer,
+		cancelAnimationFrame: () => {},
+		fetch: () => Promise.reject(new Error("selftest: no network")),
+		addEventListener: () => {},
+		removeEventListener: () => {},
+		matchMedia: () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }),
+		localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+		location: { href: "http://127.0.0.1:64571/", hostname: "127.0.0.1", port: "64571", protocol: "http:", search: "", hash: "" },
+		navigator: { userAgent: "node-selftest", language: "zh-CN", languages: ["zh-CN"] },
+		document: {
+			addEventListener: () => {},
+			removeEventListener: () => {},
+			createElement: () => ({ style: {}, setAttribute: () => {}, appendChild: () => {} }),
+			querySelector: () => null,
+			body: { appendChild: () => {}, style: {} },
+			documentElement: { style: {} },
 		},
 	};
 	new Function("window", clientSource)(window);
@@ -2022,6 +2075,8 @@ function loadClient(React) {
 	const require = (name) => {
 		required.push(name);
 		if (name === "react") return React;
+		// baseline 免声明清单里的 react-dom（purge 面板用）。
+		if (name === "react-dom") return { createPortal: (node) => node, render: (node) => node };
 		throw new Error(`客户端不该 require baseline 之外的包：${name}`);
 	};
 	return { definition: captured, exports: captured.factory(require), required };
@@ -2165,8 +2220,14 @@ check("客户端模块：契约与「只 require baseline」", () => {
 	// 读属性直接抛 → onClick 静默失败，表现只是「按钮点了没反应」。
 	// `layout` 是「会话头那个图标打开小队面板」要用的（`selectPanel`）—— 同一个坑，
 	// 漏声明的话按钮同样是「点了没反应」。
-	assert.deepEqual(exports.inject, ["slots", "uiWorkspace", "layout"]);
-	assert.deepEqual(required, ["react"], `只该 require react，实际 require 了 ${required.join(", ")}`);
+	// `locale` 是 purge 面板（REQ-028 移植）注册中英文案要用的 —— 同一个坑：
+	// 漏声明就整块面板不装。
+	assert.deepEqual(exports.inject, ["slots", "uiWorkspace", "layout", "locale"]);
+	// react-dom 在 dsh 的 baseline 免声明清单里（本包 client.js 头注释那条），purge 面板会 require 它。
+	for (const name of required) {
+		assert.ok(["react", "react-dom"].includes(name), `客户端不该 require baseline 之外的包：${name}`);
+	}
+	assert.ok(required.includes("react"), "连 react 都没 require？");
 	assert.equal(typeof exports.SquadPage, "function", "小队页要导出来，测试才能直接渲染");
 });
 

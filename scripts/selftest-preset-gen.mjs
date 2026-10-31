@@ -190,7 +190,12 @@ function findStandardPreset() {
 	};
 
 	const g = generateRc2TeamPreset(RC2_FIXTURE, { settings: rc2Settings, overlay: {} });
-	assert.equal(g.changed, 5, "rc.x 生成器应该正好 5 处改动（头注释/声明/模式标识/阈值/宿主层后端）");
+	assert.equal(g.changed, 6, "rc.x 生成器应该正好 6 处改动（头注释/声明/模式标识/阈值/宿主层后端/红队工具行）");
+	// REQ-029：红队模式已融合进团队模式 —— 团队预设必须自带红队工具行，
+	// 且**不带 persona**（指挥稿由 lib/redteam-brief.js 注入，写两遍就是双份地板）。
+	const REDTEAM_ROW = ["    - id: redteam-tools", "      name: dsh-team-workflow/purge/redteam/tools"].join("\n");
+	assert.ok(g.text.includes(REDTEAM_ROW), "团队预设缺红队工具行");
+	assert.ok(!g.text.includes("第一次开工前提醒用户一次"), "红队指挥稿不该再写进预设 persona（会与插件层注入重复）");
 // 2026-10-19 修的那条：**驱动自动压缩的一方在宿主层**，看不到预设作用域里的服务。
 // 所以后端必须额外插在宿主层，并且把自带的 basic 关掉（否则两个 provider 抢同一个服务名）。
 // 没有这三条断言，这个 bug 会静静地回来 —— 预设照样生成、自检照样绿，只有 agent 用不到后端。
@@ -261,7 +266,7 @@ assert.match(g.text, /^              - id: compaction-fold$/m, "预设内部那�
 	assert.match(withToolLess.text, /^        id: team-power$/m, "无工具子预设的 config.id 不对");
 	const subPreset = withToolLess.text.slice(withToolLess.text.indexOf("    - id: preset-team-power"));
 	assert.doesNotMatch(subPreset, /\n\s+- id: (tool-|skill-)/, "无工具子预设里混进了工具行");
-	assert.equal(withToolLess.changed, 7, "三档工具行 + 阈值那几处 + 无工具子预设 + 宿主层后端");
+	assert.equal(withToolLess.changed, 8, "三档工具行 + 阈值那几处 + 无工具子预设 + 宿主层后端 + 红队工具行");
 
 	// 生效值必须能回读（/thrift show 靠它）：5 个键一个都不能少
 	assert.deepEqual(
@@ -283,7 +288,7 @@ assert.match(g.text, /^              - id: compaction-fold$/m, "预设内部那�
 		overlay: { pruneThresholdChars: 40000, pruneHeadChars: 100, pruneTailChars: 50 },
 	});
 	assert.match(withPrune.text, /thresholdChars: 40000/, "overlay 的裁剪值没进预设");
-	assert.equal(withPrune.changed, 6, "带裁剪覆盖时应该是 6 处改动（多的一处是宿主层后端）");
+	assert.equal(withPrune.changed, 7, "带裁剪覆盖时应该是 7 处改动（多的一处是宿主层后端 + 红队工具行）");
 	assert.equal(g.text.includes("40000"), false, "没有 overlay 时不该动 pruner");
 
 	// 档位工具行：settings 给了 subagents.tierTools 才加，且必须插在 fork 行之前
@@ -444,7 +449,7 @@ try {
 
 	// 只给 settings、不给 overlay：只有 compaction-basic 一行被改，裁剪保持出厂
 	const gen = generateTeamPreset(pristine, { settings: teamSettings });
-	assert.equal(gen.changed, 1, `只该改 compaction-basic 一行，实际改了 ${gen.changed} 处`);
+	assert.equal(gen.changed, 2, `只该改 compaction-basic 一行 + 红队工具行，实际改了 ${gen.changed} 处`);
 
 	const live = readEffectiveThrift(gen.text);
 	// 断言的是**团队设置里声明的值真被写进预设**，不是某个写死的数字。
@@ -498,7 +503,7 @@ try {
 		settings: { ...teamSettings, persona: "你是团队助手。" },
 		overlay: { pruneThresholdChars: 40000 },
 	});
-	assert.equal(gen.changed, 3, `settings+overlay+persona 该改 3 处，实际 ${gen.changed}`);
+	assert.equal(gen.changed, 4, `settings+overlay+persona+红队工具行 该改 4 处，实际 ${gen.changed}`);
 	assert.match(gen.text, /你是团队助手。/, "persona 没写进去");
 	const live = readEffectiveThrift(gen.text);
 	assert.equal(live.thresholdChars, 40000, "同时改多处时裁剪覆盖丢了（改动互相覆盖了）");

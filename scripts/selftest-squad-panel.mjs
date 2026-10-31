@@ -64,6 +64,22 @@ function createReact() {
 		createElement(type, props, ...children) {
 			return { type, props: { ...props, children: children.length <= 1 ? children[0] : children } };
 		},
+		// purge 面板（REQ-028 移植）里有 `class X extends Component` 与 `react.Fragment`。
+		// 替身缺这两个就没有「照真实类型造」——真实 react 两者都有，缺了会以
+		// `Class extends value undefined` 的形式炸在装载期，看起来却像客户端文件坏了。
+		Component: class Component {
+			constructor(props) {
+				this.props = props ?? {};
+				this.state = this.constructor?.defaultState ?? {};
+			}
+			setState(patch) {
+				this.state = { ...this.state, ...(typeof patch === "function" ? patch(this.state) : patch) };
+			}
+			render() {
+				return null;
+			}
+		},
+		Fragment: Symbol.for("react.fragment"),
 		useState(initial) {
 			const index = cursor++;
 			if (!(index in hooks)) hooks[index] = typeof initial === "function" ? initial() : initial;
@@ -125,11 +141,35 @@ function createReact() {
  */
 function loadClient(React) {
 	let captured;
+	// 定时器做成**不发火**的：purge 面板里有重试定时器，真起一个 `setTimeout` 会让
+	// 自检跑成异步、甚至因为失败重试无限续命。这里只保证 API 在，回调不执行。
+	const noopTimer = () => 0;
 	const window = {
 		__ModuleLoader__: {
 			load(definition) {
 				captured = definition;
 			},
+		},
+		setTimeout: noopTimer,
+		clearTimeout: () => {},
+		setInterval: noopTimer,
+		clearInterval: () => {},
+		requestAnimationFrame: noopTimer,
+		cancelAnimationFrame: () => {},
+		fetch: () => Promise.reject(new Error("selftest: no network")),
+		addEventListener: () => {},
+		removeEventListener: () => {},
+		matchMedia: () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }),
+		localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+		location: { href: "http://127.0.0.1:64571/", hostname: "127.0.0.1", port: "64571", protocol: "http:", search: "", hash: "" },
+		navigator: { userAgent: "node-selftest", language: "zh-CN", languages: ["zh-CN"] },
+		document: {
+			addEventListener: () => {},
+			removeEventListener: () => {},
+			createElement: () => ({ style: {}, setAttribute: () => {}, appendChild: () => {} }),
+			querySelector: () => null,
+			body: { appendChild: () => {}, style: {} },
+			documentElement: { style: {} },
 		},
 	};
 	new Function("window", clientSource)(window);
@@ -138,6 +178,9 @@ function loadClient(React) {
 	const require = (name) => {
 		required.push(name);
 		if (name === "react") return React;
+		// `react-dom` 在 dsh 的 baseline 免声明清单里（本包 client.js 头注释那条），
+		// purge 面板会 require 它。替身给最小实现：面板只用 portal 这一条。
+		if (name === "react-dom") return { createPortal: (node) => node, render: (node) => node };
 		throw new Error(`客户端不该 require baseline 之外的包：${name}`);
 	};
 	return { definition: captured, exports: captured.factory(require), required };

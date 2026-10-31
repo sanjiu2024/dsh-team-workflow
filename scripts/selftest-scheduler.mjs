@@ -485,10 +485,14 @@ await checkAsync("recoverInterruptedRuns：只动 running，其余不碰", async
 
 await checkAsync("recoverInterruptedRuns：不动别的 dsh 进程正在跑的那一轮", async () => {
 	const store = freshStore("recover-alien");
-	// 另开一个 dsh（假设 pid 1 一定活着）正在跑的任务，不能被我们标成中断
+	// 另开一个 dsh（这里用父进程代表"确实活着的别的进程"）正在跑的任务，不能被我们标成中断。
+	// **不用 pid 1**：Windows 没有 pid 1，`process.kill(1, 0)` 直接 ESRCH ——
+	// 那会让这条断言在 Windows 上永远红，而且看起来像恢复逻辑写坏了。
+	const alienLive = process.ppid;
+	assert.ok(alienLive > 0 && alienLive !== process.pid, "父进程 pid 拿不到，这条断言就失去意义");
 	await store.mutateRuns((runs) => {
 		runs.push({ id: "mine", status: "running", pid: process.pid });
-		runs.push({ id: "alien-live", status: "running", pid: 1 });
+		runs.push({ id: "alien-live", status: "running", pid: alienLive });
 		runs.push({ id: "alien-dead", status: "running", pid: 0x7ffffff0 });
 	});
 	const count = await recoverInterruptedRuns(store);
@@ -518,10 +522,12 @@ await checkAsync("recoverInterruptedRuns：pid 被复用的烂记录靠时间兜
 	const store = freshStore("recover-stale");
 	// pid 会被系统复用：另一个 dsh 崩在任务里，它的 pid 后来分给了别人 →
 	// isProcessAlive 永远 true，那条记录就永远留在 running。
+	// 用父进程 pid（活着的"别人"），理由同上一个用例：pid 1 在 Windows 上不存在。
+	const alienLive = process.ppid;
 	const ancient = Date.now() - 13 * 60 * 60 * 1000;
 	await store.mutateRuns((runs) => {
-		runs.push({ id: "stale-alien", status: "running", pid: 1, startedAt: ancient });
-		runs.push({ id: "fresh-alien", status: "running", pid: 1, startedAt: Date.now() });
+		runs.push({ id: "stale-alien", status: "running", pid: alienLive, startedAt: ancient });
+		runs.push({ id: "fresh-alien", status: "running", pid: alienLive, startedAt: Date.now() });
 	});
 	const count = await recoverInterruptedRuns(store);
 	assert.equal(count, 1, "只该收掉那条长生不死的");
@@ -2059,20 +2065,64 @@ check("工具：render 对成功/失败都给得出文案", () => {
 // 写死路径的自检当场红，而它本来该验的是「契约对不对」，不是「文件叫什么」。
 const clientExport = JSON.parse(fs.readFileSync(new URL("package.json", ROOT), "utf8")).exports["./client"];
 const clientSource = fs.readFileSync(new URL(clientExport, ROOT), "utf8");
+// 替身按**真实 react 的导出面**给，不按本文件"当前用到哪些"给：
+// purge 面板（REQ-028 移植）里有 `class extends React.Component` 与 `react.Fragment`，
+// 缺了就会以 `Class extends value undefined` 炸在装载期 —— 看着像客户端文件坏了。
 const REACT_STUB = {
 	createElement: () => null,
+	Component: class Component {
+		constructor(props) {
+			this.props = props ?? {};
+			this.state = {};
+		}
+		setState(patch) {
+			this.state = { ...this.state, ...(typeof patch === "function" ? patch(this.state) : patch) };
+		}
+		render() {
+			return null;
+		}
+	},
+	Fragment: Symbol.for("react.fragment"),
 	useState: () => [undefined, () => {}],
 	useEffect: () => {},
+	useLayoutEffect: () => {},
 	useCallback: (fn) => fn,
+	useMemo: (fn) => fn(),
+	useRef: (value) => ({ current: value }),
+	useReducer: (_reducer, initial) => [initial, () => {}],
+	useContext: () => undefined,
 };
 
 function loadClient() {
 	let captured;
+	// 定时器不发火：purge 面板有重试定时器，真起一个会让自检异步化。
+	const noopTimer = () => 0;
 	const window = {
 		__ModuleLoader__: {
 			load(definition) {
 				captured = definition;
 			},
+		},
+		setTimeout: noopTimer,
+		clearTimeout: () => {},
+		setInterval: noopTimer,
+		clearInterval: () => {},
+		requestAnimationFrame: noopTimer,
+		cancelAnimationFrame: () => {},
+		fetch: () => Promise.reject(new Error("selftest: no network")),
+		addEventListener: () => {},
+		removeEventListener: () => {},
+		matchMedia: () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }),
+		localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+		location: { href: "http://127.0.0.1:64571/", hostname: "127.0.0.1", port: "64571", protocol: "http:", search: "", hash: "" },
+		navigator: { userAgent: "node-selftest", language: "zh-CN", languages: ["zh-CN"] },
+		document: {
+			addEventListener: () => {},
+			removeEventListener: () => {},
+			createElement: () => ({ style: {}, setAttribute: () => {}, appendChild: () => {} }),
+			querySelector: () => null,
+			body: { appendChild: () => {}, style: {} },
+			documentElement: { style: {} },
 		},
 	};
 	new Function("window", clientSource)(window);
@@ -2081,6 +2131,8 @@ function loadClient() {
 	const require = (name) => {
 		required.push(name);
 		if (name === "react") return REACT_STUB;
+		// baseline 免声明清单里的 react-dom（本包 client.js 头注释那条）。
+		if (name === "react-dom") return { createPortal: (node) => node, render: (node) => node };
 		throw new Error(`客户端不该 require baseline 之外的包：${name}`);
 	};
 	return { definition: captured, exports: captured.factory(require), required };
@@ -2138,10 +2190,16 @@ check("客户端模块：契约（id / apply / inject）与「只 require baseli
 	assert.equal(definition.id, "dsh-team-workflow", "id 必须是包名");
 	assert.equal(typeof definition.factory, "function");
 	assert.equal(typeof exports.apply, "function");
-	// slots = 注册槽位；uiWorkspace = 「打开成员会话」（REQ-025）；layout = 点会话头图标后选中面板。
+	// slots = 注册槽位；uiWorkspace = 「打开成员会话」（REQ-025）；layout = 点会话头图标后选中面板；
+	// locale = purge 面板（REQ-028 移植）注册中英文案要用的服务。
 	// 都是**真用到**的服务：少一个就在真宿主里静默失败（读未 inject 的服务直接抛）。
-	assert.deepEqual(exports.inject, ["slots", "uiWorkspace", "layout"], "客户端只该声明它真用的三个服务");
-	assert.deepEqual(required, ["react"], `只该 require react，实际 require 了 ${required.join(", ")}`);
+	assert.deepEqual(exports.inject, ["slots", "uiWorkspace", "layout", "locale"], "客户端只该声明它真用的服务");
+	// react-dom 是 purge 面板用的，在 dsh 的 baseline 免声明清单里 —— 断言写成白名单，
+	// 免得将来有人往客户端里 require 一个非 baseline 包还以为过了。
+	for (const name of required) {
+		assert.ok(["react", "react-dom"].includes(name), `客户端不该 require baseline 之外的包：${name}`);
+	}
+	assert.ok(required.includes("react"), "连 react 都没 require？");
 });
 
 await checkAsync("客户端模块：宿主没启用（404）→ 一个槽位都不注册", async () => {

@@ -234,7 +234,7 @@ check("真跑：squad ls 空目录 → 退出码 0 + 说清「没有落盘的小
 
 check("真跑：squad ls 有数据 → 打印队名；--all 也一样", () => {
 	const home = fs.mkdtempSync(path.join(os.tmpdir(), "cli-run2-"));
-	const cwd = "/tmp/真跑工作目录";
+	const cwd = path.join(os.tmpdir(), "真跑工作目录");
 	const store = createSquadStore({ dir: squadStoreDir(home), log: () => {} });
 	store.save(cwd, () => [
 		{ name: "真跑的队", objective: "目标", closed: null, board: [], members: new Map([["M", { label: "M", role: "实现", task: "t", status: "完成", usage: {}, attempts: 1, durationMs: 5 }]]) },

@@ -8,6 +8,57 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.12.0] - 2026-10-31
+
+### 新增
+
+- **dsh-purge 完整移植进本包**（REQ-028）。以前它是 profile 里单独一条 GitHub release tgz 依赖，
+  上游已停更、链接随时可能消失，而本机**已经在跑**它的 86 条补丁 —— 装不回来等于环境废一半。
+  现在代码在 `lib/purge/**`，由本包统一挂载：
+  - 清洗引擎 `lib/purge/core.js`（86 条补丁：提示词层 / 代码默认值 / 引擎级审批与沙箱 / shim / override）
+  - 身份注入 `lib/purge/identity.js`（系统提示改写、`prompt-inject.md`、persona 后缀降级、能力协议）
+  - 宿主管控（asar 解包、桌面/Web 重启、卸载、重应用）
+  - `purge_status` / `purge_apply` / `purge_revert` 三个工具、`/purge` `/rules` `/skills` `/rewind` 命令、
+    13 条 Web 路由
+  - 红队演练台 `lib/purge/redteam/**`（`node:sqlite` 事实库、60+ `redteam_*` 工具、HTTP 桥、评分规则）
+  - 资源 `presets/redteam/**`、`skills/redteam/**`、`scripts/redteam-setup.sh`
+  - 客户端面板并进 `lib/client.js`（一个包只有一个 client 入口，不能另开文件）
+  - CLI：`dsh-team purge [--status|--apply|--revert|--edit]`
+
+- **红队模式融合进团队模式**（REQ-029）。以前要单独切「红队模式」才有 `redteam_*` 工具；
+  现在团队预设自带 `redteam-tools` 行，指挥稿由 `lib/redteam-brief.js` 从 `team/REDTEAM.md`
+  注入（order 660，按 host 幂等）。稿子只有**一份真相源**：红队预设 persona 里那段重复的
+  已换成一句说明 —— 写两处就是每轮多付约 3k token 的双份地板。
+
+- **互斥闸** `lib/purge/gate.js`：profile 里还装着外部 `dsh-purge` 时，本包的 purge 半边整体让位
+  （只打日志 + 在 `dsh-team status` 标出来）。两边同时活会双份注入、抢同名工具、互相改写补丁备份。
+
+- `scripts/uninstall-purge-package.mjs`：卸掉外部 `dsh-purge`（备份 package.json 与包目录，
+  一条 `--restore` 回滚）；`scripts/selftest-purge.mjs`：13 项接缝自检（补丁数量、包根层数、
+  幂等补丁三处、互斥闸、红队稿、打包接线、前端合入、融合落点）。
+
+### 变更
+
+- **把本机对上游的幂等注入补丁正式纳入**：上游 Config 里有 `injectOnce` 键但**没有任何代码读它**，
+  于是 `addPromptSection` 被 `apply()` 与每轮 `prepareAssemble()` 各调一次、同名段挂两份
+  （实测整行 68,977 字符、每次调用白付约 6.5k token）。现在 `PURGE_SECTIONS_ON` 按段名去重，
+  cordis.patch 里 `injectOnce: true`。
+
+- **purge 的自更新停用**：上游 `applyUpdate` 会把 GitHub 上的 dsh-purge 内容写进 `PLUGIN_ROOT`，
+  移植后那就是本包根目录 —— 一按更新会把整个仓库写花。现在更新入口统一返回
+  「本包由 dsh-team auto-update 管理」。
+
+- **红队指挥稿骨架化，省 ≈1.9k token/轮**（REQ-031）：`team/REDTEAM.md` 从 5,477 字符压到 1,315 ——
+  常驻只留「不读全文也得照做」的硬约束（环境前提、指挥职责、派活三铁律、六角色一句话、五阶段、红线），
+  完整稿（汇报口径、什么时候才汇报、预检与降级、报告要素）搬进技能 `redteam-brief`，
+  开演练前用 `skill` 读一次。骨架末尾明确指向技能名，自检钉住这条链。
+
+### 已知
+
+- `lib/purge/uninstall.js` 仍按 `dsh-purge` 这个**包名**删 profile 依赖；移植后它删的是外部包。
+  卸本包请走 `dsh-team uninstall`。
+- 上游停更意味着 dsh 再改宿主结构时，86 条补丁的锚点仍需手工对齐（与搬不搬进来无关）。
+
 ## [2.11.0] - 2026-10-31
 
 ### 新增

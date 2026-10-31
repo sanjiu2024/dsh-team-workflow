@@ -39,8 +39,53 @@
     - id: dsh-team-workflow
       name: dsh-team-workflow
 
+    # ── purge 半边（REQ-028：从第三方 dsh-purge 完整移植）────────────────────
+    # 清洗引擎本体：86 条宿主补丁 + 身份注入 + purge_* 工具 + /purge 等命令 + Web 路由。
+    - id: dsh-team-workflow-purge
+      name: dsh-team-workflow/purge
+      inject: [systemPrompt, tools]
+      config:
+        enabled: true
+        autoApplyOnStart: false
+        autoUpdateOnStart: false
+        autoRevertOnMissing: false
+        injectOnce: true
+        stripMnemon: true
+        verbose: false
+        postPrompt: ""
+        postPromptOrder: 5100
+        autoRetry: true
+        retryMax: 3
+        autoContinue: false
+        continueMax: 3
+        continueText: "继续"
+        capabilityProtocol: true
+        hooksDenyBypass: true
+
+    # 演练台：预设 + 技能落地（lib/purge/redteam）
+    - id: dsh-team-workflow-redteam
+      name: dsh-team-workflow/purge/redteam
+
+    # 演练台事实库（node:sqlite），数据在 $DSH_HOME/redteam
+    - id: dsh-team-workflow-redteam-store
+      name: dsh-team-workflow/purge/redteam/store
+      config:
+        root: !!js dshHomePath('redteam')
+
+    # 演练台 HTTP 桥 POST /redteam/api
+    - id: dsh-team-workflow-redteam-ui
+      name: dsh-team-workflow/purge/redteam/ui
+
 - id: web
   name: '@deepseek-ai/dsh-web'
   config:
     searchProvider: bing
     fetchProvider: http
+
+# purge 的身份注入要靠这条：关掉官方身份段，persona 前后缀交给 lib/purge/identity.js
+# 在组装期决定（0.2.1 只注册 provider/model，这里再写 {{cwd}} 会二次触发 unknown prompt variable）。
+- id: system-prompt
+  config:
+    includeHarnessIdentity: false
+    personaPrefix: ""
+    personaSuffix: ""

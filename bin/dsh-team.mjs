@@ -1071,6 +1071,7 @@ function cmdHelp() {
   dsh-team patch [--status|--restore] [--dry-run]
                                       让思考链/工具行默认展开（改 dsh 安装树，可还原）
   dsh-team scheduler [status|enable|disable]
+  dsh-team purge [--status|--apply|--revert|--edit]   # 宿主清洗（从 dsh-purge 移植）
   dsh-team bill    [--date YYYY-MM-DD] [--json]
                                     某天的 token 账单（读审计日志；含小队那半）
   dsh-team squad ls [--cwd <目录>] [--all]
@@ -1596,6 +1597,13 @@ switch (command) {
 		if (sub !== "apply") fail("用法：dsh-team thrift apply");
 		cmdThriftApply();
 		break;
+	case "purge": {
+		// 原样透传：purge 的开关是 --status / --apply / --revert / --uninstall / --edit，
+		// 走 parseArgs 会把它们当成本包的 flag 吃掉（REQ-028）。
+		const { runPurgeCli } = await import("./purge-cli.mjs");
+		await runPurgeCli(process.argv.slice(3));
+		break;
+	}
 	case "scheduler":
 		if (sub === void 0 || sub === "status") cmdScheduler("status");
 		else if (sub === "enable" || sub === "disable") cmdScheduler(sub);

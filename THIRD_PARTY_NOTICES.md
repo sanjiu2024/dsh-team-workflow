@@ -7,6 +7,37 @@
 
 ---
 
+## purge 半边与红队演练台（`lib/purge/**`、`presets/redteam/**`、`skills/redteam/**`、`bin/purge-cli.mjs`、`lib/client.js` 的 purge 面板）
+
+### 来源：`dsh-purge`
+
+- 上游：<https://github.com/YuJunZhiXue/dsh-purge>（作者 **小杨 / YuJunZhiXue**），
+  基座版本 `1.1.72`（master，MIT）
+- 取用的发行版：<https://github.com/evilevil/dsh-purge-021rc2>
+  版本 `1.1.72-dsh021rc2.4`（社区适配分支，对齐 dsh `0.2.1-rc.2`，同样 MIT）
+- 许可：MIT。按上游《署名要求》：借用名称、思路、代码或提示词须署名并写明来源仓库 ——
+  本节即为此。二次分发请同样保留。
+- 移植时间：2026-10-31（REQ-028）
+
+### 搬了什么
+
+`lib/purge/**`（含 `redteam/**`）、`presets/redteam/**`、`skills/redteam/**`、
+`scripts/redteam-setup.sh`、`bin/purge-cli.mjs`，以及它 8.7k 行的客户端面板
+（并进本仓库唯一的客户端入口 `lib/client.js`，因为 dsh 一个包只有一个 client 出口）。
+
+### 改了哪里（只这四类，不改产品行为）
+
+1. **包根定位层数**：代码从独立包搬进 `lib/purge/`，`import.meta.url` 相对层数各 +1
+   （`reapply.js`、`update.js`、`redteam/index.js`、`redteam/ui.js`、`redteam/skill-availability.js`、
+   `core.js` 的 `cordis.patch.yml` 路径）。
+2. **挂载点**：4 个 cordis 插件行改成 `dsh-team-workflow/purge*`；客户端面板包进 IIFE 并入本包入口。
+3. **幂等注入**：并入本机此前对上游打的本地补丁（`PURGE_SECTIONS_ON`）—— 上游 `injectOnce`
+   是空配置键，不补就会把同一段系统提示挂两份。
+4. **自更新停用**：上游 `applyUpdate` 会把上游内容写进 `PLUGIN_ROOT`（移植后 = 本包根），
+   改为统一返回「由 dsh-team auto-update 管理」。
+
+---
+
 ## 定时任务调度器（`lib/scheduler.js`、`lib/client.js`）
 
 ### 直接来源：`dsh-tauri-scheduler`
