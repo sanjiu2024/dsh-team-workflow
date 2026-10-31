@@ -139,3 +139,27 @@ node bin/dsh-team.mjs squad ls [--all] # 落盘的小队（实时那份在 Web �
   拿 schema 验等于没验。
 - `roles.审查` 默认是降级链 `["tier-power","tier-std"]` —— 本机 `tier-power` 报 503，
   会自动退到 `tier-std`（换档写进成员结论栏）。
+- **`fs-observation-policy` 挂在 `dsh-base`（宿主基础层），不在 Agent 预设里**（2026-10-31 查实）。
+  它的作用是「改文件前必须先读过、读过之后文件不能再变」——症状就是 transcript 里
+  「读取 → 编辑 → 读取 → 编辑」：每次 edit 之后想再 edit 同一文件，模型得先 read 一遍拿新观测态。
+  **只在 `preset-gen` 里摘预设那行等于没摘**（我 10-30 干过，行为一点没变）。
+  正解是在 **profile 层**禁用，不改宿主源码：
+
+  ```yaml
+  # ~/.dsh/profiles/<名字>/cordis.patch.yml 末尾
+  - id: fs-observation-policy
+    disabled: true
+  ```
+
+  改完要重启 dsh。判据：同一会话里连续两次 `edit` 中间不 `read`，第二次不该报
+  `file has not been read` / `FS_NOT_OBSERVED`。
+- **原生工具不能同名覆盖**：`dsh-tools` 的 `NamedEntries` 在重名时**直接抛**
+  `tool "<name>" is already registered (for a per-agent variant, register through that agent's `agent.ctx` instead)`。
+  要在不改源码的前提下改工具行为，只有三条路：
+  ① 该工具所在插件行的 `config`（`dsh-tool-fs` 就有 `read`/`readImage`/`write`/`edit`/
+  `readLimit`/`readMaxLineLength`/`readMaxBytes`/`readStreamMinSize`）；
+  ② 把某个策略插件行 `disabled: true`（上面 `fs-observation-policy` 就是这条）；
+  ③ 关掉原生工具，用**另一个名字**注册自己的（模型看到的是新名字）。
+  想「包住执行」而不换名字，用钩子：`tools/pre-execute` / `tools/execute` / `tools/result` /
+  `tools/post-execute`（本包的 `rtk` 与 `lens` 已经在用 `tools/post-execute`）。
+  注意 `tools/pre-execute` 拿到的是**深冻结**的参数，只能读不能改（`lib/rtk.js` 注释里有记录）。
