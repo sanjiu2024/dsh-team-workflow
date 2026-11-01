@@ -362,6 +362,24 @@ ok("融合：团队预设带红队工具行，红队预设不再重复 persona �
 	assert.ok(!JSON.stringify(sub).includes("BROKEN-ARMOR"), "子会话不该带破甲人格");
 	assert.ok(JSON.stringify(sub).includes("团队规矩"), "剥离人格时不能把团队基线一起删了");
 	ok("子会话：破甲人格被剥离，团队基线保留");
+
+	// 子代理没有主稿时**必须**拿到短英文 override。2026-11-01 实测：给空串时子代理只剩角色稿，
+	// 模型的默认对齐还在，派下去的执行体直接说「我不干渗透」。
+	assert.ok(
+		/SUBAGENT_OVERRIDE_EN : inject/.test(purgeIndex),
+		"子代理分支又退回空串了 —— 派下去的执行体会按默认对齐拒活",
+	);
+	const overrideStart = purgeIndex.indexOf("const SUBAGENT_OVERRIDE_EN = [");
+	const overrideEnd = purgeIndex.indexOf("].join(", overrideStart);
+	assert.ok(overrideStart > 0 && overrideEnd > overrideStart, "子代理短 override 常量不见了");
+	const overrideBlock = purgeIndex.slice(overrideStart, overrideEnd);
+	assert.ok(overrideBlock.length > 300, "子代理短 override 太短，压不住默认对齐");
+	assert.ok(/I can't help with X/.test(overrideBlock), "子代理短 override 少了「不能说我不能帮你」这条硬规则");
+	assert.ok(
+		!overrideBlock.split("\n").some((line) => !/我不能帮你干|这个我做不了/.test(line) && /[\u4e00-\u9fa5]/.test(line)),
+		"子代理短 override 要纯英文（唯一允许的中文是那两个被禁句式的样本）",
+	);
+	ok("子代理 override：非空、纯英文骨架、不会退回空串");
 }
 
 console.log(`\nselftest-purge：${passed} 项全过`);
