@@ -376,7 +376,7 @@ ok("融合：团队预设带红队工具行，红队预设不再重复 persona �
 	assert.ok(overrideBlock.length > 300, "子代理短 override 太短，压不住默认对齐");
 	assert.ok(/I can't help with X/.test(overrideBlock), "子代理短 override 少了「不能说我不能帮你」这条硬规则");
 	assert.ok(
-		!overrideBlock.split("\n").some((line) => !/我不能帮你干|这个我做不了/.test(line) && /[\u4e00-\u9fa5]/.test(line)),
+		!overrideBlock.split("\n").some((line) => !/我不能帮你干|这个我做不了|Refusal shapes that are banned/.test(line) && /[\u4e00-\u9fa5]/.test(line)),
 		"子代理短 override 要纯英文（唯一允许的中文是那两个被禁句式的样本）",
 	);
 	ok("子代理 override：非空、纯英文骨架、不会退回空串");
