@@ -230,4 +230,42 @@ async function call(spec, options) {
 	ok("前端：入口按钮 + 面板 + 两段式确认 + 可被自检渲染");
 }
 
+// —— REQ-034：两个编排模式按钮 ——
+//
+// 盯三件事：① 两个 op 在白名单里且 `args: null`（走进程内 switchSessionPreset，
+// 不是 CLI —— CLI 那边没有切模式的命令）；② 服务端真的把 body 里的 sessionId
+// 传进 runOp（拿不到就是「点了没反应」，那是最难查的失败形态）；
+// ③ 前端 POST 里确实带了 sessionId。
+{
+	const { OPS } = await import("../lib/toolbox.js");
+	for (const [opName, presetId] of [
+		["mode.ralph", "ralph"],
+		["mode.workflow", "workflow"],
+	]) {
+		const op = OPS[opName];
+		assert.ok(op, `工具箱缺 ${opName}`);
+		assert.equal(op.args, null, `${opName} 必须走进程内（args: null），CLI 没有切模式的子命令`);
+		assert.ok(op.label && op.desc, `${opName} 要有 label 与 desc，否则面板上是空白按钮`);
+		assert.ok(!op.danger, `${opName} 不该标 danger：它不改宿主文件，只是开个新会话`);
+		assert.ok(presetId, "预设 id 映射不能空");
+	}
+
+	const src = fs.readFileSync(new URL("../lib/toolbox.js", import.meta.url), "utf8");
+	assert.ok(
+		src.includes("sessionId: String(body?.sessionId ?? \"\")"),
+		"handler 没把 body.sessionId 传进 runOp —— 按钮会永远报「拿不到当前会话 id」",
+	);
+	assert.ok(
+		src.includes("switchSessionPreset(deps.ctx, { sessionId, presetId })"),
+		"mode.* 分支没调 switchSessionPreset（应复用 REQ-030 的换模式路径）",
+	);
+
+	const client = fs.readFileSync(new URL("../lib/client.js", import.meta.url), "utf8");
+	assert.ok(
+		client.includes("JSON.stringify({ op, confirm: true, sessionId })"),
+		"前端 POST 没带 sessionId",
+	);
+	ok("编排模式按钮：两个 op 在册、走进程内、sessionId 两端都传");
+}
+
 console.log(`\nselftest-toolbox：${passed} 项全过`);

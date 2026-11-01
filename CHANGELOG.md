@@ -8,6 +8,24 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.21.0] - 2026-11-01
+
+### 新增
+
+- **工具箱面板两个模式按钮**（REQ-034 收尾）：点「Ralph 循环」/「Workflow 编排」直接切模式。
+
+  服务端新增 `mode.ralph` / `mode.workflow` 两个 op：`args: null`，走进程内
+  `switchSessionPreset`，复用 REQ-030 已验证的「开新会话 + 交接预填」路径 ——
+  CLI 那边没有切模式的子命令，所以不能像其它按钮那样转发给 `bin/dsh-team.mjs`。
+  它们**不标 `danger`**：不改宿主文件、不删东西，只是开个新会话（旧会话留在列表里）。
+
+  会话 id 只能由前端随 POST body 传：HTTP handler 拿不到「用户正在看哪个会话」。
+  前端从 `panelCtx.uiWorkspace.selection.getSnapshot().sessionId` 取，读不到时
+  服务端回一句明确的替代方案（`/mode ralph`），不是静默失败。
+
+  自检 `selftest-toolbox` 从 7 项扩到 8 项，钉住「两个 op 在册且 `args` 为 null、
+  sessionId 两端都传」；反向实验（把 handler 的 sessionId 改成空串）会让它红。
+
 ## [2.20.1] - 2026-11-01
 
 ### 新增
