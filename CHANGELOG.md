@@ -8,6 +8,20 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.21.1] - 2026-11-01
+
+### 修复
+
+- **加两个模式预设后，团队模式从列表里消失**（`lib/preset-gen.js`）。
+
+  `generateModePreset` 只改了 `config.id`（`team` → `ralph`），**没改外层 cordis
+  entry id** —— 三个 bundle 的 patch 都写着 `- id: preset-team`。装进同一个 profile 时
+  entry id 撞车，后加载的把前面的顶掉，表现就是「团队模式没了」（2026-11-01 用户实测：
+  重启后只剩 ralph / workflow）。
+
+  现在外层 entry id 一起换成 `preset-ralph` / `preset-workflow`。自检加 4 条断言：
+  外层 id 必须换、且不能残留 `preset-team`。
+
 ## [2.21.0] - 2026-11-01
 
 ### 新增

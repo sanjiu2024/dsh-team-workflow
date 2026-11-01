@@ -434,6 +434,12 @@ assert.match(g.text, /^              - id: compaction-fold$/m, "预设内部那�
 		assert.ok(!wf.text.includes("dsh-tool-ralph"), "workflow 预设不能带 tool-ralph");
 		assert.ok(ralph.text.includes(`        id: ${MODE_PRESETS.ralph.id}`), "ralph 的 preset id 没写进去");
 		assert.ok(wf.text.includes(`        id: ${MODE_PRESETS.workflow.id}`), "workflow 的 preset id 没写进去");
+		// 外层 cordis entry id 也必须换：三个 bundle 装进同一个 profile 时 id 要唯一，
+		// 三个都叫 preset-team 会互相顶掉 —— 表现是「团队模式不见了」（2026-11-01 实测）。
+		assert.ok(ralph.text.includes("    - id: preset-ralph"), "ralph 的外层 entry id 没换，会和 preset-team 撞");
+		assert.ok(wf.text.includes("    - id: preset-workflow"), "workflow 的外层 entry id 没换，会和 preset-team 撞");
+		assert.ok(!ralph.text.includes("    - id: preset-team"), "ralph 预设里还留着 preset-team 这个 entry id");
+		assert.ok(!wf.text.includes("    - id: preset-team"), "workflow 预设里还留着 preset-team 这个 entry id");
 		assert.throws(() => generateModePreset(found.text, { mode: "nope" }), /未知模式/, "未知模式必须抛，不能静默生成 team");
 		console.log("✓ 编排模式预设：工具面互斥、engine 保留、id 正确、未知模式拒绝");
 	}
@@ -637,33 +643,3 @@ try {
 		fs.rmSync(tempHome, { recursive: true, force: true });
 	}
 }
-
-// —— REQ-034：两个编排模式预设 ——
-//
-// 盯的是「工具面互斥」：ralph 模式看得见 workflow、或反之，就等于没切。
-// 还要盯住 `workflow-ptc` 必须留着 —— 它提供 `workflowEngine` 服务，
-// `dsh-tool-ralph` 的 inject 里就有它，删掉 ralph 工具会加载不起来。
-{
-	const { generateModePreset, MODE_PRESETS } = await import("../lib/preset-gen.js");
-	const found = findRc2StandardPatch({
-		profileDir: path.join(os.homedir(), ".dsh", "profiles", process.env.DSH_PROFILE ?? "desktop"),
-	});
-	if (!found) {
-		console.log("… 跳过编排模式预设断言：找不到 standard 底稿（设 DSH_MODULES 或装 dsh 可开启）");
-	} else {
-		const ralph = generateModePreset(found.text, { mode: "ralph" });
-		const wf = generateModePreset(found.text, { mode: "workflow" });
-
-		assert.ok(ralph.text.includes("dsh-tool-ralph"), "ralph 预设必须带 tool-ralph");
-		assert.ok(!ralph.text.includes("dsh-tool-workflow"), "ralph 预设不能同时带 tool-workflow —— 工具面必须互斥");
-		assert.ok(ralph.text.includes("dsh-workflow-ptc"), "ralph 必须保留 workflow-ptc：它提供 workflowEngine 服务");
-		assert.ok(wf.text.includes("dsh-tool-workflow"), "workflow 预设必须带 tool-workflow");
-		assert.ok(!wf.text.includes("dsh-tool-ralph"), "workflow 预设不能带 tool-ralph");
-		assert.ok(ralph.text.includes(`        id: ${MODE_PRESETS.ralph.id}`), "ralph 的 preset id 没写进去");
-		assert.ok(wf.text.includes(`        id: ${MODE_PRESETS.workflow.id}`), "workflow 的 preset id 没写进去");
-		assert.throws(() => generateModePreset(found.text, { mode: "nope" }), /未知模式/, "未知模式必须抛，不能静默生成 team");
-		console.log("✓ 编排模式预设：工具面互斥、engine 保留、id 正确、未知模式拒绝");
-	}
-}
-
-console.log("\n全部通过 ✓");
