@@ -1,7 +1,7 @@
 # REQ-034 · 一键切换 Ralph 循环 / Workflow 编排模式
 
-- **状态**：进行中
-- **对应版本**：`2.18.0 → 2.19.0`（加能力 → minor）
+- **状态**：已完成
+- **对应版本**：`2.20.1`（预设层）+ `2.21.0`（按钮）（加能力 → minor）
 - **提出**：2026-11-01，用户原话「添加新的功能，就是能一键切换ralph循环模式，和workflow模式」
   ＋追问后补充「点击按钮就可以切换，并且重切」「这两个是新模式」
 
@@ -64,3 +64,20 @@
 3. `lib/commands.js`：`/mode` 命令 → `switchSessionPreset`
 4. `lib/toolbox.js`：`mode.ralph` / `mode.workflow` 两个 op（`args: null`，自己调 switch）
 5. `lib/client.js`：面板加两个按钮，body 带 `sessionId`
+
+## 8. 验收记录（2026-11-01）
+
+| # | 实际命令 | 实际输出 |
+| --- | --- | --- |
+| A1 | `node bin/dsh-team.mjs --profile desktop preset install` | `$ 写 C:\Users\...\preset-ralph` / `$ 写 ...\preset-workflow` / `✓ ralph 预设已就位` / `✓ workflow 预设已就位` |
+| A2 | `grep -oE '^        id: [a-z]+' preset-*/cordis.patch.yml` | `team` → `team`；`ralph` → `ralph`；`workflow` → `workflow` |
+| A3 | `node scripts/selftest-preset-gen.mjs` | `✓ 编排模式预设：工具面互斥、engine 保留、id 正确、未知模式拒绝` |
+| A4 | `/mode list`（会话内命令） | **未实测** —— 要重启 dsh 才会加载新命令（当前进程跑的是旧 bundle）。代码路径与 `/preset use` 同一条，那条已验收 |
+| A5 | `node scripts/selftest-toolbox.mjs` | `✓ 编排模式按钮：两个 op 在册、走进程内、sessionId 两端都传`（8 项全过）；**真实点击未实测**，同样要重启 |
+| A6 | `npm test` | **未全绿**：`selftest-computer` 报 `ParserError: ParentContainsErrorRecordException`，来自 `8831c94 refactor: daemon.ps1 外置出 computer.js`（不是本任务的改动）。主自检 / toolbox / preset-gen 三条单跑 `EXIT=0` |
+
+反向实验：把 `lib/toolbox.js` 的 `sessionId: String(body?.sessionId ?? "")` 改成 `sessionId: ""`，
+`selftest-toolbox` 变红并报 `handler 没把 body.sessionId 传进 runOp`；还原后转绿。
+
+另：`v2.19.0` / `v2.20.0` 两个版本号在本任务期间被并行提交占用，本任务最终落在 `2.20.1`（预设层）
+与 `2.21.0`（按钮）。`v2.19.0` 标签已重新指向 `01ce228 chore: 2.19.0`。
