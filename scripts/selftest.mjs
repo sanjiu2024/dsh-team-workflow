@@ -153,15 +153,20 @@ assert.ok(
 );
 // 写计划前先派调研 —— 防止这一段被无意删掉（它是计划质量的前置闸门）。
 assert.ok(
-	baselineText.includes("写计划前：先派调研回来") && baselineText.includes("从查到的事实出发"),
-	"「写计划前先派调研回来」纪律段丢失",
+	baselineText.includes("开工前：先问，再派调研回来") && baselineText.includes("从查到的事实出发"),
+	"「开工前先问再派调研」纪律段丢失",
 );
 
 // —— 2. 命令 ——
 
 const names = ctx._commands.map((c) => c.name).sort();
-// `preset` 是 REQ-030 的会话级换模式命令（/preset list | use <id>）。
-assert.deepEqual(names, ["audit-log", "preset", "team-baseline", "team-scheduler", "thrift"], `命令不对：${names}`);
+// `preset` 是 REQ-030 的会话级换模式命令（/preset list | use <id>）；
+// `mode` 是 REQ-034 的编排模式快捷入口（/mode list | team | ralph | workflow）。
+assert.deepEqual(
+	names,
+	["audit-log", "mode", "preset", "team-baseline", "team-scheduler", "thrift"],
+	`命令不对：${names}`,
+);
 
 // —— 3. 审计日志：真喂事件 ——
 
@@ -754,7 +759,7 @@ assert.ok(bareCtx._sections.some((s) => s.name === "team:baseline"), "没 web �
 	assert.ok(typeof description === "string" && description.length > 0, "description 是必需的，缺了 dsh 会静默忽略");
 	assert.ok(description.length <= 500, "description 超过 500 字符会被目录截断");
 	// 内容不能被清空：四段关口必须在（这是「工作流」的实质）
-	for (const mark of ["## 1. 理清需求", "## 2. 写计划前", "## 3. 实现", "## 4. 审查（两层：std 测，power 判）", "## 5. 验收"]) {
+	for (const mark of ["## 1. 理清需求", "## 2. 开工前：先问", "## 3. 实现", "## 4. 审查（两层：std 测，power 判）", "## 4.5 收尾辩论赛（无记忆找 bug，有记忆修）", "## 5. 验收"]) {
 		assert.ok(raw.includes(mark), `workflow skill 丢了关口段：${mark}`);
 	}
 }
