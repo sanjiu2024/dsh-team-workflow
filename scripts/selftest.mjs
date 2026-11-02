@@ -153,7 +153,7 @@ assert.ok(
 );
 // 写计划前先派调研 —— 防止这一段被无意删掉（它是计划质量的前置闸门）。
 assert.ok(
-	baselineText.includes("开工前：先问，再派调研回来") && baselineText.includes("从查到的事实出发"),
+	baselineText.includes("开工前：先问，派调研，再审计划") && baselineText.includes("从查到的事实出发"),
 	"「开工前先问再派调研」纪律段丢失",
 );
 
