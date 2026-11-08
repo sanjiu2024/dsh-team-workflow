@@ -265,6 +265,9 @@ async function call(spec, options) {
 		client.includes("JSON.stringify({ op, confirm: true, sessionId })"),
 		"前端 POST 没带 sessionId",
 	);
+	// REQ-035：superagent 状态 op。它必须**不是** danger（只读），且在册。
+	assert.ok(OPS["superagent.status"], "superagent.status 不在白名单里 —— 面板上就没有这个按钮");
+	assert.ok(OPS["superagent.status"].danger !== true, "superagent.status 是只读的，不该标 danger（标了就要点两下）");
 	ok("编排模式按钮：两个 op 在册、走进程内、sessionId 两端都传");
 }
 
