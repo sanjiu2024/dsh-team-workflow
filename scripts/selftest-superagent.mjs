@@ -166,4 +166,83 @@ for (const decision of [
 }
 ok("每条判定都带可读理由");
 
+// —— 8. 结果捕获：从会话事件流里取最后一条助手文本 ——
+//
+// 盯的是「回评论会不会发出空内容」与「畸形事件会不会毁掉整次读取」。
+// 假替身按真实形态造：`sessionPersistence.open(id,'read')` → handle 有
+// `read(offset, limit) → { events }` 与 `close()`（dsh-session-persistence-jsonl）。
+{
+	const { extractText, lastAssistantText, readFinalOutput } = await import("../lib/superagent/result.js");
+
+	// extractText：只取 text 块，图片/工具块丢掉
+	assert.equal(
+		extractText([{ type: "text", text: "第一段" }, { type: "image", source: {} }, { type: "text", text: "第二段" }]),
+		"第一段\n第二段",
+		"多段文本要用换行拼起来，图片块要丢掉",
+	);
+	assert.equal(extractText([{ type: "image", source: {} }]), "", "只有图片时返回空串");
+	assert.equal(extractText(null), "", "畸形 content 返回空串而不是抛");
+	assert.equal(extractText([{ type: "text", text: "  " }]), "", "纯空白要 trim 成空串");
+
+	// lastAssistantText：多条取最后一条**非空**
+	const msg = (text) => ({ type: "assistant/message", data: { content: [{ type: "text", text }] } });
+	assert.equal(lastAssistantText([]), "", "空事件流返回空串");
+	assert.equal(lastAssistantText([msg("结论 A")]), "结论 A", "单条直接返回");
+	assert.equal(lastAssistantText([msg("结论 A"), msg("结论 B")]), "结论 B", "多条取最后一条");
+	assert.equal(
+		lastAssistantText([msg("结论 A"), { type: "assistant/message", data: { content: [{ type: "tool" }] } }]),
+		"结论 A",
+		"末尾只有工具调用的轮次不能把结论覆盖成空 —— 否则会往 issue 里发空评论",
+	);
+	assert.equal(
+		lastAssistantText([msg("结论 A"), null, { garbage: true }, { type: "user/message", data: {} }]),
+		"结论 A",
+		"畸形事件与非助手事件一律跳过，不抛",
+	);
+	assert.equal(
+		lastAssistantText([{ type: "assistant/message", data: { message: { content: [{ type: "text", text: "包了一层" }] } } }]),
+		"包了一层",
+		"data.message.content 形态也要认",
+	);
+	ok("结果捕获：取最后一条非空助手文本，畸形事件跳过");
+
+	// readFinalOutput：分页读 + 一定要 close
+	{
+		const pages = [[msg("第一页")], [msg("第二页")], []];
+		let calls = 0;
+		let closed = false;
+		const fakeCtx = {
+			get: (name) =>
+				name !== "sessionPersistence"
+					? undefined
+					: {
+							open: async (id, access) => {
+								assert.equal(id, "s-1", "要按传进来的 sessionId 打开");
+								assert.equal(access, "read", "必须是只读打开 —— 不能碰正在跑的会话");
+								return {
+									read: async (offset, limit) => {
+										assert.equal(limit, 512, "默认每页 512");
+										const chunk = pages[calls++] ?? [];
+										return { events: chunk };
+									},
+									close: async () => {
+										closed = true;
+									},
+								};
+							},
+						},
+		};
+		assert.equal(await readFinalOutput(fakeCtx, "s-1"), "第二页", "跨页时要取最后一页里的最后一条");
+		assert.equal(closed, true, "读完必须 close 句柄，否则会话文件一直占着");
+		let threw = false;
+		try {
+			await readFinalOutput({ get: () => undefined }, "s-1");
+		} catch {
+			threw = true;
+		}
+		assert.equal(threw, true, "没有 sessionPersistence 服务时要显式抛，不能静默返回空串");
+		ok("readFinalOutput：分页读取、只读打开、必 close、缺服务显式抛");
+	}
+}
+
 console.log(`\nselftest-superagent：${passed} 项全过`);
