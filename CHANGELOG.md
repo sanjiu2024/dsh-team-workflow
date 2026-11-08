@@ -8,6 +8,34 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.22.0] - 2026-11-08
+
+### 新增
+
+- **superagent 移植 · Phase 1 第一块：Policy 判定**（REQ-035）。
+
+  把 `deepseek-ai/dsh-superagent-prototype` 里「谁能让 agent 干活」这件事重写进本仓库
+  （`lib/superagent/policy.js`，纯函数、零依赖）。上游那套是为 GitHub + 飞书 + 多线程 +
+  人机协作设计的 2088 行领域模型，这里只取单 Source（GitHub）需要的部分。
+
+  三条设计原则，都不是拍脑袋：
+
+  - **fail-closed**：策略为空 = 谁都不能触发。这个组件会给一个 `danger-full-access` 会话
+    喂 prompt，而 prompt 来自 issue 正文 —— 不可信输入。
+  - **显式触发词**：只有正文出现 `/agent`（可配）才进候选。授权人说一句「LGTM」
+    不该起会话，更不该动代码。按词边界匹配，`/agentic` 不算。
+  - **双闸**：login 在白名单 **且** `author_association` 是 OWNER/MEMBER/COLLABORATOR。
+    少一道就变成「被移出组织的人还能触发」或「任何一个 MEMBER 都能触发」。
+
+  自检 `selftest-superagent` 7 项，已接进 `npm test`。反向实验：拆掉作者白名单那道闸，
+  自检变红并报「名单外的人不能触发」。
+
+  **计划审查改掉了原定的实现顺序**：原计划 Source → Policy → Ticket → 执行 → 回评论，
+  审出来是反的 —— 最薄的排第一、最厚的排最后。已改成
+  **幂等 claim → 执行 + 结果捕获（手工触发）→ 回评论/PR → 最后才接轮询**，
+  前三步离线可测。另外三条硬约束已落在设计里：凭据不进 agent（只许写 worktree）、
+  只开 PR 不本地合并、游标只用 comment id 高水位。
+
 ## [2.21.7] - 2026-11-01
 
 ### 新增
