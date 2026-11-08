@@ -245,4 +245,102 @@ ok("每条判定都带可读理由");
 	}
 }
 
+// —— 9. 状态存储：幂等占坑、单写者、原子写、坏文件恢复 ——
+//
+// 盯的是「跑完但没记下来 → 重跑」这条连锁：claim 必须先占坑再干活。
+// 全部用真目录真文件跑（fs 的原子性是它的一半职责，假替身测不出来）。
+{
+	const { SuperagentStore } = await import("../lib/superagent/store.js");
+	const fs = await import("node:fs");
+	const os = await import("node:os");
+	const path = await import("node:path");
+
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sa-store-"));
+	try {
+		// 并发 claim：同一个 id 只能有一个 true
+		{
+			const store = new SuperagentStore({ dir: path.join(dir, "concurrent") });
+			const results = await Promise.all([
+				store.claim("c-1"),
+				store.claim("c-1"),
+				store.claim("c-1"),
+				store.claim("c-2"),
+			]);
+			assert.deepEqual(
+				results,
+				[true, false, false, true],
+				"并发 claim 同一个 id 只能成功一次 —— 否则会重复开 worktree、重复推送、重复评论",
+			);
+		}
+
+		// 落盘与读回
+		{
+			const sub = path.join(dir, "persist");
+			const a = new SuperagentStore({ dir: sub });
+			await a.saveTicket("c-1", { status: "running", startedAt: "2026-11-08T01:00:00Z" });
+			await a.advanceCursor("c-1");
+			const b = new SuperagentStore({ dir: sub });
+			const tickets = await b.listTickets();
+			assert.equal(tickets.length, 1, "新实例要能读到上一条写进去的记录");
+			assert.equal(tickets[0].commentId, "c-1", "listTickets 要把 commentId 带出来");
+			assert.equal(tickets[0].status, "running", "Ticket 字段要原样保留");
+			const snapshot = await b.read();
+			assert.equal(snapshot.cursor.lastCommentId, "c-1", "游标要落盘");
+			assert.ok(
+				fs.existsSync(path.join(sub, "state.json")),
+				"状态文件应当在约定路径上，别写到别处",
+			);
+			const leftovers = fs.readdirSync(sub).filter((f) => f.endsWith(".tmp"));
+			assert.deepEqual(leftovers, [], "写完不能留下 .tmp —— 那是崩在中间才会有的残骸");
+		}
+
+		// 坏文件：留档 + 从空开始，不抛
+		{
+			const sub = path.join(dir, "corrupt");
+			fs.mkdirSync(sub, { recursive: true });
+			fs.writeFileSync(path.join(sub, "state.json"), "{ 这不是 JSON", "utf8");
+			const store = new SuperagentStore({ dir: sub });
+			const state = await store.read();
+			assert.deepEqual(state.seen, [], "坏文件要当作空状态，不能让整个子系统起不来");
+			assert.ok(
+				fs.readdirSync(sub).some((f) => f.includes(".corrupt-")),
+				"坏文件要留档（改名而不是删掉），否则现场就没了",
+			);
+		}
+
+		// update 抛错时不落盘
+		{
+			const sub = path.join(dir, "reject");
+			const store = new SuperagentStore({ dir: sub });
+			await store.claim("keep-me");
+			let threw = false;
+			try {
+				await store.update((s) => {
+					s.seen.push("should-not-persist");
+					throw new Error("mutator 故意失败");
+				});
+			} catch {
+				threw = true;
+			}
+			assert.equal(threw, true, "mutator 抛错要透传给调用方");
+			const state = await store.read();
+			assert.ok(!state.seen.includes("should-not-persist"), "抛错的那次改动不能落盘");
+			assert.ok(state.seen.includes("keep-me"), "之前写进去的不能被后来的失败抹掉");
+		}
+
+		// seen 上限：不能无限长
+		{
+			const sub = path.join(dir, "cap");
+			const store = new SuperagentStore({ dir: sub });
+			for (let i = 0; i < 1010; i += 1) await store.claim(`cap-${i}`);
+			const state = await store.read();
+			assert.equal(state.seen.length, 1000, "seen 要截断到上限，否则状态文件无限长大");
+			assert.equal(state.seen.at(-1), "cap-1009", "截断要留最近的，不能把新的截掉");
+		}
+		ok("状态存储：并发 claim 幂等、原子写、坏文件留档恢复、抛错不落盘、seen 有上限");
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+}
+
 console.log(`\nselftest-superagent：${passed} 项全过`);
