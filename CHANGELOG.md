@@ -8,6 +8,43 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.27.0] - 2026-11-08
+
+### 修复
+
+- **`web_search` 撞名会让整个插件加载失败**（`lib/ai-search.js`）。宿主的 `dsh-web-search-deepseek`
+  已经注册了 `web_search`，而 `dsh-tools` 的 NamedEntries 重名时**直接抛** —— 抛在 `apply` 里，
+  于是团队基线、小队、面板**一起没**。desktop 没暴露是因为那份预设禁用了宿主的行；
+  换个 profile（headless）立刻炸：`tool "web_search" is already registered`。
+  现在注册前先探同名，占了就跳过并在状态里说明，不抛。
+
+- **服务缺失时 `superagent` 静默不激活**。`ctx.inject(deps, cb)` 只在依赖全就绪时回调，
+  缺一个就永远不回调 —— 不报错、不打日志、状态停在「未启用」。
+  现在 3 秒后逐项探一遍，把缺的**名字**写进状态并打日志。
+
+- **`workdir` 没 mkdir**。`agents.create` 拿到不存在的 cwd 时行为未定义（最坏静默回落到
+  进程 cwd，那就是把仓库根当工作区）。现在显式建，建不出来就不激活并说明原因。
+
+- **issue 正文里的触发词永远触发不了**（`lib/superagent/source-github.js`）。
+  轮询只拉 `/issues/{n}/comments`，而「我要这个改动，/agent 去做」最自然的写法是在**正文**里。
+  真仓库冒烟时才暴露 —— 单测全绿是因为假数据只造了评论。现在正文也算一个事件
+  （虚拟 id `issue-<号>`，靠 claim 去重，不参与游标比较）。
+
+### 新增
+
+- **两个真环境冒烟脚本**（不进 `npm test`，依赖网络/Electron）：
+  - `scripts/smoke-superagent-github.mjs` —— 真 GitHub 全链路：建 issue → 轮询 → 发评论 → 幂等 → 关 issue。
+    实测 15 项通过。
+  - `scripts/smoke-superagent-runner.mjs` —— `agent-runner` 的三条真前置（`setSandboxMode` /
+    `setApprovalPolicy` / `createUserMessage` 在真宿主包里都是函数）+ 反向对照 + 错误路径。实测 10 项通过。
+
+### 本机环境事实（写进脚本注释）
+
+- `gh` 的 keyring token 曾失效，所有 `gh api` 都 401。修法：`printf '%s' "$TOKEN" | gh auth login --with-token`。
+- 直连 `api.github.com` 超时，必须走 `HTTPS_PROXY=http://127.0.0.1:7897`。
+- **宿主会剥掉凭证形状的 env**（`dsh-subprocess` 的 `SENSITIVE_ENV_PATTERN`），
+  `GH_TOKEN` 传不进子进程 —— dsh 里跑 gh 只能靠 keyring + 宿主进程自带代理。
+
 ## [2.26.0] - 2026-11-08
 
 ### 新增

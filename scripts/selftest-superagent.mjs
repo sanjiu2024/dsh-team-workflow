@@ -587,6 +587,32 @@ ok("每条判定都带可读理由");
 		assert.equal(out.errors.length, 0, "正常情况不该有错误");
 	}
 
+	// issue 正文也要能触发 —— 2026-11-08 真仓库冒烟发现的缺口：
+	// 触发词写在 issue 正文里是最自然的写法，而 /issues/{n}/comments 不含正文。
+	{
+		const run = makeRun({
+			"/issues?state=open": [
+				{
+					number: 1,
+					body: "/agent 把安装段补全",
+					user: { login: "YG" },
+					author_association: "OWNER",
+					html_url: "https://github.com/x/y/issues/1",
+					created_at: "2026-11-08T00:00:00Z",
+				},
+				{ number: 2, body: "   ", user: { login: "YG" }, author_association: "OWNER" },
+			],
+			"/issues/1/comments": [],
+			"/issues/2/comments": [],
+		});
+		const out = await fetchNewComments({ run }, { repo: "x/y" });
+		assert.equal(out.comments.length, 1, "issue 正文要占一个事件位；空正文不占");
+		assert.equal(out.comments[0].commentId, "issue-1", "正文用虚拟 id issue-<号>");
+		assert.equal(out.comments[0].kind, "issue-body", "要有 kind 标记，调用方分得出");
+		assert.equal(out.comments[0].body, "/agent 把安装段补全", "正文原文要带出来");
+		assert.equal(out.errors.length, 0, "正常情况不该有错误");
+	}
+
 	// 单点失败不毁整轮
 	{
 		const run = makeRun({
