@@ -343,4 +343,454 @@ ok("每条判定都带可读理由");
 	}
 }
 
+// —— 10. 执行编排：claim 先行、失败可查、空结果不装成功 ——
+//
+// 真跑 agent 要完整宿主上下文（11 个服务 + danger-full-access 会话），CI 里起不来。
+// 但「claim 做了没」「失败记成什么」「空结果算不算完成」这些最容易写错的判断全在
+// 编排层，用假 runAgent 就能测 —— 这也是把它切成依赖注入的原因。
+{
+	const { executeTicket, TICKET_STATUS } = await import("../lib/superagent/executor.js");
+	const { SuperagentStore } = await import("../lib/superagent/store.js");
+	const fs = await import("node:fs");
+	const os = await import("node:os");
+	const path = await import("node:path");
+
+	assert.deepEqual(
+		[...TICKET_STATUS].sort(),
+		["done", "failed", "needs-human", "running"],
+		"Ticket 状态集合变了就要同步面板与文档",
+	);
+
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sa-exec-"));
+	const baseReq = () => ({
+		commentId: "c-100",
+		repo: "deepseek-ai/dsh-team-workflow",
+		issueNumber: 7,
+		instruction: "把 README 补全",
+		branch: "sa/issue-7",
+	});
+	try {
+		// 成功路径
+		{
+			const store = new SuperagentStore({ dir: path.join(dir, "ok") });
+			const result = await executeTicket(
+				{ store, runAgent: async () => ({ ok: true, sessionId: "s1", text: "改好了", worktree: "/wt" }) },
+				baseReq(),
+			);
+			assert.equal(result.status, "done", "正常跑完记 done");
+			assert.equal(result.text, "改好了", "结果文本要透传出去（回评论要用）");
+			const [ticket] = await store.listTickets();
+			assert.equal(ticket.status, "done", "落盘状态要跟着");
+			assert.equal(ticket.sessionId, "s1", "sessionId 要落盘 —— 事后要能打开那个会话查");
+			assert.ok(ticket.startedAt && ticket.endedAt, "起止时间都要有，否则算不出耗时");
+		}
+
+		// 幂等：同一条评论第二次直接跳过，不调 runAgent
+		{
+			const store = new SuperagentStore({ dir: path.join(dir, "idem") });
+			let calls = 0;
+			const runAgent = async () => {
+				calls += 1;
+				return { ok: true, text: "第一次" };
+			};
+			await executeTicket({ store, runAgent }, baseReq());
+			const second = await executeTicket({ store, runAgent }, baseReq());
+			assert.equal(calls, 1, "同一条评论不能被跑两次 —— 否则重复开 worktree、重复推送、重复评论");
+			assert.equal(second.status, "skipped", "第二次要明确返回 skipped，不能装作跑了");
+		}
+
+		// runAgent 抛错 → failed，错误原因要落盘
+		{
+			const store = new SuperagentStore({ dir: path.join(dir, "throw") });
+			const result = await executeTicket(
+				{
+					store,
+					runAgent: async () => {
+						throw new Error("worktree 目录被占用");
+					},
+				},
+				baseReq(),
+			);
+			assert.equal(result.status, "failed", "抛错记 failed");
+			assert.match(result.reason, /worktree 目录被占用/, "原因要原样带出来，别吞成「未知错误」");
+			const [ticket] = await store.listTickets();
+			assert.equal(ticket.status, "failed", "失败也要落盘 —— 面板上要能看见");
+		}
+
+		// 跑完但没输出 → needs-human，**不是** done
+		{
+			const store = new SuperagentStore({ dir: path.join(dir, "empty") });
+			const result = await executeTicket({ store, runAgent: async () => ({ ok: true, text: "   " }) }, baseReq());
+			assert.equal(
+				result.status,
+				"needs-human",
+				"空输出不能记 done —— done 在面板上意味着「可以合并了」",
+			);
+		}
+
+		// 执行层报 ok:false → failed
+		{
+			const store = new SuperagentStore({ dir: path.join(dir, "notok") });
+			const result = await executeTicket(
+				{ store, runAgent: async () => ({ ok: false, error: "agent 被中止" }) },
+				baseReq(),
+			);
+			assert.equal(result.status, "failed", "ok:false 要记 failed");
+			assert.match(result.reason, /agent 被中止/, "错误文本要带出来");
+		}
+
+		// 空指令：不起会话，但也不静默吞
+		{
+			const store = new SuperagentStore({ dir: path.join(dir, "noinstr") });
+			let calls = 0;
+			const result = await executeTicket(
+				{ store, runAgent: async () => ((calls += 1), { ok: true, text: "x" }) },
+				{ ...baseReq(), commentId: "c-empty", instruction: "   " },
+			);
+			assert.equal(calls, 0, "触发词后面没内容时不该起会话");
+			assert.equal(result.status, "needs-human", "要记成需要人看，不能静默丢弃");
+		}
+		ok("执行编排：claim 先行、幂等、失败可查、空结果记 needs-human");
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+// —— 11. 回评论：凭据在编排层、同一条不重复发 ——
+//
+// 审查点名的硬点：agent 只许写 worktree，发评论由编排层用自己的凭据做。
+// 这里用假 gh 执行器验三件事：argv 对不对、失败原因透不透、重复调用会不会发两遍。
+{
+	const { composeComment, postComment, deliverReply, MAX_COMMENT_CHARS } = await import(
+		"../lib/superagent/reply-github.js"
+	);
+	const { SuperagentStore } = await import("../lib/superagent/store.js");
+	const fs = await import("node:fs");
+	const os = await import("node:os");
+	const path = await import("node:path");
+
+	// composeComment：截断 + 标记
+	const long = "x".repeat(MAX_COMMENT_CHARS + 1000);
+	const composed = composeComment(long, { status: "done", branch: "sa/1" });
+	assert.ok(composed.length <= MAX_COMMENT_CHARS, "超长正文必须截到上限内，否则 GitHub 直接拒");
+	assert.match(composed, /已截断/, "截断要明说，别让人以为全文就这些");
+	assert.match(composed, /<!-- dsh-superagent -->/, "要带可识别标记 —— 否则轮询会把自己的回复当成新触发源");
+	assert.match(composed, /状态：done/, "要带状态");
+	assert.match(composeComment("  "), /没有产出文本/, "空正文不能发一条空评论");
+
+	// postComment：argv 与错误透传
+	{
+		let seen = null;
+		const ok = await postComment(
+			{ run: async (argv) => ((seen = argv), { code: 0, stdout: '{"html_url":"https://x/1"}', stderr: "" }) },
+			{ repo: "a/b", issueNumber: 3, body: "hi" },
+		);
+		assert.equal(ok.ok, true, "正常情况应当成功");
+		assert.equal(ok.url, "https://x/1", "要带出评论链接");
+		assert.deepEqual(
+			seen,
+			["api", "-X", "POST", "/repos/a/b/issues/3/comments", "-f", "body=hi"],
+			"argv 形状要对 —— gh api 的参数写错会静默 404",
+		);
+		const bad = await postComment(
+			{ run: async () => ({ code: 1, stdout: "", stderr: "HTTP 403: Resource not accessible" }) },
+			{ repo: "a/b", issueNumber: 3, body: "hi" },
+		);
+		assert.equal(bad.ok, false, "非零退出码要判失败");
+		assert.match(bad.error, /403/, "要把 gh 的真实原因带出来，别吞成「失败」");
+		assert.equal((await postComment({ run: async () => ({ code: 0 }) }, { repo: "bad", issueNumber: 3, body: "x" })).ok, false, "非法仓库名要本地就拦");
+		assert.equal((await postComment({ run: async () => ({ code: 0 }) }, { repo: "a/b", issueNumber: 0, body: "x" })).ok, false, "非法 issue 号要本地就拦");
+	}
+
+	// deliverReply：幂等
+	{
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sa-reply-"));
+		try {
+			const store = new SuperagentStore({ dir });
+			let calls = 0;
+			const deps = {
+				store,
+				run: async () => {
+					calls += 1;
+					return { code: 0, stdout: '{"html_url":"https://x/9"}', stderr: "" };
+				},
+			};
+			const first = await deliverReply(deps, { commentId: "c-9", repo: "a/b", issueNumber: 9, body: "结果" });
+			assert.equal(first.ok, true, "第一次要发出去");
+			const second = await deliverReply(deps, { commentId: "c-9", repo: "a/b", issueNumber: 9, body: "结果" });
+			assert.equal(second.skipped, true, "第二次要跳过 —— 重试/重跑/崩溃恢复都会走到这条");
+			assert.equal(calls, 1, "同一条评论只能真的发一次");
+			const state = await store.read();
+			assert.equal(state.tickets["c-9"].replied, true, "已回标记要落盘");
+			assert.equal(state.tickets["c-9"].replyUrl, "https://x/9", "评论链接也要记下来");
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}
+	ok("回评论：截断有提示、带可识别标记、失败透传原因、同一条只发一次");
+}
+
+// —— 12. GitHub 轮询：高水位增量、不自触发、单点失败不毁整轮 ——
+{
+	const { fetchNewComments, compareCommentId, isSelfComment, SELF_MARKER } = await import(
+		"../lib/superagent/source-github.js"
+	);
+
+	// 大数精度：Number() 会在 2^53 之后静默判等
+	assert.equal(compareCommentId("9007199254740993", "9007199254740992"), 1, "超过 2^53 的 id 也必须分得出大小（用 BigInt，别用 Number）");
+	assert.equal(compareCommentId("100", "100"), 0, "相等要返回 0");
+	assert.equal(compareCommentId("99", "100"), -1, "小数在前");
+	assert.equal(compareCommentId("abc", "100"), -1, "坏 id 当 0 处理，不抛");
+
+	assert.equal(isSelfComment(`结果\n${SELF_MARKER}`), true, "带标记的要认出来");
+	assert.equal(isSelfComment("普通评论"), false, "没标记的不算自己发的");
+
+	// 假 gh：按 path 返回预置 JSON
+	const makeRun = (table) => async (argv) => {
+		const path = argv[argv.length - 1];
+		for (const [needle, value] of Object.entries(table)) {
+			if (!path.includes(needle)) continue;
+			if (value instanceof Error) throw value;
+			if (typeof value === "object" && "code" in value) return value;
+			return { code: 0, stdout: JSON.stringify(value), stderr: "" };
+		}
+		return { code: 0, stdout: "[]", stderr: "" };
+	};
+
+	const comment = (id, login, body, assoc = "MEMBER") => ({
+		id: Number(id),
+		user: { login },
+		body,
+		author_association: assoc,
+		html_url: `https://github.com/x/y/issues/1#issuecomment-${id}`,
+		created_at: "2026-11-08T00:00:00Z",
+	});
+
+	// 高水位过滤 + 跳过自己 + 顺序
+	{
+		const run = makeRun({
+			"/issues?state=open": [{ number: 1 }],
+			"/issues/1/comments": [
+				comment(105, "YG", "/agent 干活"),
+				comment(101, "YG", "老评论（低于游标）"),
+				comment(103, "bot", `我自己回的\n${SELF_MARKER}`),
+				comment(104, "YG", "/agent 也干活"),
+			],
+		});
+		const out = await fetchNewComments({ run }, { repo: "x/y", cursor: "102" });
+		assert.deepEqual(
+			out.comments.map((c) => c.commentId),
+			["104", "105"],
+			"只取高于游标的、且跳过自己发的 —— 不跳就会自己触发自己",
+		);
+		assert.equal(out.nextCursor, "105", "游标要推进到最大 id");
+		assert.equal(out.errors.length, 0, "正常情况不该有错误");
+	}
+
+	// 单点失败不毁整轮
+	{
+		const run = makeRun({
+			"/issues?state=open": [{ number: 1 }, { number: 2 }],
+			"/issues/1/comments": { code: 1, stdout: "", stderr: "HTTP 404: Not Found" },
+			"/issues/2/comments": [comment(200, "YG", "/agent 干活")],
+		});
+		const out = await fetchNewComments({ run }, { repo: "x/y" });
+		assert.equal(out.comments.length, 1, "2 号 issue 的评论要照常拿到");
+		assert.equal(out.comments[0].commentId, "200", "拿到的正是 2 号那条");
+		assert.equal(out.errors.length, 1, "1 号失败要记进 errors，不是静默吞");
+		assert.match(out.errors[0], /404/, "错误里要带 gh 的真实原因");
+	}
+
+	// 整轮失败：issue 列表拉不到
+	{
+		const out = await fetchNewComments(
+			{ run: async () => ({ code: 1, stdout: "", stderr: "HTTP 500" }) },
+			{ repo: "x/y" },
+		);
+		assert.equal(out.comments.length, 0, "拉不到列表就不该有评论");
+		assert.ok(out.errors.length > 0, "要报错，不能装作「这轮没有新评论」");
+	}
+	ok("GitHub 轮询：BigInt 比 id、跳自己发的、单点失败不毁整轮");
+}
+
+// —— 13. 整轮：observe 不跑、单条失败不挡后续、拉取失败不动游标 ——
+{
+	const { runRound } = await import("../lib/superagent/loop.js");
+	const { SuperagentStore } = await import("../lib/superagent/store.js");
+	const policyModule = await import("../lib/superagent/policy.js");
+	const fs = await import("node:fs");
+	const os = await import("node:os");
+	const path = await import("node:path");
+
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sa-loop-"));
+	const ev = (id, body = "/agent 干活", login = "YG") => ({
+		source: "github",
+		repo: "a/b",
+		issueNumber: 1,
+		commentId: String(id),
+		author: login,
+		authorAssociation: "OWNER",
+		body,
+	});
+	const policyOn = { repos: ["a/b"], actors: ["YG"], acceptMode: "auto", trigger: "/agent" };
+	try {
+		// observe：判定放行但不执行
+		{
+			const store = new SuperagentStore({ dir: path.join(dir, "observe") });
+			let ran = 0;
+			const out = await runRound(
+				{
+					store,
+					source: { fetchNewComments: async () => ({ comments: [ev(1)], nextCursor: "1", scanned: 1, errors: [] }) },
+					policy: policyModule,
+					execute: async () => ((ran += 1), { status: "done", text: "x" }),
+					reply: async () => ({ ok: true }),
+				},
+				{ repo: "a/b", policy: { ...policyOn, acceptMode: "observe" } },
+			);
+			assert.equal(ran, 0, "observe 模式绝不能真跑 —— 它是「先调策略再开闸」用的");
+			assert.equal(out.accepted, 1, "判定层仍然要算出「放行了」");
+			const state = await store.read();
+			assert.equal(state.tickets["1"].status, "observed", "要记成 observed，面板上看得见");
+		}
+
+		// stop：记一笔，不执行
+		{
+			const store = new SuperagentStore({ dir: path.join(dir, "stop") });
+			await runRound(
+				{
+					store,
+					source: { fetchNewComments: async () => ({ comments: [ev(2, "/agent stop")], nextCursor: "2", scanned: 1, errors: [] }) },
+					policy: policyModule,
+					execute: async () => assert.fail("停机词不该执行"),
+					reply: async () => assert.fail("停机词不该回评论"),
+				},
+				{ repo: "a/b", policy: policyOn },
+			);
+			const state = await store.read();
+			assert.equal(state.tickets["2"].status, "stopped", "停机要留痕，不能静默跳过");
+		}
+
+		// 单条失败不挡后续 + 游标推进
+		{
+			const store = new SuperagentStore({ dir: path.join(dir, "partial") });
+			const executed = [];
+			const out = await runRound(
+				{
+					store,
+					source: {
+						fetchNewComments: async () => ({
+							comments: [ev(10), ev(11), ev(12)],
+							nextCursor: "12",
+							scanned: 3,
+							errors: ["2 号 issue 拉取失败"],
+						}),
+					},
+					policy: policyModule,
+					execute: async (req) => {
+						executed.push(req.commentId);
+						if (req.commentId === "11") return { status: "failed", reason: "worktree 被占" };
+						return { status: "done", text: `做完 ${req.commentId}` };
+					},
+					reply: async () => ({ ok: true }),
+				},
+				{ repo: "a/b", policy: policyOn },
+			);
+			assert.deepEqual(executed, ["10", "11", "12"], "一条失败不能让后面的不跑");
+			assert.equal(out.executed, 2, "成功两条");
+			assert.equal(out.replied, 2, "成功两条各回一条");
+			assert.ok(
+				out.errors.some((e) => e.includes("11")),
+				"失败那条要进 errors，不能悄悄吞掉",
+			);
+			assert.ok(
+				out.errors.some((e) => e.includes("2 号 issue")),
+				"source 报的错也要透出来",
+			);
+			const state = await store.read();
+			assert.equal(state.cursor.lastCommentId, "12", "本轮处理完要推进游标");
+		}
+
+		// 拉取失败：不动游标
+		{
+			const store = new SuperagentStore({ dir: path.join(dir, "fetchfail") });
+			await store.claim("99");
+			await store.advanceCursor("99");
+			const out = await runRound(
+				{
+					store,
+					source: {
+						fetchNewComments: async () => {
+							throw new Error("网络断了");
+						},
+					},
+					policy: policyModule,
+					execute: async () => assert.fail("拉取失败不该执行"),
+					reply: async () => ({ ok: true }),
+				},
+				{ repo: "a/b", policy: policyOn },
+			);
+			assert.ok(out.errors.length > 0, "拉取失败要报错");
+			const state = await store.read();
+			assert.equal(state.cursor.lastCommentId, "99", "拉取失败绝不能推进游标 —— 否则那批评论永久丢失");
+		}
+		ok("整轮：observe 不跑、停机留痕、单条失败不挡后续、拉取失败不动游标");
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+// —— 14. 出厂配置：每个键都有校验器、默认全关 ——
+//
+// 这是本仓库的既有规矩（`selftest.mjs` 里也有一条同样的）。漏一个键的校验器，
+// 那个键写成什么值都会被悄悄丢掉 —— 用户改了配置却「没反应」，最难查。
+{
+	const { SUPERAGENT_DEFAULTS, SUPERAGENT_FIELDS } = await import("../lib/superagent/index.js");
+	const fs = await import("node:fs");
+	const path = await import("node:path");
+
+	const template = JSON.parse(
+		fs.readFileSync(path.join(import.meta.dirname, "..", "team", "extensions", "superagent.json"), "utf8"),
+	);
+	const keys = Object.keys(template).filter((key) => !key.startsWith("_"));
+	assert.ok(keys.length > 0, "配置模板不能是空的");
+	for (const key of keys) {
+		assert.ok(
+			Object.prototype.hasOwnProperty.call(SUPERAGENT_FIELDS, key),
+			`配置模板里的 "${key}" 没有校验器 —— 写成什么值都会被悄悄丢掉`,
+		);
+		assert.ok(
+			Object.prototype.hasOwnProperty.call(SUPERAGENT_DEFAULTS, key),
+			`配置模板里的 "${key}" 没有默认值`,
+		);
+	}
+	for (const key of Object.keys(SUPERAGENT_FIELDS)) {
+		assert.ok(
+			Object.prototype.hasOwnProperty.call(SUPERAGENT_DEFAULTS, key),
+			`校验器 "${key}" 在 DEFAULTS 里没有对应默认值`,
+		);
+	}
+
+	// 默认全关：这是「不给明确同意就不跑」的最后一道
+	assert.equal(SUPERAGENT_DEFAULTS.enabled, false, "superagent 默认必须是关的");
+	assert.equal(SUPERAGENT_DEFAULTS.acceptMode, "off", "默认 acceptMode 必须是 off（谁都不能触发）");
+	assert.deepEqual(SUPERAGENT_DEFAULTS.actors, [], "默认名单必须为空");
+	assert.equal(SUPERAGENT_DEFAULTS.repo, "", "默认不监听任何仓库");
+	assert.equal(
+		SUPERAGENT_DEFAULTS.permission,
+		"read-only",
+		"默认沙箱档位必须是 read-only —— 上游选 danger-full-access，这里不跟",
+	);
+
+	// 坏值一律拒绝（退到默认）
+	assert.equal(SUPERAGENT_FIELDS.repo("not a repo"), undefined, "非 owner/name 形状要拒");
+	assert.equal(SUPERAGENT_FIELDS.repo("a/b"), "a/b", "合法仓库名要放行");
+	assert.equal(SUPERAGENT_FIELDS.acceptMode("always"), undefined, "未知 acceptMode 要拒");
+	assert.equal(SUPERAGENT_FIELDS.permission("god-mode"), undefined, "未知沙箱档位要拒");
+	assert.equal(SUPERAGENT_FIELDS.pollIntervalMs(100), undefined, "轮询间隔过小要拒（会打爆 API）");
+	assert.equal(SUPERAGENT_FIELDS.actors(["a", 1]), undefined, "名单里混了非字符串要整体拒");
+	assert.equal(SUPERAGENT_FIELDS.trigger("  "), undefined, "空白触发词要拒");
+	ok("出厂配置：每个键都有校验器、默认全关、坏值一律拒");
+}
+
 console.log(`\nselftest-superagent：${passed} 项全过`);

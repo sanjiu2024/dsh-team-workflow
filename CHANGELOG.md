@@ -8,6 +8,43 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.25.0] - 2026-11-08
+
+### 新增
+
+- **superagent 移植 · Phase 1 完成：完整闭环**（REQ-035）。
+
+  从「监听 GitHub」到「回评论」的整条链路都通了，八个模块：
+
+  | 模块 | 干什么 |
+  | --- | --- |
+  | `policy.js` | 谁能让 agent 干活（fail-closed + 显式触发词 + 双闸） |
+  | `result.js` | 从会话事件流取最后一条非空助手文本 |
+  | `store.js` | 单写者 + 原子写 + 幂等 claim |
+  | `executor.js` | 编排：claim → 跑 → 判结局 |
+  | `reply-github.js` | 回评论（凭据在编排层，同一条只发一次） |
+  | `source-github.js` | 轮询（comment id 高水位，跳自己发的） |
+  | `loop.js` | 跑一轮（observe 不跑、单条失败不挡后续） |
+  | `agent-runner.js` | 真跑会话，唯一的宿主 API 层 |
+  | `index.js` | 配置、命令、条件激活 |
+
+  命令：`/superagent status`、`/superagent run <issue#> <指令>`（手工触发，不依赖网络）、
+  `/superagent round`（跑一轮轮询）。
+
+  **默认全关**：`enabled: false` + `acceptMode: off` + `actors: []` + `repo: ""`，
+  四道闸任一未开都只会「看见但不动作」。沙箱档位默认 `read-only` —— 上游选的是
+  `danger-full-access`，这里不跟。
+
+  三条来自计划审查的硬约束已落地：**凭据不进 agent**（评论由编排层发）、
+  **幂等先 claim 再 spawn**、**拉取失败不动游标**。
+
+  自检 3 → 15 项，全部接进 `npm test`。这条链上自检逮到两个真 bug：
+  - 空指令只判了 `=== ""` 没 trim，三个空格能溜进 `runAgent`
+  - 轮询的「已处理最大 id」在遍历中就被更新，同轮里排在后面的小 id 被误跳过（`105` 先出现，`104` 就丢了）
+
+  未做（Phase 2-4）：Web 面板、Feishu Source、多仓库、自动重试、真 worktree 隔离
+  （Phase 1 用独立目录 `~/.dsh/team-workflow/superagent/work`，不碰主仓库）。
+
 ## [2.24.0] - 2026-11-08
 
 ### 新增

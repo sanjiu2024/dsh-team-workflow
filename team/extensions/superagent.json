@@ -1,0 +1,19 @@
+{
+  "_说明": "superagent（REQ-035）：GitHub 主动代理。默认**全关** —— 它会把 issue 正文喂给一个 agent 会话，没明确同意不该自己跑起来。",
+  "_enabled": "开了之后还要同时满足：repo 配了、acceptMode 不是 off、actors 名单非空。三者缺一都只会「看见但不动作」。",
+  "_acceptMode": "off = 谁都不能触发；observe = 判定放行但**不执行**（先把策略调对，看日志里谁会被放行）；auto = 真执行。",
+  "_permission": "沙箱档位。默认 read-only —— 上游选的是 danger-full-access，这里不跟。真要它改代码再显式放开。",
+  "_agentPreset": "跑会话用哪个预设。默认 team（团队模式）。",
+  "_workdir": "执行时的工作目录。留空 = <stateDir>/work，即 ~/.dsh/team-workflow/superagent/work。",
+  "enabled": false,
+  "repo": "",
+  "stateDir": "",
+  "pollIntervalMs": 60000,
+  "acceptMode": "off",
+  "actors": [],
+  "trigger": "/agent",
+  "agentPreset": "team",
+  "permission": "read-only",
+  "workdir": "",
+  "runTimeoutMs": 1800000
+}
