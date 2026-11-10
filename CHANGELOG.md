@@ -8,6 +8,24 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.48.1] - 2026-11-11
+
+### 修复
+
+- **run_code 补丁在 0.2.2-rc.1 上会静默失效**（`lib/purge/core.js`）。0.2.2 把「原生 / PTC 工具
+  执行」拆成按 Agent 作用域挂载的插件，`Wider sandbox mode for this complete program execution…`
+  这串锚点在新的 `dsh-tools` 里**一字不剩**（用 npm 包内容核对过），新家在
+  `@deepseek-ai/dsh-tool-executor-ptc` 的 `lib/index.js` 与 `lib/types/ptc.js`。
+
+  补丁 60 的 `file` 列表已加上这两个候选；`optional: true` 意味着失配不会报错 ——
+  也就是说**不修的话，升级后那一处会悄悄变回官方文案，没人发现**。
+
+- **哈希文件名打不中的问题**（同一处）。同一次升级把 `dsh-tools` 从单文件拆成
+  `index.js` + `pipeline.js` + `shared-<hash>.js`，写死路径必失配。新增 `pkgLibJs()`
+  目录扫描与映射键 `dsh-tools-lib`：锚点只要还在包里，挨个文件也能找到。
+
+  自检加了一条迁移断言（删掉新家键会红），`docs/状态.md` §5 记了升级后的复验步骤。
+
 ## [2.48.0] - 2026-11-11
 
 ### 新增

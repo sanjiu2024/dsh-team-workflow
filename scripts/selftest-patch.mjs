@@ -269,4 +269,22 @@ const original = fs.readFileSync(chatFile, "utf8");
 	console.log("✓ rc.x 形态：memo 包装 + 共享 useDisclosure（含分发器改名）");
 }
 
+// 0.2.2 迁移（2026-11-11）：run_code 的 schema 从 dsh-tools 搬到了独立插件
+// @deepseek-ai/dsh-tool-executor-ptc，锚点文案在原包里一字不剩 —— 补丁必须跟着搬家，
+// 否则升级后静默失效（optional，不会报错，只是那一处效果没了）。
+{
+	const src = fs.readFileSync(new URL("../lib/purge/core.js", import.meta.url), "utf8");
+	const has = (needle, why) => assert.ok(src.includes(needle), why);
+	has(`"dsh-tool-executor-ptc": allExisting`, "文件映射里没有新家：升级到 0.2.2 后 run_code 补丁会失配");
+	has(`"dsh-tool-executor-ptc-types": allExisting`, "types/ptc.js 那个候选也丢了");
+	has(
+		`file: ["dsh-tools", "dsh-tools-ptc", "dsh-tools-lib", "dsh-tool-executor-ptc"`,
+		"补丁 60 的 file 列表没带上新家",
+	);
+	// 0.2.2 的 dsh-tools 把文件名拆成带哈希的 shared-*.js，写死路径必失配 → 必须有目录扫描
+	has("function pkgLibJs(", "缺少 pkgLibJs：哈希文件名的包没法按写死路径打补丁");
+	has(`"dsh-tools-lib": allExisting(pkgLibJs(`, "dsh-tools-lib 没接上目录扫描");
+	console.log("✓ 0.2.2 迁移：run_code 补丁已能打到新家（executor-ptc）+ 哈希文件名用目录扫描兜住");
+}
+
 console.log("✓ 思考链/工具行展开补丁自检通过");
