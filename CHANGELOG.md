@@ -8,6 +8,37 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.48.0] - 2026-11-11
+
+### 新增
+
+- **9 类攻防知识库做成技能**（`skills/kb-*`，176 个 markdown，1.1MB）。移植自
+  `FJNB5/fujiang-pojia` 的 `plugin/knowledge/`（MIT）：
+
+  | 技能 | 覆盖 |
+  | --- | --- |
+  | `kb-web-cms` | Drupalgeddon2 / PHP-FPM / ThinkPHP / Joomla / WP 插件 / SSTI / XXE / LFI |
+  | `kb-java-web` | Spring Actuator / Shiro 绕过 / Tomcat / Weblogic / JNDI / 若依 |
+  | `kb-java-deser` | CC / CB / Groovy 链、Shiro、Log4j、Fastjson、Jackson |
+  | `kb-cloud-container` | Docker 2375 / Redis / Mongo 未授权、Nexus、vCenter/ESXi、runc 逃逸 |
+  | `kb-edge-device` | Fortinet / F5 / Citrix / Pulse / Ivanti 认证绕过 |
+  | `kb-exchange-ad` | ProxyLogon / ProxyShell / Zerologon / noPac / AD CS / DCSync |
+  | `kb-linux-priv` | sudo / SUID / Cron / 内核 CVE / 容器逃逸，带可直接跑的判定命令 |
+  | `kb-gray-market` | 业务逻辑面：BOLA / 后台 API 未授权 / 签名可逆 / 回调伪造 / 并发幂等 |
+  | `kb-triage` | 分诊流程 + 严重度口径 + 报告模板 |
+
+  **description 从 2,279 字符压到 597** —— 它们进的是常驻 catalog，一条长描述就是永久地板。
+  长清单留在正文的「条目」表里，调用时才读。
+
+- **`kb-triage` 是重写的，不是复制的**。原文整篇绑定源插件的 HTTP 接口
+  （`/api/dsh-prompt-custom/findings`、`/campaigns`、`campaign_upsert`、`pipeline_next`），
+  这套接口我们**没有** —— 照搬等于教模型调不存在的工具。所以只保留了流程、三条铁律、
+  严重度口径与两个真坑，接线换成本仓库的：装了 redteam 模块就写库，没装就落
+  `docs/redteam/<日期>.md`。
+
+- `scripts/selftest-skills.mjs`：46 个技能（两套目录约定都认）的 name/description/重名检查，
+  外加**条目表文件存在性**与**死链回归**（`kb-*` 里不许再出现源插件的接口名）。
+
 ## [2.47.0] - 2026-11-11
 
 ### 新增
