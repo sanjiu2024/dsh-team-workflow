@@ -1408,5 +1408,85 @@ ok("每条判定都带可读理由");
 	ok("Mandate：指纹稳定、名单变化抓得住、版本变化不撤销、老数据放行");
 }
 
+
+// —— 24. 超时是 blocked，不是 failed ——
+//
+// 上游 003-execution: "An Assignment interrupted while busy restarts with a recovery note"。
+// 超时不是「这件事做不成」，是「它卡在某个地方了，要人看一眼 / 再派一次」。
+// 判成 failed 会让人以为这条路走不通；判成 blocked 才对得上现场。
+{
+	const { executeTicket } = await import("../lib/superagent/executor.js");
+	const { SuperagentStore } = await import("../lib/superagent/store.js");
+	const { stageOf } = await import("../lib/superagent/stage.js");
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sa-to-"));
+	try {
+		const store = new SuperagentStore({ dir });
+		const result = await executeTicket(
+			{
+				store,
+				runAgent: async () => ({
+					ok: false,
+					sessionId: "s1",
+					text: "干到一半",
+					error: "运行超时（30 分钟）",
+					report: { status: "blocked", summary: "超过 30 分钟被取消" },
+				}),
+			},
+			{ commentId: "c-to", repo: "a/b", issueNumber: 1, instruction: "干个活" },
+		);
+		assert.equal(result.status, "failed", "执行确实没成功 —— status 还是 failed");
+		const ticket = (await store.read()).tickets?.["c-to"];
+		assert.equal(ticket.report?.status, "blocked", "结论卡必须是 blocked（不是 failed）");
+		// stage 走 report，所以面板显示「卡住了」而不是「失败了」
+		const info = stageOf(ticket);
+		assert.equal(info.stage, "person/blocked", `超时该显示「卡住了」，实际是 ${info.stage}`);
+		assert.equal(info.needsPerson, true, "超时一定需要人");
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+	ok("超时判 blocked：status 仍 failed，但面板显示「卡住了」");
+}
+
+// —— 25. 后台还有活 ≠ 干完了 ——
+//
+// `agent.whenIdle()` 只等 turn/step，**不等后台 job**（宿主 dsh-agent-loop/lib/index.js:872；
+// job 归 session 所有，只在 owner 销毁时才取消）。所以「agent 说完了」不等于「它起的东西
+// 也完了」—— 一个 run_in_background 的构建会在我们回完评论之后继续跑。
+//
+// 这条要钉的是：有后台 job 时 stage 判 working，**哪怕 agent 自己写了 report: ready**。
+// 它说「干完了」是它的视角；面板上显示「等你审」会让人以为可以合了。
+{
+	const { stageOf } = await import("../lib/superagent/stage.js");
+
+	// 没后台任务时，report: ready 照常判「等你审」
+	assert.equal(
+		stageOf({ status: "done", report: { status: "ready" } }).stage,
+		"person/review",
+		"没有后台任务时 report=ready 就是等你审",
+	);
+
+	// 有后台任务 → working，**盖过 report: ready**
+	const busy = stageOf({
+		status: "done",
+		report: { status: "ready" },
+		backgroundJobs: [{ id: "j1", kind: "shell", label: "npm test", status: "running" }],
+	});
+	assert.equal(busy.stage, "working", "后台还有活时判 working —— 不能让人以为可以合了");
+	assert.equal(busy.needsPerson, false, "后台在跑不需要人");
+	assert.match(busy.reason, /后台还有 1 个任务/, `理由要说清还有几个：${busy.reason}`);
+	assert.match(busy.reason, /npm test/, "理由里要有任务名 —— 人要知道是什么在跑");
+
+	// 空数组不算「有活」（服务在但一条都没跑时，executor 会传空数组或不传）
+	assert.equal(stageOf({ status: "done", backgroundJobs: [] }).stage, "person/review", "空数组不等于有后台任务");
+	// 两个任务时数字要对
+	assert.match(
+		stageOf({ status: "done", backgroundJobs: [{ id: "a" }, { id: "b" }] }).reason,
+		/2 个任务/,
+		"两个任务要数成 2",
+	);
+	ok("后台还有活时判 working，盖过 report=ready");
+}
+
 console.log(`
 selftest-superagent：${passed} 项全过`);
+

@@ -137,6 +137,11 @@ REQ §6 写完、动手之前。只问三件事：
   规矩：按**行**取锚点、丢掉以 `*` / `//` 开头的行、断言**恰好命中一行**且整行唯一，
   改完再断言文件真的变了。
 - **修了但没断言**的地方要**如实记**进 `docs/状态.md` §4，不要当成已验收。
+- **给 `selftest-superagent.mjs` 加用例：计数行必须是文件最后一个非空行**。
+  这份自检是 append 长大的 —— 新用例加在末尾，计数行却留在中间，于是新用例不计入总数
+  （2026-11-10 实测：显示 20 项、实际跑了 23 项；Mandate 那一整段还被一个残缺的
+  `console.log(` 吞成了字符串字面量，`node --check` 照样通过、那段从没执行）。
+  **加完用例跑一遍，数一数声明的 `ok()` 和实际输出的 ✓ 对不对得上** —— 这是唯一抓得到它的办法。
 - 每完成一块派 `subagent_std` 测（带工具、跑测试、跑反向实验）；重大变化再派
   `subagent_power` 判（无工具，材料要你贴）。**该跑的审全过再提交。**
 - 子代理**没有工作区隔离**：要写代码/做变异的一律先 `worktree_new`，把**绝对路径**写进它的
@@ -185,6 +190,18 @@ REQ §6 写完、动手之前。只问三件事：
 - 破坏性操作（删文件、改 schema、`--force`、强制推送）先确认再动手。
 
 ## 7. 本机环境事实
+
+- **第三方插件（2026-11-10 装）**：`dsh-credential-vault` 0.6.0 + `dsh-inventory` 0.12.0，来自
+  `https://github.com/kurumi1ksllq/DSH-plugins`，clone 在 **`D:/DSH-plugins`**（C 盘紧张）。
+  装法：desktop profile 的 `package.json` 加两条 `link:` 依赖 + 两个 bundle 名，再在
+  `~/.dsh/profiles/desktop/node_modules` 用 **`New-Item -ItemType Junction`** 建两个 junction
+  （`ln -sfn` 在 MSYS bash 里会建成**目录**，不是链接；`cmd //c mklink` 也传不对参数）。
+  两个包零运行时依赖（`deps: {}`），peer 的 `dsh-mcp-client` / `dsh-tools` / `dsh-shell-env`
+  都在安装树里，**不需要 pnpm install**。
+  副作用：`dsh-inventory` 带一行 `prompt-inject`（可编辑的 system-prompt section），
+  它和本包的 `dsh-purge` 都面向 `~/.dsh/prompt-inject.md` —— 谁后写谁赢，改之前先确认。
+  回滚：`package.json` 的备份在 `package.json.bak-before-plugins`，删掉 junction 即撤。
+
 
 - dsh `0.2.1-rc.5`（2026-10-31 从 rc.2 升级）；本包以 symlink 装在 `~/.dsh/profiles/desktop/node_modules/` 下。
   `web` 那个 profile 目录已经不存在了，别照旧笔记去找。档位模型走 `opencode-go`。

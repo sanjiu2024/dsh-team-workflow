@@ -8,6 +8,48 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.43.0] - 2026-11-11
+
+### 新增
+
+- **后台任务不进 `done`**（REQ-038 第六批）。派调研查实了一个盲区：
+
+  > `agent.whenIdle()` 只等 turn/step 走完，**不等后台 job**。job 归 session 所有，
+  > 只在 owner 销毁时才取消。
+
+  所以「agent 说完了」不等于「它起的东西也完了」—— 一个 `run_in_background` 的构建、
+  一个 watch 任务，会在我们回完评论之后继续跑，而面板上已经显示「等你审」了。
+
+  判据照抄宿主自己的写法（`dsh-desktop-host/lib/index.js:101`）：
+  `jobs.list(sessionId)` 里还有 `status ∈ {running, stopping}` 就算在跑。
+  注意**已结算的记录不会被移除**，所以必须按 `status` 过滤，不能看长度。
+
+  三条设计决定：
+
+  1. **`jobs` 不进 `REQUIRED_SERVICES`** —— 缺它时应该只是少一个信号，不该让整个
+     superagent 不激活。拿不到就返回空数组，行为与以前完全一样。
+  2. **读失败也当没有** —— 漏判比误判轻。判成「有活」会让每个 Ticket 永远不结束。
+  3. **stage 里这一条排在 Report 前面** —— agent 写 `report: ready` 时，它自己起的东西
+     可能还没跑完。它说「干完了」是**它的视角**；面板显示「等你审」会让人以为可以合了。
+
+- **超时判 blocked 不判 failed**。上游 `003-execution`："An Assignment interrupted while
+  busy **restarts with a recovery note**"。超时不是「这件事做不成」，是「它卡在某个地方了」——
+  判成 failed 会让人以为这条路走不通。现在：`status` 仍是 `failed`（执行确实没成功），
+  但带一张 `report: { status: "blocked" }` 的结论卡，面板显示「卡住了」。
+
+  顺带说明：**30 分钟上限本来就有**（`RUN_TIMEOUT_MS`），这批只是改了它的语义。
+
+### 测试
+
+- 自检 24 → 26 项。反向实验（关掉后台判定）会红 1 条。
+
+### 还没做（这批的天花板）
+
+- `person/delivery` 那一档 —— 要「往**运行中的**会话投递」才有意义，我们的执行模型
+  是「起会话、跑完就结束」，没有这一步
+- 真正的 worker slot（复用同一个会话承接多轮，而不是每轮新建）—— 那是执行模型的改动，
+  不是加一个判断能干完的
+
 ## [2.42.0] - 2026-11-11
 
 ### 新增
