@@ -8,6 +8,32 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.49.0] - 2026-11-11
+
+### 修复
+
+- **适配 dsh 0.2.2-rc.1**。`dsh-tool-subagent` 的 `Config` schema 换了，两处受影响：
+
+  | 键 | 0.2.1 | 0.2.2 |
+  | --- | --- | --- |
+  | `backgroundMode` | `continuable` | **删掉了**（`lib/index.js` 里 0 处） |
+  | `modelSelectionSettings` | boolean | 改名 `modelSelection` |
+
+  `backgroundMode` 我们从生成器里删掉。**写它不会报错**（schemastery 静默 strip），
+  所以升级后不会炸 —— 但会留下一行「看起来还在、实际不生效」的配置，下次有人读到这里
+  就会以为子代理的可续聊是我们配出来的。实际由 provider 的 `prepareContinuable` 决定
+  （spawn / fork 都支持），行为不变。判据：0.2.2 标准预设的 `tool-subagent` 行里也没有这个键。
+
+  `modelSelectionSettings` 我们 2.37.0 就删了（`list_subagent_models` 重名事故），所以不受影响。
+  0.2.2 里那个工具名**仍然是固定的**（`registerListSubagentModels` → `name: "list_subagent_models"`），
+  所以「档位工具行不能开模型选择」这条判断依然成立。
+
+### 测试
+
+- `selftest-preset-gen` 的「只能有一个模型选择开关」断言同时数两个键名
+  （`modelSelection` + `modelSelectionSettings`）—— 否则升级后会因为「0 次」而假红。
+  踩了一个小坑：产物是 CRLF，`/^...$/gm` 里的 `$` 在 `\r` 前匹配不到，得用 `\s*$`。
+
 ## [2.48.1] - 2026-11-11
 
 ### 修复

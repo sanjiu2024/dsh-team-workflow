@@ -487,7 +487,12 @@ assert.match(g.text, /^              - id: compaction-fold$/m, "预设内部那�
 			settings: { ...settings, subagents: { ...settings.subagents, allowModelSelection: false } },
 			overlay: {},
 		});
-		const count = (off.text.match(/modelSelectionSettings: true/g) ?? []).length;
+		// 0.2.2-rc.1 把键名从 modelSelectionSettings 改成 modelSelection（标准预设实测），
+		// 两个都要数 —— 否则升级后这条断言会因为「0 次」而假红。
+		// 行尾用 \s* 而不是 $：产物是 CRLF，$ 在 \r 前匹配不到。
+		const count =
+			(off.text.match(/^\s+modelSelection: true\s*$/gm) ?? []).length +
+			(off.text.match(/modelSelectionSettings: true/g) ?? []).length;
 		assert.equal(count, 1, `关掉之后仍然出现了 ${count} 次开关（期望 1：主 subagent 自带那个）`);
 		console.log("✓ allowModelSelection: true 会当场抛；关掉后只有主 subagent 一个开关");
 	}
