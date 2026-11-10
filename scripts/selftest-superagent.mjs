@@ -885,4 +885,121 @@ ok("每条判定都带可读理由");
 	ok("worktree 隔离：建不出来就拒绝执行，不退回主仓库");
 }
 
+// —— 17. 自动重试：次数封顶、退避、先 unclaim 再跑 ——
+//
+// 三个条件缺一不可：
+//   ① 上次是 failed（done / needs-human 不该被重试）
+//   ② attempts 没到 maxAttempts（真出问题时无限重试会烧掉整天额度还刷满日志）
+//   ③ 退避到了（立刻重试会在一分钟内把同样的错误刷三遍，而环境那会儿没恢复）
+{
+	const { runRound } = await import("../lib/superagent/loop.js");
+	const { SuperagentStore } = await import("../lib/superagent/store.js");
+	const policyModule = await import("../lib/superagent/policy.js");
+	const fs = await import("node:fs");
+	const os = await import("node:os");
+	const path = await import("node:path");
+
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sa-retry-"));
+	const policyOn = { repos: ["a/b"], actors: ["YG"], acceptMode: "auto", trigger: "/agent" };
+	const noComments = { fetchNewComments: async () => ({ comments: [], nextCursor: null, scanned: 0, errors: [] }) };
+	try {
+		/** 造一条失败的 ticket。`endedAt` 用 base 时间减 waitedMs。 */
+		const seedFailed = async (store, commentId, { attempts, waitedMs }) => {
+			const now = Date.now();
+			await store.saveTicket(commentId, {
+				status: "failed",
+				reason: "网络抖动",
+				repo: "a/b",
+				issueNumber: 1,
+				instruction: "/agent 干活",
+				attempts,
+				startedAt: new Date(now - waitedMs - 1000).toISOString(),
+				endedAt: new Date(now - waitedMs).toISOString(),
+			});
+		};
+
+		// ① 满足条件 → 重跑
+		{
+			const store = new SuperagentStore({ dir: path.join(dir, "ok") });
+			await seedFailed(store, "c-retry", { attempts: 1, waitedMs: 10 * 60_000 });
+			const ran = [];
+			const out = await runRound(
+				{
+					store,
+					source: noComments,
+					policy: policyModule,
+					execute: async (req) => {
+						ran.push(req.commentId);
+						return { status: "done", text: "好了" };
+					},
+					reply: async () => ({ ok: true }),
+					retry: { maxAttempts: 3, delaysMs: [60_000, 300_000, 900_000] },
+				},
+				{ repo: "a/b", policy: policyOn },
+			);
+			assert.deepEqual(ran, ["c-retry"], "失败过、等够了、没到顶 —— 该重跑");
+			assert.ok(out.errors.some((e) => e.includes("c-retry")), "重试结果要进 errors（面板看得见）");
+		}
+
+		// ② 次数到顶 → 不跑
+		{
+			const store = new SuperagentStore({ dir: path.join(dir, "capped") });
+			await seedFailed(store, "c-capped", { attempts: 3, waitedMs: 60 * 60_000 });
+			let ran = 0;
+			await runRound(
+				{
+					store,
+					source: noComments,
+					policy: policyModule,
+					execute: async () => ((ran += 1), { status: "done", text: "x" }),
+					reply: async () => ({ ok: true }),
+					retry: { maxAttempts: 3, delaysMs: [60_000] },
+				},
+				{ repo: "a/b", policy: policyOn },
+			);
+			assert.equal(ran, 0, "attempts 到 maxAttempts 就不该再跑 —— 否则真出问题时无限重试");
+		}
+
+		// ③ 退避没到 → 不跑
+		{
+			const store = new SuperagentStore({ dir: path.join(dir, "backoff") });
+			await seedFailed(store, "c-wait", { attempts: 1, waitedMs: 5_000 });
+			let ran = 0;
+			await runRound(
+				{
+					store,
+					source: noComments,
+					policy: policyModule,
+					execute: async () => ((ran += 1), { status: "done", text: "x" }),
+					reply: async () => ({ ok: true }),
+					retry: { maxAttempts: 3, delaysMs: [60_000] },
+				},
+				{ repo: "a/b", policy: policyOn },
+			);
+			assert.equal(ran, 0, "才过 5 秒就重试会把同样的错刷三遍，而环境那会儿没恢复");
+		}
+
+		// ④ 不传 retry → 一次都不重试（默认行为不变）
+		{
+			const store = new SuperagentStore({ dir: path.join(dir, "off") });
+			await seedFailed(store, "c-off", { attempts: 1, waitedMs: 60 * 60_000 });
+			let ran = 0;
+			await runRound(
+				{
+					store,
+					source: noComments,
+					policy: policyModule,
+					execute: async () => ((ran += 1), { status: "done", text: "x" }),
+					reply: async () => ({ ok: true }),
+				},
+				{ repo: "a/b", policy: policyOn },
+			);
+			assert.equal(ran, 0, "没配 retry 就不该自己重试 —— 默认行为必须和以前一样");
+		}
+		ok("自动重试：满足三个条件才跑、到顶不跑、退避没到不跑、没配就不跑");
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+}
+
 console.log(`\nselftest-superagent：${passed} 项全过`);

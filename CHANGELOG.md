@@ -8,6 +8,35 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.34.0] - 2026-11-10
+
+### 新增
+
+- **superagent 失败自动重试 + 手动 `/superagent retry`**。
+
+  自动重试在轮询那一轮里做，**三个条件缺一不可**：
+
+  | 条件 | 为什么 |
+  | --- | --- |
+  | 上次是 `failed` | `done` / `needs-human` 不该被重试 —— 后者要人看，重跑还是同一个结果 |
+  | `attempts < maxAttempts` | 真出问题时（agent 一启动就崩）无限重试会烧掉整天额度还刷满日志 |
+  | 退避到了 | 立刻重试会在一分钟内把同样的错刷三遍，而环境那会儿没恢复 |
+
+  默认 `maxAttempts: 3`（含首次，即首次 + 2 次重试）、`retryDelaysMs: [60s, 300s, 900s]`。
+  `maxAttempts: 1` = 不重试；不配 `retry` 时 `runRound` 一次都不重试（默认行为不变）。
+
+  **先 `unclaim` 再跑**：`claim` 把 commentId 记进 `seen` 之后，同一个 id 再来都会被判
+  「处理过了」。重试要的正是绕开这个判断，所以 store 加了独立的 `unclaim` 动词 ——
+  不做成 `claim(force)`，因为绕过幂等是危险动作（可能重复开 worktree、重复发评论），
+  它值得在调用点看得出来。
+
+  `/superagent retry <commentId>` **不看退避也不看次数上限**：人点了就是人的决定。
+  但结论里会写明「原来第 N 次失败」，让人知道这已经是第几次。
+
+  `executeTicket` 现在把 `attempts` 记进每一条 ticket（重试靠它算退避、也靠它封顶）。
+
+  自检 17 → 18 项。反向实验：去掉 `attempts >= maxAttempts` 那条判断，自检变红。
+
 ## [2.33.0] - 2026-11-10
 
 ### 新增
