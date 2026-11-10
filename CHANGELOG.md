@@ -8,6 +8,40 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.28.0] - 2026-11-10
+
+### 修复
+
+- **`subagent_power` 整档不可用**（2026-11-08 起）。根因是 `team/agent-settings.json` 里
+  `tierTools.power = "gpt-6.1-sol"`，而 provider 是 `opencode-go` —— **那个模型在 opencode-go 下不存在**，
+  调用即报 `pi-ai provider "opencode-go" has no configured model "gpt-6.1-sol"`。
+  `tierTools` 是「档位 → 模型名」的平表，provider 只能共享一个，所以「不同档用不同网关」根本没地方写。
+
+  现在 `tierProviders` 可以按档覆盖 provider：
+
+  ```json
+  "tierTools":    { "std": "deepseek-v4.1-flash", "power": "claude-haiku-5-5" },
+  "tierProviders": { "power": "tumianyue-api" }
+  ```
+
+  power 档改走我们的中转站（`zzcraft.cn`）的 `claude-haiku-5-5`（$0.57/$2.85 每 M，实测 225.8t/s）。
+  std 不变（opencode-go / deepseek-v4.1-flash）。生成产物已核对：三行各自的 provider/model 都对。
+
+### 新增
+
+- **`subagents.allowModelSelection`：让三档工具支持调用时选模型**。打开后每档工具行生成
+  `modelSelectionSettings: true`，于是多出 `list_subagent_models` 工具、`subagent_*` 的参数里多出
+  `provider` / `model` / `reasoning_effort`，可以现场挑模型而不用改配置重启。
+
+  **默认 `false`**，而且它只是第一层：真正的开关是 `subagentModelSelection.enabled`（默认也 false）。
+  两层都开才生效；不传参数时仍然用 `tierTools` 钉死的档位，行为和以前完全一样
+  （`dsh-tool-subagent/lib/model-selection-settings.js:45-51`）。
+
+  没默认打开的原因：`modelSelectionSettings: true` 需要 `subagent-model-selection-settings`
+  在 Host scope，否则**挂载期直接抛**（`lib/index.js:539`）。标准预设里主 `subagent` 已经开着它、
+  但我们没在预设里找到那一行 —— 说明注册路径在别处。开之前要用 `smoke-preset-tier.mjs`
+  真挂载验一次，免得整份预设判非法、新会话建不起来。
+
 ## [2.27.0] - 2026-11-08
 
 ### 修复

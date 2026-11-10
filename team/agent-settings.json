@@ -19,10 +19,16 @@
     "provider": "opencode-go",
     "tierTools": {
       "std": "deepseek-v4.1-flash",
-      "power": "gpt-6.1-sol"
+      "power": "claude-haiku-5-5"
     },
     "toolLessTiers": [
       "power"
-    ]
-  }
+    ],
+    "tierProviders": {
+      "power": "tumianyue-api"
+    },
+    "allowModelSelection": false
+  },
+  "_tierProviders 为什么要加": "tierTools 是「档位→模型名」的平表，provider 只能共享一个。于是 power 档写着 gpt-6.1-sol、provider 却是 opencode-go，而那个模型在 opencode-go 下**不存在** —— 2026-11-08 实测调用即报 pi-ai provider \"opencode-go\" has no configured model \"gpt-6.1-sol\"，subagent_power 整个不可用。现在每档可以单独覆盖 provider：power 走 tumianyue-api（我们的中转站，zzcraft.cn），模型 claude-haiku-5-5（$0.57/$2.85 每 M，实测 225.8t/s）。注意：这两项是**团队默认值**，别人不用这个网关时按需改。",
+  "_allowModelSelection 是什么": "true = 三档工具行生成 modelSelectionSettings: true，于是调用时可以显式传 provider/model/reasoning_effort 挑选模型（多出 list_subagent_models 工具）。默认 false —— 因为真正的开关在另一个服务（subagentModelSelection.enabled，默认也是 false），两层都开才生效；不传时仍然用 tierTools 钉死的档位，行为和现在完全一样。"
 }
