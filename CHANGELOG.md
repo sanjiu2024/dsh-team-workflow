@@ -8,6 +8,36 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.32.0] - 2026-11-10
+
+### 新增
+
+- **superagent 支持多仓库**：配置里 `repos: []`，非空时覆盖单个 `repo`。
+
+  光加个数组是不够的 —— **游标必须按仓库分**。原来 `state.json` 里只有
+  `cursor.lastCommentId` 一个值，多仓库下 A 仓库推进一次就把 B 仓库的旧评论全跳过了。
+  现在结构是 `cursor.byRepo: { "owner/repo": "id" }`，`lastCommentId` 留着只为读老文件。
+
+  **自检逮到的 bug**：`readCursor` 原本写的是 `scoped ?? lastCommentId` ——
+  未知仓库会**借到别的仓库的游标**，于是那个仓库的历史评论被当成「已处理」永久跳过。
+  改成「只有 `byRepo` 整个为空（老文件）才回落」。反向实验：拆掉这个保护，自检变红。
+
+  其它配套：
+  - `runRound` 加 `roundAllRepos()` 包一层，**串行**跑每个仓库（并发写状态文件会互相踩）；
+    一个仓库炸了不拖垮其它仓库，错误带仓库前缀。
+  - `/superagent run` 多仓库时支持 `/superagent run <owner/repo> <issue#> <指令>`；
+    单仓库保持旧写法（第一个数字就是 issue 号）。
+  - 配置模板加 `repos`，校验器去重、任一条不合法整体拒。
+
+  自检 15 → 16 项。
+
+### 还没做
+
+- **真 worktree 隔离**：现在用独立目录 `~/.dsh/team-workflow/superagent/work`，
+  不是 git worktree。
+- **自动重试**：失败靠手动 `/superagent retry`（这个命令也还没实现）。
+- **Feishu Source**：本机 `lark-cli` 没装，做不了。
+
 ## [2.31.0] - 2026-11-10
 
 ### 新增

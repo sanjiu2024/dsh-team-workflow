@@ -819,4 +819,42 @@ ok("每条判定都带可读理由");
 	ok("出厂配置：每个键都有校验器、默认全关、坏值一律拒");
 }
 
+// —— 15. 多仓库：游标按仓库分，互不借用 ——
+//
+// 2026-11-10 加多仓库时自检逮到的 bug：未知仓库回落到 lastCommentId，
+// 而那个值属于**别的仓库**，于是新仓库的旧评论被当成「已处理」永久跳过。
+{
+	const { SuperagentStore } = await import("../lib/superagent/store.js");
+	const fs = await import("node:fs");
+	const os = await import("node:os");
+	const path = await import("node:path");
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sa-cursor-"));
+	try {
+		const store = new SuperagentStore({ dir });
+		await store.advanceCursor("100", "a/b");
+		await store.advanceCursor("200", "c/d");
+		assert.equal(await store.readCursor("a/b"), "100", "a/b 的游标不能受 c/d 影响");
+		assert.equal(await store.readCursor("c/d"), "200", "c/d 的游标不能受 a/b 影响");
+		assert.equal(
+			await store.readCursor("x/y"),
+			null,
+			"未知仓库必须从 null 开始 —— 借别的仓库的游标会让它的旧评论被永久跳过",
+		);
+		// 单仓库时代的老文件：只有 lastCommentId，没有 byRepo
+		fs.writeFileSync(
+			path.join(dir, "state.json"),
+			JSON.stringify({ version: 1, cursor: { lastCommentId: "77" }, seen: [], tickets: {} }),
+		);
+		const legacy = new SuperagentStore({ dir });
+		assert.equal(
+			await legacy.readCursor("x/y"),
+			"77",
+			"老文件（没有 byRepo）要能继续跑，否则升级后会把历史评论全重放一遍",
+		);
+		ok("多仓库游标：按仓库分、不互相借用、老文件能平滑升级");
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+}
+
 console.log(`\nselftest-superagent：${passed} 项全过`);

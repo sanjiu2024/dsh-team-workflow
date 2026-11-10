@@ -7,6 +7,7 @@
   "_workdir": "执行时的工作目录。留空 = <stateDir>/work，即 ~/.dsh/team-workflow/superagent/work。",
   "enabled": false,
   "repo": "",
+  "repos": [],
   "stateDir": "",
   "pollIntervalMs": 60000,
   "acceptMode": "off",
@@ -15,5 +16,6 @@
   "agentPreset": "team",
   "permission": "read-only",
   "workdir": "",
-  "runTimeoutMs": 1800000
+  "runTimeoutMs": 1800000,
+  "_repos": "多仓库：非空时**覆盖** repo。每个仓库各自一个游标（state.json 的 cursor.byRepo），互不影响。单仓库就填 repo 不填它。"
 }
