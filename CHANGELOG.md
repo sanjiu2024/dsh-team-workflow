@@ -8,6 +8,36 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.37.0] - 2026-11-10
+
+### 修复
+
+- **新建会话全部失败**（用户重启后截图：`failed to create session: Error: tool
+  "list_subagent_models" is already registered in this scope`）。这是我 2.29.0 引入的事故：
+
+  给三个档位工具行都开了 `modelSelectionSettings: true`。宿主对这个开关注册的
+  `list_subagent_models` 是**固定名字**（`dsh-tool-subagent/lib/index.js:174`），
+  而**标准预设的主 `subagent` 本来就开着一个** —— 于是同一个 Agent 的 tools registry
+  里出现 2 个以上注册点，`NamedEntries` 重名直接抛，抛在会话创建路径上。
+
+  我 10-31 刚在 `web_search` 上踩过一模一样的坑，AGENTS.md §7 也写着「原生工具不能同名
+  覆盖」，但还是犯了。
+
+  **修法**：档位工具行**永远不开**这个开关。不是「只给 std 开」—— 主 `subagent` 那个
+  关不掉，再给任何档位开就是两个。选模型的能力走**主 `subagent`**：它同样能传
+  `provider` / `model` / `reasoning_effort`，还能继承父会话上下文。
+  白名单（`subagents.modelSelection`）保留，是给它读的。
+
+  配置里写 `allowModelSelection: true` 现在会**在生成期直接抛**，并说明原因 ——
+  不能让一个「配了但不起作用」的开关留着骗人。
+
+### 测试
+
+- `selftest-preset-gen` 加回归断言：`allowModelSelection: true` 必须抛；关掉之后
+  生成产物里 `modelSelectionSettings` **只能出现 1 次**（主 subagent 那个）。
+
+- 删掉 `subagents.modelSelectionTier` 这个刚加就作废的键。
+
 ## [2.36.0] - 2026-11-10
 
 ### 新增

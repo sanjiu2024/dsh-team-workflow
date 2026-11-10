@@ -27,7 +27,7 @@
     "tierProviders": {
       "power": "tumianyue-api"
     },
-    "allowModelSelection": true,
+    "allowModelSelection": false,
     "modelSelection": {
       "enabled": true,
       "allowedModels": [
@@ -96,5 +96,6 @@
   },
   "_tierProviders 为什么要加": "tierTools 是「档位→模型名」的平表，provider 只能共享一个。于是 power 档写着 gpt-6.1-sol、provider 却是 opencode-go，而那个模型在 opencode-go 下**不存在** —— 2026-11-08 实测调用即报 pi-ai provider \"opencode-go\" has no configured model \"gpt-6.1-sol\"，subagent_power 整个不可用。现在每档可以单独覆盖 provider：power 走 tumianyue-api（我们的中转站，zzcraft.cn），模型 claude-haiku-5-5（$0.57/$2.85 每 M，实测 225.8t/s）。注意：这两项是**团队默认值**，别人不用这个网关时按需改。",
   "_allowModelSelection 是什么": "true = 三档工具行生成 modelSelectionSettings: true，于是调用时可以显式传 provider/model/reasoning_effort 挑选模型（多出 list_subagent_models 工具）。默认 false —— 因为真正的开关在另一个服务（subagentModelSelection.enabled，默认也是 false），两层都开才生效；不传时仍然用 tierTools 钉死的档位，行为和现在完全一样。",
-  "_modelSelection 是什么": "主 agent 派活时可以自己挑模型：三档工具行开 modelSelectionSettings: true（多出 list_subagent_models 工具 + provider/model/reasoning_effort 参数），这份白名单决定能挑哪些。不填参数时仍用 tierTools 钉死的档位。\n\n白名单里 tumianyue-api 那 14 条是它的 chat 模型（TTS/ASR/图片增强那几个不是 chat，不列）。单价与「按难度怎么选」由 lib/model-menu.js 注入系统提示（常驻，约 1.2k token）—— 那份表是给人改的，改价改策略都改那里。\n\n白名单空了还开 enabled=true 会在生成期直接抛 —— 那样每台机器新建会话都失败。"
+  "_modelSelection 是什么": "主 agent 派活时可以自己挑模型：三档工具行开 modelSelectionSettings: true（多出 list_subagent_models 工具 + provider/model/reasoning_effort 参数），这份白名单决定能挑哪些。不填参数时仍用 tierTools 钉死的档位。\n\n白名单里 tumianyue-api 那 14 条是它的 chat 模型（TTS/ASR/图片增强那几个不是 chat，不列）。单价与「按难度怎么选」由 lib/model-menu.js 注入系统提示（常驻，约 1.2k token）—— 那份表是给人改的，改价改策略都改那里。\n\n白名单空了还开 enabled=true 会在生成期直接抛 —— 那样每台机器新建会话都失败。",
+  "_allowModelSelection 现在为什么是 false": "2026-11-10 事故：这个开关让档位工具行注册 list_subagent_models（固定名字）。标准预设的主 subagent 已经注册了一个，再给任何档位开就是两个 → 同 scope 重名 → 新建会话全部失败（用户重启后截图：failed to create session: Error: tool \"list_subagent_models\" is already registered in this scope）。\n\n所以档位行永远不开（现在写了 true 会在生成期直接抛）。选模型走主 subagent：它同样能传 provider/model/reasoning_effort，还能继承父会话上下文。白名单 subagents.modelSelection 是给它读的。"
 }

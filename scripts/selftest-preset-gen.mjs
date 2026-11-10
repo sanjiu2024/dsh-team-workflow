@@ -445,6 +445,55 @@ assert.match(g.text, /^              - id: compaction-fold$/m, "预设内部那�
 	}
 }
 
+
+// —— REQ-036 事故回归：modelSelectionSettings 只能出现一次 ——
+//
+// 2026-11-10 实测：给三个档位全开这个开关，再加上标准预设本来就开着的主 subagent，
+// 同一个 Agent 的 tools registry 里出现 2 个以上注册点 →
+//   failed to create session: Error: tool "list_subagent_models" is already registered in this scope
+// **新建会话全部失败**。宿主给这个开关注册的 list_subagent_models 是固定名字，
+// 而档位工具行没有改名的地方。
+//
+// 所以生成出来的预设里这个开关**只能出现一次**。这条断言防的就是「顺手再给某档开一个」。
+{
+	// 用 findRc2StandardPatch（从安装树找），不是 findStandardPreset —— 后者靠 DSH_MODULES，
+	// 本机没设，那样这段会被前面的  提前跳过，等于没测。
+	const found = findRc2StandardPatch({
+		profileDir: path.join(os.homedir(), ".dsh", "profiles", process.env.DSH_PROFILE ?? "desktop"),
+	});
+	if (!found) {
+		console.log("… 跳过 modelSelectionSettings 唯一性断言：找不到 standard 底稿");
+	} else {
+		const text = found.text;
+		const settings = {
+			subagents: {
+				provider: "p",
+				tierTools: { std: "m1", power: "m2", fork: "m3" },
+				toolLessTiers: [],
+				// 故意把两个开关都打开，模拟 11-10 那次事故的配置
+				allowModelSelection: true,
+				modelSelectionTier: "std",
+				modelSelection: { enabled: true, allowedModels: [{ provider: "p", model: "m1" }] },
+			},
+		};
+		// 配成 true 必须**当场抛** —— 不能让「配了但不起作用」的开关留着骗人
+		assert.throws(
+			() => generateRc2TeamPreset(text, { settings, overlay: {} }),
+			/list_subagent_models|allowModelSelection/,
+			"allowModelSelection: true 必须抛（那条路会让新建会话全部失败）",
+		);
+		// 关掉之后只能有一个开关（标准预设自带的主 subagent 那个）
+		const off = generateRc2TeamPreset(text, {
+			settings: { ...settings, subagents: { ...settings.subagents, allowModelSelection: false } },
+			overlay: {},
+		});
+		const count = (off.text.match(/modelSelectionSettings: true/g) ?? []).length;
+		assert.equal(count, 1, `关掉之后仍然出现了 ${count} 次开关（期望 1：主 subagent 自带那个）`);
+		console.log("✓ allowModelSelection: true 会当场抛；关掉后只有主 subagent 一个开关");
+	}
+}
+
+
 const presetPath = findStandardPreset();
 if (!presetPath) {
 	console.log("… 跳过预设生成检查：找不到 dsh 自带的 standard 预设（设 DSH_MODULES 可指定）");
