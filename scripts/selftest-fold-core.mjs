@@ -12,7 +12,7 @@
  */
 import * as assert from "node:assert/strict";
 import { parseCheckpoint } from "../lib/context-filter.js";
-import { FOLD_MARKER, contentText, foldMessages, headTail, looksImportant } from "../lib/fold-core.js";
+import { FOLD_MARKER, contentText, foldMessages, headTail, looksCritical, looksImportant } from "../lib/fold-core.js";
 
 let failures = 0;
 const check = (name, fn) => {
@@ -205,6 +205,36 @@ check("尺寸：真实形状的输入，产物必须明显小于输入（basic �
 	assert.ok(text.length < inputChars, `产物 ${text.length} 必须小于输入 ${inputChars}`);
 	assert.ok(stats.droppedChars > 0);
 	assert.ok(text.length < inputChars * 0.5, `至少要砍掉一半，实际 ${text.length}/${inputChars}`);
+});
+
+check("工具结果：中段的失败行必须捞出来（否则压完只剩「看起来成功了」）", () => {
+	// 3000 字符噪声 + 一行错误 + 3000 字符噪声：错误行落在中段，首尾都够不着
+	const noise = "ok line of build output\n";
+	const body = noise.repeat(110) + "FAIL src/a.test.mjs: TypeError: cannot read property x\n" + noise.repeat(110);
+	const { text } = foldMessages([msg("tool", body)]);
+	assert.ok(text.includes("TypeError: cannot read property x"), "中段失败行被丢掉了 —— 压缩完会照着错的结论走");
+});
+
+check("工具结果：没有失败信号时不加前缀（不重复、不撑大）", () => {
+	const body = "all good\n".repeat(400);
+	const { text } = foldMessages([msg("tool", body)]);
+	assert.ok(!text.includes("---\nall good"), "没有失败行却加了分隔前缀 —— 会把首部预算浪费在重复内容上");
+});
+
+check("工具结果：短输出原样保留，不因新规则被裁", () => {
+	const body = "Error: boom\nsmall but complete";
+	const { text } = foldMessages([msg("tool", body)]);
+	// 折叠产物把多行塞进一个 `- ` 条目时会缩进后续行，所以逐行判，不整段判
+	assert.ok(text.includes("Error: boom"), "首行丢了");
+	assert.ok(text.includes("small but complete"), "第二行丢了 —— 没到预算的输出不该被裁");
+});
+
+check("失败信号判据本身：只认失败，不认普通路径与命令", () => {
+	assert.ok(looksCritical("TypeError: x is undefined"));
+	assert.ok(looksCritical("FAILED tests/unit/a.mjs"));
+	assert.ok(looksCritical("进程退出码非零：exit code: 2"));
+	assert.ok(!looksCritical("ok: wrote 42 files"));
+	assert.ok(!looksCritical("node scripts/a.mjs completed"));
 });
 
 if (failures > 0) {

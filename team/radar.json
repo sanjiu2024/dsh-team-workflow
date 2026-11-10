@@ -77,9 +77,72 @@
 		"_why": "只搜工程向的词：模型发布会自己出现在 OpenRouter 那节，HN 这节要的是「别人踩了什么坑」",
 		"queries": ["agent harness", "context window", "prompt engineering", "eval", "coding agent"]
 	},
-	"arxiv": {
-		"cats": ["cs.AI", "cs.SE"],
-		"max": 6,
-		"mustMatch": ["agent", "context", "prompt", "evaluat", "orchestrat"]
+	"papers": {
+		"_why": "论文不能像仓库那样「搬代码」—— 能移植的只有方法。所以判据换了一套：能不能用几十行零依赖 JS 实现（要训练/微调的判死），加上它是不是在讲我们真正在干的事。",
+		"cats": ["cs.AI", "cs.CL", "cs.SE"],
+		"days": 7,
+		"perCat": 300,
+		"top": 6,
+		"thresholds": { "adopt": 60, "watch": 40 },
+		"_signals_why": "landing 命中 = 方法本身是工程手段；training 命中 = 要训练，我们做不了，直接判低",
+		"landingSignals": [
+			"harness",
+			"context window",
+			"compaction",
+			"compress",
+			"prompt",
+			"tool call",
+			"tool output",
+			"budget",
+			"cache",
+			"retrieval",
+			"orchestrat",
+			"workflow",
+			"pipeline",
+			"evaluation harness"
+		],
+		"trainingSignals": [
+			"reinforcement learning",
+			"fine-tun",
+			"finetun",
+			"pretrain",
+			"pre-train",
+			"distillation",
+			"rlhf",
+			"supervised fine-tuning",
+			"lora",
+			"parameter-efficient",
+			"gpu memory",
+			"training data"
+		],
+		"strongKeywords": [
+			"compaction",
+			"compress",
+			"harness",
+			"tool output",
+			"tool call",
+			"budget",
+			"cache",
+			"summariz",
+			"retriev",
+			"orchestrat",
+			"context window",
+			"prompt",
+			"cost",
+			"token"
+		],
+		"keywords": [
+			"context",
+			"tool",
+			"memory",
+			"agent",
+			"evaluat",
+			"skill",
+			"latency",
+			"workflow",
+			"pipeline"
+		],
+		"_dataset_why": "数据集/评测集类论文探到的是「有个东西可以测」，不是「有个方法可以抄」——判据里要单独降档，否则 Context-Grounded QA Dataset 这种会排第一",
+		"datasetSignals": ["dataset", "benchmark", "corpus", "we collect", "annotation", "leaderboard"]
 	}
 }

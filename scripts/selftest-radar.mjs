@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { applySeen, renderMarkdown, scoreRepo, suggestLanding } from "./radar.mjs";
+import { applySeen, renderMarkdown, scorePaper, scoreRepo, suggestLanding } from "./radar.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 let passed = 0;
@@ -161,6 +161,47 @@ function repo(over = {}) {
 	const miss = suggestLanding(repo({ name: "x", description: "zzz", topics: [] }), cfg);
 	assert.ok(miss.includes("先读代码"), "没命中规则时要诚实说没命中，不要瞎指");
 	ok("落点建议按配置命中，未命中不瞎指");
+}
+
+// ── 11. 论文打分：工程手段给高分，要训练的判低 ──────────────────────────
+{
+	const good = scorePaper(
+		{
+			title: "System Optimizations for Cost-Efficient Agent Harnesses",
+			abs: "We analyze harness-side cost accumulation across agent traces, reduce token use and LLM calls; code at github.com/x/y.",
+			date: new Date(NOW - 864e5).toISOString().slice(0, 10),
+		},
+		cfg,
+		NOW,
+	);
+	assert.equal(good.verdict, "adopt", `harness 类工程论文应进候选，实际 ${good.score}`);
+	assert.equal(good.parts.hasCode, 10, "提到 github 应给代码分");
+
+	const train = scorePaper(
+		{
+			title: "Reinforcement Learning for Agent Harnesses",
+			abs: "We fine-tune with RL and LoRA on GPU memory; context window compression is evaluated.",
+			date: new Date(NOW - 864e5).toISOString().slice(0, 10),
+		},
+		cfg,
+		NOW,
+	);
+	assert.equal(train.parts.feasibility, 8, "要训练的论文可落地性必须判低");
+	assert.ok(
+		train.reasons.some((x) => x.includes("需要训练")),
+		"理由里要写清是我们没条件训练，不是论文不好",
+	);
+	ok(`论文判据分层（工程 ${good.score} > 训练 ${train.score}）`);
+}
+
+// ── 12. 新鲜度是真在用的维度，不是摆设 ──────────────────────────────────
+{
+	const base = { title: "agent context harness budget", abs: "tool output compression" };
+	const fresh = scorePaper({ ...base, date: new Date(NOW).toISOString().slice(0, 10) }, cfg, NOW);
+	const old = scorePaper({ ...base, date: new Date(NOW - 90 * 864e5).toISOString().slice(0, 10) }, cfg, NOW);
+	assert.ok(fresh.score > old.score, `同内容下新论文必须分更高（${fresh.score} vs ${old.score}）`);
+	assert.equal(old.parts.freshness, 0, "90 天前不该有新鲜度分");
+	ok(`新鲜度参与打分（${fresh.score} > ${old.score}）`);
 }
 
 console.log(`\nselftest-radar：${passed} 项全过`);

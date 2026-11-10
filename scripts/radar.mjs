@@ -183,26 +183,77 @@ function collectHn(cfg, proxy) {
 		.slice(0, 5);
 }
 
-export function collectArxiv(cfg, proxy) {
-	const want = cfg.arxiv.mustMatch;
+/** 拉最近 N 天的新投稿（**不做关键词预筛**）—— 预筛会漏掉用词不同的好论文，交给打分排序。 */
+export function collectArxiv(cfg, { days = cfg.papers.days, proxy = null } = {}) {
+	const since = iso(Date.now() - days * 864e5);
 	const seen = new Map();
-	for (const cat of cfg.arxiv.cats) {
+	for (const cat of cfg.papers.cats) {
 		const xml = curl(
-			`https://export.arxiv.org/api/query?search_query=cat:${cat}&sortBy=submittedDate&sortOrder=descending&max_results=30`,
+			`https://export.arxiv.org/api/query?search_query=cat:${cat}&sortBy=submittedDate&sortOrder=descending&max_results=${cfg.papers.perCat}`,
 			{ proxy },
 		);
 		for (const m of xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g)) {
 			const e = m[1];
 			const g = (t) => clean((e.match(new RegExp(`<${t}[^>]*>([\\s\\S]*?)</${t}>`)) || [])[1]);
-			const title = g("title");
-			const abs = g("summary");
-			const blob = `${title} ${abs}`.toLowerCase();
-			if (!want.some((w) => blob.includes(w))) continue;
+			const date = g("published").slice(0, 10);
+			if (!date || date < since) continue;
 			const id = g("id");
-			if (!seen.has(id)) seen.set(id, { title, id, cat, date: g("published").slice(0, 10) });
+			if (seen.has(id)) continue;
+			seen.set(id, { title: g("title"), abs: g("summary"), id, cat, date });
 		}
 	}
-	return [...seen.values()].slice(0, cfg.arxiv.max);
+	return [...seen.values()];
+}
+
+/**
+ * 给一篇论文打分。纯函数。
+ *
+ * 和仓库那套判据**故意不一样**：仓库看「能不能搬代码」，论文看「方法能不能用几十行零依赖 JS
+ * 实现」。要训练/微调/蒸馏的（RL、LoRA、SFT）不是不好，是我们没有那个条件 —— 判低不是贬低。
+ *
+ * @returns {{score:number, verdict:"adopt"|"watch"|"ignore", parts:object, reasons:string[]}}
+ */
+export function scorePaper(paper, cfg, now = Date.now()) {
+	const p = cfg.papers;
+	const text = `${paper.title || ""} ${paper.abs || ""}`.toLowerCase();
+
+	const train = p.trainingSignals.filter((k) => text.includes(k));
+	const dataset = p.datasetSignals.filter((k) => text.includes(k));
+	const landable = p.landingSignals.filter((k) => text.includes(k));
+	const titleDataset = /(dataset|benchmark|benchmarking|corpus)/i.test(paper.title || "");
+
+	// 可落地性按「方法能不能用几十行零依赖 JS 重写」判：要训练 8；数据集/评测集 12；
+	// 工程手段按命中条数分档（1 条很可能是顺口提的，3 条才算真的在讲这件事）。
+	let feasibility;
+	if (train.length > 0) feasibility = 8;
+	// 数据集/评测集看**标题**，不看 abstract：真做方法的工作也会在自己的实验里提 benchmark，
+	// 用摘要判会把它们一起误杀；而标题写 Dataset/Benchmarking 的基本就是造数据/造榜。
+	else if (titleDataset) feasibility = 12;
+	else feasibility = landable.length >= 3 ? 40 : landable.length === 2 ? 32 : landable.length === 1 ? 20 : 12;
+
+	// 相关性分强弱：`compaction`/`harness`/`tool output` 这种出现在 abstract 里就是真在讲；
+	// `context`/`agent` 这种满屏都是，只值 2 分。否则一篇 Context-Grounded QA Dataset 能刷到顶。
+	const strong = (p.strongKeywords || []).filter((k) => text.includes(k));
+	const weak = p.keywords.filter((k) => text.includes(k));
+	const relevance = Math.min(30, strong.length * 5 + weak.length * 2);
+
+	const age = paper.date ? daysBetween(paper.date, now) : 999;
+	const freshness = age <= 3 ? 20 : age <= 7 ? 15 : age <= 30 ? 8 : 0;
+
+	const hasCode = /github\.com|code is (public|available)|we (release|open)|open[- ]source|available at http/i.test(text) ? 10 : 0;
+
+	const score = Math.max(0, Math.min(100, feasibility + relevance + freshness + hasCode));
+	const verdict = score >= p.thresholds.adopt ? "adopt" : score >= p.thresholds.watch ? "watch" : "ignore";
+
+	const reasons = [];
+	if (train.length > 0) reasons.push(`需要训练（${train.slice(0, 2).join("/")}），我们没条件`);
+	else if (titleDataset && feasibility <= 12) reasons.push("数据集/评测集，给的是可测的东西不是可抄的方法");
+	else if (feasibility <= 12) reasons.push("方法不是工程手段，抄不了");
+	if (hasCode) reasons.push("有开源实现可对照");
+	if (relevance === 0) reasons.push("与我们无关");
+	if (freshness === 0) reasons.push(`${age} 天前，不是最新`);
+
+	return { score, verdict, parts: { feasibility, relevance, freshness, hasCode }, reasons };
 }
 
 function collectModels(proxy) {
@@ -258,7 +309,7 @@ export function applySeen(items, seen) {
 	return { fresh, skipped };
 }
 
-export function renderMarkdown({ date, adopt, watch, eco, hn, arxiv, models, errors, cfg }) {
+export function renderMarkdown({ date, adopt, papers, watch, eco, hn, arxiv, models, errors, cfg }) {
 	const L = [];
 	L.push(`# AI 雷达 · ${date}`, "");
 	L.push("> 自动生成，别手改。判据看 `team/radar.json`，移植决定记在 `docs/radar/INDEX.md`。", "");
@@ -275,7 +326,19 @@ export function renderMarkdown({ date, adopt, watch, eco, hn, arxiv, models, err
 		L.push("");
 	}
 
-	L.push(`## 二、观察（分数不够，或被许可/语言封顶的）`, "");
+	L.push(`## 二、论文候选（≥${cfg.papers.thresholds.adopt} 分）`, "");
+	L.push("> 论文能移植的只有**方法**，不是代码。看这一节时问自己：这三十行零依赖 JS 能不能写出来。", "");
+	if (!papers?.length) L.push("今天没有值得移植的论文。", "");
+	else {
+		for (const { paper: p, score, reasons } of papers) {
+			const url = String(p.id).replace("http://", "https://");
+			L.push(`- **${score}** · [${cut(p.title, 88)}](${url}) · ${p.date} · ${p.cat}`);
+			L.push(`  - 落点：${suggestLanding({ name: "", description: `${p.title} ${p.abs}`, topics: [] }, cfg)}${reasons.length ? `　_(${reasons.join("；")})_` : ""}`);
+		}
+		L.push("");
+	}
+
+	L.push(`## 三、观察（分数不够，或被许可/语言封顶的）`, "");
 	if (!watch.items.length) L.push("无。", "");
 	else {
 		for (const { repo: r, score, reasons } of watch.items.slice(0, 10)) {
@@ -284,7 +347,7 @@ export function renderMarkdown({ date, adopt, watch, eco, hn, arxiv, models, err
 		L.push("");
 	}
 
-	L.push("## 三、dsh / pi 生态专线", "", "> 不看分数：这条线上任何新项目都值得扫一眼，它们是我们的同行。", "");
+	L.push("## 四、dsh / pi 生态专线", "", "> 不看分数：这条线上任何新项目都值得扫一眼，它们是我们的同行。", "");
 	if (!eco.length) L.push("近一年没抓到新的生态项目。", "");
 	else {
 		for (const r of eco.slice(0, 10)) {
@@ -293,7 +356,7 @@ export function renderMarkdown({ date, adopt, watch, eco, hn, arxiv, models, err
 		L.push("");
 	}
 
-	L.push("## 四、情报（不进代码，只更新认知）", "");
+	L.push("## 五、情报（不进代码，只更新认知）", "");
 	if (models) {
 		L.push(`- **模型目录**：OpenRouter 上 ${models.total} 个模型`);
 		L.push(`- **最大上下文**：${models.biggest.map((m) => `${m.id} (${m.context_length})`).join("；")}`);
@@ -316,7 +379,7 @@ export function renderMarkdown({ date, adopt, watch, eco, hn, arxiv, models, err
 		L.push("");
 	}
 
-	L.push("## 五、怎么用这份日报", "");
+	L.push("## 六、怎么用这份日报", "");
 	L.push("1. 只对「移植候选」里的项目做判断，观察区不用管。");
 	L.push("2. 真要移植的，写进 `docs/radar/INDEX.md` 并开一条 REQ —— 别直接改代码。");
 	L.push("3. 判死不感兴趣的，把 `seen.json` 里那条的 `status` 改成 `ignored`，以后不再出现。");
@@ -373,15 +436,20 @@ function main(argv) {
 	const watch = { threshold: cfg.thresholds.watch, items: fresh.filter((x) => x.verdict === "watch") };
 	const eco = collectEcosystem(cfg, { proxy, token }).repos;
 	const hn = cfg.sources.hn ? collectHn(cfg, null) : [];
-	const arxiv = cfg.sources.arxiv ? collectArxiv(cfg, null) : [];
+	const arxiv = cfg.sources.arxiv ? collectArxiv(cfg, { days: cfg.papers.days, proxy: null }) : [];
+	const papers = arxiv
+		.map((paper) => ({ paper, ...scorePaper(paper, cfg, now) }))
+		.sort((a, b) => b.score - a.score)
+		.filter((x) => x.verdict !== "ignore")
+		.slice(0, cfg.papers.top);
 	const models = cfg.sources.openrouter ? collectModels(null) : null;
 
 	if (flag("--json")) {
-		console.log(JSON.stringify({ date: iso(now), adopt: adopt.items, watch: watch.items, eco, hn, arxiv, models, skipped, errors }, null, 1));
+		console.log(JSON.stringify({ date: iso(now), adopt: adopt.items, papers, watch: watch.items, eco, hn, arxiv, models, skipped, errors }, null, 1));
 		return;
 	}
 
-	const md = renderMarkdown({ date: iso(now), adopt, watch, eco, hn, arxiv, models, errors, cfg });
+	const md = renderMarkdown({ date: iso(now), adopt, papers, watch, eco, hn, arxiv, models, errors, cfg });
 	if (!flag("--write")) {
 		console.log(md);
 		return;
