@@ -8,6 +8,39 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.33.0] - 2026-11-10
+
+### 新增
+
+- **superagent 真 worktree 隔离**：配置加 `repoRoot`，给了就**每次执行都建一个独立
+  worktree**（分支 `dsh-wt/sa-<commentId>`），agent 在那边改。
+
+  ```json
+  { "repoRoot": "C:/Users/Administrator/Desktop/dsh-team-workflow" }
+  ```
+
+  为什么必须隔离：issue 正文是不可信输入，而 agent 会改文件。让它直接改主仓库 =
+  一次注入就能毁掉工作区。worktree 是 git 自己的隔离，出事了 `worktree_drop` 一删就干净。
+
+  **建不出来就不跑**（fail-closed）：宁可这一轮失败，也不退回「直接改主仓库」。
+  反向实验：把那条 `return` 删掉（建失败也继续），自检**崩溃退出** —— 因为它会一路走到
+  `ctx.loader` 去加载宿主包，而不是停在断言上。咬住了，只是表现成崩溃不是 AssertionError。
+
+  `worktreeNew` 复用 `lib/worktree.js`（`worktree_new` 工具在用的那个，`execFile` 直跑 git，
+  不依赖宿主 subprocess）。
+
+  成功返回里带上 `worktree` 路径 —— 面板要知道改在哪个分支、回评论要写进去。
+
+  不填 `repoRoot` 就退回原来的独立目录 `~/.dsh/team-workflow/superagent/work`（没有 git 隔离）。
+
+  自检 16 → 17 项。
+
+### 还没做
+
+- **自动重试** + `/superagent retry` 命令
+- **Feishu Source**（本机 `lark-cli` 没装）
+- **`agents.create` 真跑会话**（要重启 dsh 才能验）
+
 ## [2.32.0] - 2026-11-10
 
 ### 新增

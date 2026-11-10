@@ -16,6 +16,8 @@
   "agentPreset": "team",
   "permission": "read-only",
   "workdir": "",
+  "repoRoot": "",
+  "_repoRoot": "本地主仓库路径（例如 C:/Users/Administrator/Desktop/dsh-team-workflow）。**填了才建 worktree** —— 每次执行都从它建一个独立 worktree（分支 dsh-wt/sa-<commentId>），agent 在那边改。不填就退回 workdir 那个独立目录（没有 git 隔离）。",
   "runTimeoutMs": 1800000,
   "_repos": "多仓库：非空时**覆盖** repo。每个仓库各自一个游标（state.json 的 cursor.byRepo），互不影响。单仓库就填 repo 不填它。"
 }

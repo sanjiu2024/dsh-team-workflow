@@ -857,4 +857,32 @@ ok("每条判定都带可读理由");
 	}
 }
 
+// —— 16. worktree 隔离：建不出来就不跑，绝不退回主仓库 ——
+//
+// 隔离的理由：issue 正文是不可信输入，而 agent 会改文件。让它直接改主仓库 =
+// 一次注入就能毁掉工作区。所以 worktreeBase 配了就必须建成功，建不出来宁可这轮失败。
+{
+	const { createAgentRunner } = await import("../lib/superagent/agent-runner.js");
+	// 假 scope：agents.create 一被调用就说明「建 worktree 那步放过了」—— 那正是要防的
+	const mustNotRun = {
+		agents: {
+			create: () => {
+				throw new Error("不该走到 agents.create");
+			},
+		},
+		agentPresets: {},
+		get: () => undefined,
+	};
+	const runner = createAgentRunner({
+		scope: mustNotRun,
+		agentPreset: "team",
+		// 指向一个**不存在**的目录 → worktreeNew 会报 not-a-repo
+		worktreeBase: "C:/definitely-not-a-repo-xyz",
+	});
+	const outcome = await runner({ commentId: "wt-1", instruction: "说话", cwd: "C:/tmp" });
+	assert.equal(outcome.ok, false, "建 worktree 失败就不该跑");
+	assert.match(String(outcome.error), /worktree/i, `错误要说清是 worktree 建不出来：${outcome.error}`);
+	ok("worktree 隔离：建不出来就拒绝执行，不退回主仓库");
+}
+
 console.log(`\nselftest-superagent：${passed} 项全过`);
