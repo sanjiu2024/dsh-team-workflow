@@ -17,7 +17,7 @@
  *   node scripts/selftest-session-recall.mjs
  */
 import * as assert from "node:assert/strict";
-import { collapseSeqs, eventText, installSessionRecall, RECALL_MAX_EVENTS } from "../lib/session-recall.js";
+import { collapseSeqs, eventText, installSessionRecall, RECALL_MAX_CHARS, RECALL_MAX_EVENTS } from "../lib/session-recall.js";
 
 let failures = 0;
 const check = (name, fn) => {
@@ -317,6 +317,31 @@ await checkAsync("输出契约：value 过 schema、render 出文本、dispose �
 	assert.deepEqual(rendered, [{ type: "text", text: value.text }], "render 必须把 text 交出去");
 	handle.dispose();
 	assert.equal(captured.disposed, true, "dispose 要真的摘掉工具");
+});
+
+await checkAsync("字符预算：一条巨大的事件不能把上下文一次打满", async () => {
+	// 一条 120KB 的工具输出。条数上限（30）挡不住它 —— 这正是要字符预算的原因。
+	const huge = `BIG-${"x".repeat(120 * 1024)}-TAIL`;
+	const events = [
+		{ sessionId: "sess-1", seq: 0, type: "user/message", time: 1, data: { content: "小消息" } },
+		{ sessionId: "sess-1", seq: 1, type: "tool/result", time: 2, data: { content: huge } },
+		{ sessionId: "sess-1", seq: 2, type: "assistant/message", time: 3, data: { content: "收尾" } },
+	];
+	const { ctx, captured } = fakeCtx(fakeEngine(events));
+	installSessionRecall(ctx);
+	const text = await textOf(captured.definition, { from: 0, to: 2 }, execFor("sess-1"));
+	assert.ok(text.length < RECALL_MAX_CHARS + 2000, `输出 ${text.length} 字符，超出预算太多`);
+	assert.match(text, /按预算截断/, "截断了就要说清，不能静默");
+	assert.match(text, /seq=1/, "要告诉模型怎么单独取回这一条");
+	assert.match(text, /^seq 0–2 的原文/m, "区间语义要保留：三条都得出现");
+});
+
+await checkAsync("字符预算：小事件不受影响，不带截断标记", async () => {
+	const { ctx, captured } = fakeCtx(fakeEngine(fakeLog({ count: 3 })));
+	installSessionRecall(ctx);
+	const text = await textOf(captured.definition, { from: 0, to: 2 }, execFor("sess-1"));
+	assert.ok(!text.includes("按预算截断"), "没超预算就不该出现截断说明");
+	assert.match(text, /第 1 条的正文（原文）/, "小内容必须逐字返回");
 });
 
 if (failures > 0) {

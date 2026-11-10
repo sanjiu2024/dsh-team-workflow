@@ -67,7 +67,7 @@
 		"last": "2026-11-11",
 		"score": 63,
 		"status": "watch",
-		"stars": 30
+		"stars": 37
 	},
 	"yucezerey/turkish-anti-ai-skill": {
 		"first": "2026-11-11",
@@ -102,7 +102,7 @@
 		"last": "2026-11-11",
 		"score": 51,
 		"status": "watch",
-		"stars": 67
+		"stars": 74
 	},
 	"Dodaios/ste80-humanizer": {
 		"first": "2026-11-11",
@@ -151,7 +151,7 @@
 		"last": "2026-11-11",
 		"score": 47,
 		"status": "ignored",
-		"stars": 283
+		"stars": 284
 	},
 	"quyetcao/ai-manus": {
 		"first": "2026-11-11",
@@ -271,5 +271,12 @@
 		"score": 27,
 		"status": "ignored",
 		"stars": 6
+	},
+	"pktq/lasik": {
+		"first": "2026-11-11",
+		"last": "2026-11-11",
+		"score": 82,
+		"status": "watch",
+		"stars": 53
 	}
 }
