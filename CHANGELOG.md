@@ -8,6 +8,53 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.40.0] - 2026-11-10
+
+### 新增
+
+- **Mandate + Policy 版本化**（REQ-038 第五批）。上游 `002-authorization.md` 的三条硬约束：
+
+  > Only three operations change a Mandate: **accept creates it, a person's stop withdraws it,
+  > and failed revalidation revokes it**.
+  >
+  > A version change ... **does not immediately revoke live Tickets' Mandates**.
+
+  照做的部分：
+
+  | 上游 | 这里 |
+  | --- | --- |
+  | accept 创建 Mandate | `createMandate()`，记 basis / sender / policyHash / acceptedAt |
+  | 人说停撤回 | 已有（`decide()` 的 `stop`）—— `stopped` 的 Ticket 不续跑 |
+  | **重新校验失败撤销** | `checkMandate()`：发起人被移出名单 / `acceptMode=off` → 失效 |
+  | **版本变化不撤销** | 哈希不一致只返回 `stale: true`，`ok` 仍为 `true` |
+  | 版本变化影响正在跑的 | **没做** —— 我们是「起会话、跑完就结束」，没有排队中的 Eval 可丢 |
+
+  **`policyHash()` 为什么自己写 FNV-1a**：只需要相等比较，不需要抗碰撞；而它让这个包继续
+  零依赖、纯同步（要装进别人的 profile）。**键名排序后拼**，不是 `JSON.stringify` 整个对象 ——
+  后者依赖构造顺序，同一份策略换个顺序就会被误判成「改过」，于是每轮都有 Ticket 被无谓地判 stale。
+
+  **`checkMandate(undefined)` 必须放行**：上游把「Mandate 缺失」当成「不是通过准入进来的」
+  （它有 admission table / bot 名单等多条路），我们只有一条 —— 所有 Ticket 都来自 `decide()`。
+  判失效会让**升级后所有进行中的讨论当场断掉**，而且面板 `run` 手动触发的本来就没有 Mandate。
+  这条自检咬住过一次：加了校验之后「该续跑一次」当场变红。
+
+  `mandateRevoked` 写在 Ticket 上（面板能看见「为什么这条不再续了」）。
+
+### 测试
+
+- 自检 21 → 24 项：Mandate 指纹稳定（键序无关、名单变了才变）、名单变化能抓、
+  版本变化不撤销但标 stale、老数据放行、loop 里三处调用真的接上了。
+- **修了一个把整段测试吞掉的问题**：`selftest-superagent.mjs` 里有一行残缺的
+  `console.log(\``，它开了一个模板字符串，把后面整段（含 Mandate 用例）变成字符串字面量 ——
+  `node --check` 依然通过（语法合法），于是那段**从没执行过**，计数也一直少 1。
+  这类问题只有「数一数声明的 `ok()` 和实际输出的 ✓ 对不对得上」才抓得到，已在本轮验证过。
+
+### 还没做
+
+- 上游的 admission table（3 格 × 接收范围）、bot 名单、`explicit`/`inferred`/`table`/`bot`
+  四档 strength —— 我们只有「名单 + 仓库成员」一条路，`basis` 固定 `listed`
+- Policy 变化时给活动 Ticket 发 `policy-changed` 通知（现在只标 stale，不回评论）
+
 ## [2.39.0] - 2026-11-10
 
 ### 新增

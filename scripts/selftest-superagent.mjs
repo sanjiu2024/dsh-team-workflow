@@ -1356,5 +1356,57 @@ ok("每条判定都带可读理由");
 	ok("执行指令带上了 Report 说明");
 }
 
+
+// —— 23. Mandate：指纹稳定、名单变化能抓、版本变化不撤销 ——
+//
+// 上游 002-authorization 的三条硬约束：
+//   ① 只有三种操作改变 Mandate：accept 创建 / 人说停撤回 / 重新校验失败撤销
+//   ② **Policy 版本变化不直接撤销** live Ticket 的 Mandate
+//   ③ 「没有 Mandate」在老数据上必须放行（否则升级即断）
+{
+	const { policyHash, createMandate, checkMandate } = await import("../lib/superagent/policy.js");
+	const base = { repos: ["a/b"], actors: ["x"], acceptMode: "auto", trigger: "/agent" };
+
+	// ① 指纹与键序无关 —— 否则同一份策略换个构造顺序就会被误判成「改过」
+	assert.equal(
+		policyHash(base),
+		policyHash({ trigger: "/agent", acceptMode: "auto", actors: ["x"], repos: ["a/b"] }),
+		"指纹必须与键序无关",
+	);
+	// 名单里的顺序也算同一份
+	assert.equal(policyHash(base), policyHash({ ...base, actors: ["x"] }), "同一份策略指纹要稳定");
+	// 真改了才变
+	assert.notEqual(policyHash(base), policyHash({ ...base, actors: ["x", "y"] }), "名单变了指纹要变");
+	assert.notEqual(policyHash(base), policyHash({ ...base, acceptMode: "observe" }), "模式变了指纹要变");
+	assert.notEqual(policyHash(base), policyHash({ ...base, trigger: "/do" }), "触发词变了指纹要变");
+
+	const m = createMandate({ author: "x" }, base, "测试");
+	assert.equal(m.basis, "listed", "我们的 basis 只有 listed 一种");
+	assert.equal(m.sender, "x");
+
+	// ② 成立 / 名单被移出 / 版本变了
+	assert.equal(checkMandate(m, base).ok, true, "同策略下成立");
+	assert.equal(checkMandate(m, { ...base, actors: [] }).ok, false, "发起人被移出名单 → 失效（这是重新校验要抓的）");
+	assert.equal(checkMandate(m, { ...base, acceptMode: "off" }).ok, false, "策略关了 → 失效");
+	{
+		const verdict = checkMandate(m, { ...base, trigger: "/do" });
+		assert.equal(verdict.ok, true, "版本变了**不**撤销（上游明确「does not immediately revoke」）");
+		assert.equal(verdict.stale, true, "但要标出来，好通知当事人");
+	}
+
+	// ③ 没有 Mandate 必须放行（老数据 / 手动触发）
+	assert.equal(checkMandate(undefined, base).ok, true, "没有 Mandate 要放行 —— 否则升级后进行中的讨论全断");
+	assert.equal(checkMandate(null, base).ok, true, "null 同理");
+
+	// ④ 续跑前的校验真的接上了：把 checkMandate 换成「一律拒绝」，那条 Thread 续跑的用例必须红
+	{
+		const loopSrc = fs.readFileSync(new URL("../lib/superagent/loop.js", import.meta.url), "utf8");
+		assert.ok(loopSrc.includes("checkMandate("), "loop 没调 checkMandate —— 续跑前的重新校验等于没做");
+		assert.ok(loopSrc.includes("mandateRevoked"), "失效要留痕（面板要能看见「为什么这条不再续了」）");
+		assert.ok(loopSrc.includes("createMandate("), "accept 时要建 Mandate");
+	}
+	ok("Mandate：指纹稳定、名单变化抓得住、版本变化不撤销、老数据放行");
+}
+
 console.log(`
 selftest-superagent：${passed} 项全过`);
