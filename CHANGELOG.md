@@ -8,6 +8,36 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.29.0] - 2026-11-10
+
+### 新增
+
+- **主 agent 可以自己挑模型再派 subagent**（REQ-036 续）。上一版只做了「工具支持选模型」的
+  开关（`modelSelectionSettings: true`），但**白名单是空的** —— `enabled: true` + 空名单会在
+  `current()` 直接抛（`model-selection-settings.js:59`），等于能用但没得选。
+
+  这次补上白名单的**生成链路**：`team/agent-settings.json` 的 `subagents.modelSelection`
+  会被写进预设，覆盖 `dsh-web-app` 那一行的空默认值。
+
+  现在主 agent 派活时的完整路径：
+
+  1. `list_subagent_models` 列出四个可选 route（模型自己看得到能挑什么）
+  2. `subagent_std` / `subagent_power` / `subagent_fork` 的参数里带
+     `provider` / `model` / `reasoning_effort`
+  3. 不填就用 `tierTools` 钉死的档位（std=opencode-go/deepseek-v4.1-flash，
+     power=tumianyue-api/claude-haiku-5-5，fork=继承）
+
+  白名单当前四条：`tumianyue-api` 的 `deepseek-v4.1-flash` / `claude-haiku-5-5` /
+  `deepseek-v4-pro`，加 `opencode-go` 的 `deepseek-v4.1-flash`。**只列 provider 那边真配了的**——
+  zzcraft.cn 站上有 26 个，但 desktop 的 `llm-pi-ai` 只配了这三个，加别的要先改 profile。
+
+### 修复
+
+- 上一版把白名单生成代码**加错了函数**：`generateTeamPreset`（pi 布局的老生成器）里引用
+  `allowModelSelection`，而那个变量只在 `generateRc2TeamPreset` 里定义 —— 老生成器一旦被
+  调用就 ReferenceError。现在挪到 rc2 的收尾（`return` 之前），生成产物已核对：
+  `changed` 从 8 变 9、覆盖行在、三档开关都在。
+
 ## [2.28.0] - 2026-11-10
 
 ### 修复
