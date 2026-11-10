@@ -1,0 +1,85 @@
+{
+	"_why": "AI 技术雷达的判据与采集源。改这里不用改代码 —— scripts/radar.mjs 只实现打分与渲染，不写死任何关键词。",
+	"enabled": true,
+	"days": 7,
+	"proxy": "http://127.0.0.1:7897",
+	"outputDir": "docs/radar",
+	"seenFile": "docs/radar/seen.json",
+	"_thresholds": "adopt 以上进「移植候选」，watch 以上进「观察」，其余只留一行理由。定时任务只能提 adopt 的。",
+	"thresholds": { "adopt": 70, "watch": 50 },
+	"weights": { "portability": 40, "relevance": 30, "activity": 20, "license": 10 },
+	"github": {
+		"_why": "GitHub Trending 没有 API，只能拿 created/pushed 两个时间窗构造代理指标；perQuery 是每个查询取的条数",
+		"queries": [
+			{ "name": "agent 编排", "q": "topic:ai-agent" },
+			{ "name": "LLM 工程", "q": "topic:llm" },
+			{ "name": "MCP/工具协议", "q": "topic:mcp" },
+			{ "name": "上下文/RAG", "q": "topic:rag" }
+		],
+		"perQuery": 10
+	},
+	"ecosystem": {
+		"_why": "2026-11-11 实测：GitHub 近 7 天新建的 AI 项目前四名里三个是 dsh 生态的（fujiang-pojia 473★ / dsh-game-studio 463★ / fish-pocket 183★）—— 这条线比泛 AI 更值钱",
+		"queries": ["dsh", "deepseek-harness", "agent-preset", "pi-agent"],
+		"minStars": 3,
+		"perQuery": 8
+	},
+	"keywords": {
+		"ecosystem": ["dsh", "deepseek-harness", "agent-preset", "pi-agent", "modsdk"],
+		"topic": [
+			"agent",
+			"orchestrat",
+			"context",
+			"compaction",
+			"prompt",
+			"eval",
+			"tool-use",
+			"subagent",
+			"workflow",
+			"skill",
+			"harness",
+			"hook"
+		],
+		"general": ["llm", "ai", "rag", "mcp", "cli", "plugin"]
+	},
+	"penalty": {
+		"_why": "命中即判定「物理上搬不进这个包」（零运行时依赖 / 纯 ESM），不是降分是判死；理由会写进日报的忽略区",
+		"topics": [
+			"gpu",
+			"cuda",
+			"training",
+			"pretraining",
+			"fine-tuning",
+			"finetune",
+			"diffusion",
+			"text-to-image",
+			"kubernetes",
+			"docker",
+			"tensorrt",
+			"vllm"
+		]
+	},
+	"_landing": "「这个项目该落到我们哪个文件」——按顺序第一个命中的就是答案。写进配置是因为模块改名/拆文件后它需要单独维护，写死在代码里第二天就过期。",
+	"landing": [
+		{ "match": ["context window", "compaction", "token budget", "context management", "memory"], "target": "lib/mc.js / 压缩后端（先看 fold）" },
+		{ "match": ["skill"], "target": "skills/（项目技能目录）" },
+		{ "match": ["prompt", "preset", "system", "instruction"], "target": "team/agent-settings.json + prompt-inject.md" },
+		{ "match": ["agent", "orchestrat", "subagent", "workflow", "squad"], "target": "lib/squad*.js / lib/preset-gen.js" },
+		{ "match": ["plugin", "hook", "mcp", "tool"], "target": "lib/index.js（插件挂载面）" },
+		{ "match": ["cli", "install", "doctor", "setup"], "target": "bin/dsh-team.mjs" },
+		{ "match": ["eval", "bench", "test", "metric"], "target": "scripts/selftest-*（当评测设计参考）" }
+	],
+	"sources": { "github": true, "hn": true, "openrouter": true, "arxiv": true },
+	"hn": {
+		"days": 2,
+		"minPoints": 20,
+		"perQuery": 10,
+		"_why": "只搜工程向的词：模型发布会自己出现在 OpenRouter 那节，HN 这节要的是「别人踩了什么坑」",
+		"queries": ["agent harness", "context window", "prompt engineering", "eval", "coding agent"]
+	},
+	"arxiv": {
+		"cats": ["cs.AI", "cs.SE"],
+		"max": 6,
+		"mustMatch": ["agent", "context", "prompt", "evaluat", "orchestrat"]
+	}
+}
