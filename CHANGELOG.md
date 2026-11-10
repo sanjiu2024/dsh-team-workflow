@@ -8,6 +8,40 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.36.0] - 2026-11-10
+
+### 新增
+
+- **PR 作为 Channel**（REQ-038 第二批）。上游 `001-domain` 把 PR 和评论列在**同一层**：
+
+  > Acknowledgements, replies, **pull requests** and resolved reviews are all writes
+
+  所以这不是「回评论之后附送一个 PR」，而是先看这次改动**能不能形成 PR**：
+
+  | worktree 状态 | 行为 |
+  | --- | --- |
+  | 有未提交改动 | 我们替它 `git add -A` + `commit` → push → `gh pr create` |
+  | 只有提交（没未提交改动） | 直接 push → `gh pr create` |
+  | 都没有 | **不开 PR**（回 `no-change`），只回评论 |
+
+  **为什么提交由编排层做**：和发评论同一条原则 —— **凭据不进 agent**。issue 正文是不可信输入，
+  让 agent 自己 push 等于把推送权交给一段可能被注入的对话。agent 只许写 worktree。
+
+  三个细节：
+  - **已有同名 PR 不算失败** —— 分支推上去了，PR 也在，把已有链接捞出来回评论就行
+  - **push 失败就不去开 PR**（别在没推上去的分支上开一条空 PR）
+  - **读不到基准分支时 `ahead` 按 0 处理** —— 不能让一次读失败毁掉整轮
+
+  配置加 `prBaseBranch`（默认 `master`）。
+
+  自检 19 → 20 项。反向实验：去掉「没改动就短路」那条，自检变红。
+
+### 还没做（下一批）
+
+- 7 个 stage（面板靠它显示「什么需要人」）
+- Mandate / Policy 版本化
+- worker slot / 后台工作 30 分钟
+
 ## [2.35.0] - 2026-11-10
 
 ### 新增

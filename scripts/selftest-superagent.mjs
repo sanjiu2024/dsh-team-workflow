@@ -1108,4 +1108,116 @@ ok("每条判定都带可读理由");
 	}
 }
 
+// —— 19. PR 通道：有改动才开、提交/推送/开 PR 的顺序、已有 PR 不算失败 ——
+//
+// 上游 001-domain 把 PR 和评论列在同一层（"Acknowledgements, replies, pull requests
+// and resolved reviews are all writes"），所以这里不是「回评论之后附送一个 PR」，
+// 而是先看这次改动能不能形成 PR。
+{
+	const { openPullRequest, readWorktreeState, NO_CHANGE } = await import("../lib/superagent/git-channel.js");
+
+	/** 假 git：按 argv[0] 返回预置结果。 */
+	const makeGit = (table) => async (argv) => {
+		const sub = argv[0];
+		const hit = table[sub];
+		if (hit === undefined) return { code: 0, stdout: "", stderr: "" };
+		return typeof hit === "function" ? hit(argv) : hit;
+	};
+
+	// ① 干净且没新提交 → 不开 PR，也不算失败
+	{
+		const git = makeGit({
+			status: { code: 0, stdout: "", stderr: "" },
+			"rev-parse": { code: 0, stdout: "dsh-wt/sa-1\n", stderr: "" },
+			"rev-list": { code: 0, stdout: "0\n", stderr: "" },
+		});
+		let ghCalls = 0;
+		const out = await openPullRequest(
+			{ git, gh: async () => ((ghCalls += 1), { code: 0, stdout: "", stderr: "" }) },
+			{ worktree: "C:/wt", base: "master", repo: "a/b", pr: { title: "t", body: "b", commentId: "c1" } },
+		);
+		assert.equal(out.ok, true, "没改动不是失败");
+		assert.equal(out.reason, NO_CHANGE, "要明确返回 no-change，调用方才知道「这次没 PR」");
+		assert.equal(ghCalls, 0, "没改动就不该碰 gh");
+	}
+
+	// ② 有未提交改动 → 我们替它提交 → 推送 → 开 PR，顺序不能反
+	{
+		const order = [];
+		const git = makeGit({
+			status: { code: 0, stdout: " M lib/x.js\n?? new.txt\n", stderr: "" },
+			"rev-parse": { code: 0, stdout: "dsh-wt/sa-2\n", stderr: "" },
+			"rev-list": { code: 0, stdout: "0\n", stderr: "" },
+			add: async () => (order.push("add"), { code: 0, stdout: "", stderr: "" }),
+			commit: async () => (order.push("commit"), { code: 0, stdout: "", stderr: "" }),
+			push: async () => (order.push("push"), { code: 0, stdout: "", stderr: "" }),
+		});
+		const out = await openPullRequest(
+			{
+				git,
+				gh: async (argv) => (order.push("gh:" + argv[0] + ":" + argv[1]), { code: 0, stdout: "https://github.com/a/b/pull/9\n", stderr: "" }),
+			},
+			{ worktree: "C:/wt", base: "master", repo: "a/b", pr: { title: "改个东西", body: "b", commentId: "c2" } },
+		);
+		assert.deepEqual(order, ["add", "commit", "push", "gh:pr:create"], "顺序：add → commit → push → pr create");
+		assert.equal(out.ok, true, "该成功");
+		assert.equal(out.prUrl, "https://github.com/a/b/pull/9", "要把 PR 链接带出来（回评论要用）");
+		assert.equal(out.branch, "dsh-wt/sa-2", "分支名要带出来");
+	}
+
+	// ③ 已有同名 PR → 不算失败（分支推上去了，PR 也在）
+	{
+		const git = makeGit({
+			status: { code: 0, stdout: "", stderr: "" },
+			"rev-parse": { code: 0, stdout: "dsh-wt/sa-3\n", stderr: "" },
+			"rev-list": { code: 0, stdout: "2\n", stderr: "" },
+			push: { code: 0, stdout: "", stderr: "" },
+		});
+		const out = await openPullRequest(
+			{
+				git,
+				gh: async () => ({
+					code: 1,
+					stdout: "",
+					stderr: "a pull request for branch \"dsh-wt/sa-3\" into branch \"master\" already exists:\nhttps://github.com/a/b/pull/7",
+				}),
+			},
+			{ worktree: "C:/wt", base: "master", repo: "a/b", pr: { title: "t", body: "b", commentId: "c3" } },
+		);
+		assert.equal(out.ok, true, "已有 PR 不算失败");
+		assert.equal(out.reason, "existing", "要标成 existing");
+		assert.equal(out.prUrl, "https://github.com/a/b/pull/7", "要把已有的那条 PR 链接捞出来");
+	}
+
+	// ④ push 失败 → 明确失败，不继续开 PR
+	{
+		let ghCalls = 0;
+		const git = makeGit({
+			status: { code: 0, stdout: "", stderr: "" },
+			"rev-parse": { code: 0, stdout: "dsh-wt/sa-4\n", stderr: "" },
+			"rev-list": { code: 0, stdout: "1\n", stderr: "" },
+			push: { code: 128, stdout: "", stderr: "fatal: could not read Username" },
+		});
+		const out = await openPullRequest(
+			{ git, gh: async () => ((ghCalls += 1), { code: 0, stdout: "", stderr: "" }) },
+			{ worktree: "C:/wt", base: "master", repo: "a/b", pr: { title: "t", body: "b", commentId: "c4" } },
+		);
+		assert.equal(out.ok, false, "push 失败要判失败");
+		assert.match(String(out.error), /push/, "错误要说清是 push 失败");
+		assert.equal(ghCalls, 0, "push 都失败了就别去开 PR");
+	}
+
+	// ⑤ readWorktreeState：base 不存在时 ahead 按 0 处理（不炸）
+	{
+		const git = makeGit({
+			status: { code: 0, stdout: "", stderr: "" },
+			"rev-parse": { code: 0, stdout: "dsh-wt/sa-5\n", stderr: "" },
+			"rev-list": { code: 128, stdout: "", stderr: "fatal: bad revision" },
+		});
+		const state = await readWorktreeState(git, "C:/wt", "nope");
+		assert.equal(state.ahead, 0, "基准分支不存在时 ahead 按 0 —— 不能让一次读失败毁掉整轮");
+	}
+	ok("PR 通道：没改动不开、顺序对、已有 PR 不算失败、push 失败不继续、读状态不炸");
+}
+
 console.log(`\nselftest-superagent：${passed} 项全过`);

@@ -5,18 +5,22 @@
   "_permission": "沙箱档位。默认 read-only —— 上游选的是 danger-full-access，这里不跟。真要它改代码再显式放开。",
   "_agentPreset": "跑会话用哪个预设。默认 team（团队模式）。",
   "_workdir": "执行时的工作目录。留空 = <stateDir>/work，即 ~/.dsh/team-workflow/superagent/work。",
-  "enabled": false,
-  "repo": "",
+  "enabled": true,
+  "repo": "sanjiu2024/dsh-team-workflow",
   "repos": [],
   "stateDir": "",
   "pollIntervalMs": 60000,
-  "acceptMode": "off",
-  "actors": [],
+  "acceptMode": "observe",
+  "actors": [
+    "sanjiu2024"
+  ],
   "trigger": "/agent",
   "agentPreset": "team",
   "permission": "read-only",
   "workdir": "",
-  "repoRoot": "",
+  "repoRoot": "C:/Users/Administrator/Desktop/dsh-team-workflow",
+  "prBaseBranch": "master",
+  "_prBaseBranch": "PR 的目标分支。留空也是 master。只有 worktree 里有改动/提交时才会开 PR；没有就只回评论。",
   "_repoRoot": "本地主仓库路径（例如 C:/Users/Administrator/Desktop/dsh-team-workflow）。**填了才建 worktree** —— 每次执行都从它建一个独立 worktree（分支 dsh-wt/sa-<commentId>），agent 在那边改。不填就退回 workdir 那个独立目录（没有 git 隔离）。",
   "runTimeoutMs": 1800000,
   "maxAttempts": 3,
@@ -26,5 +30,6 @@
     900000
   ],
   "_retry": "失败自动重试。maxAttempts 含首次（3 = 首次 + 2 次重试）；retryDelaysMs 是每次失败后等多久再试（第 1 次失败等 60s，第 2 次等 300s，第 3 次等 900s）。maxAttempts 设 1 = 不重试。",
-  "_repos": "多仓库：非空时**覆盖** repo。每个仓库各自一个游标（state.json 的 cursor.byRepo），互不影响。单仓库就填 repo 不填它。"
+  "_repos": "多仓库：非空时**覆盖** repo。每个仓库各自一个游标（state.json 的 cursor.byRepo），互不影响。单仓库就填 repo 不填它。",
+  "_本机开关说明": "enabled/repo/actors/repoRoot 都是**本机**配置，故意不提交（同 team/extensions/scheduler.json 的 enabled）。别人拉下来是关的，别当成 bug。先跑 observe：判定放行但不执行，确认「谁会被放行」对了再改 auto。"
 }
