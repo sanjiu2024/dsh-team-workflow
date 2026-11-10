@@ -125,80 +125,14 @@ assert.deepEqual(livePassed, [{ type: "block-start", index: 0, blockType: "text"
 await installed.dispose();
 assert.deepEqual(disposed, ["scope"], "卸载时释放 inject scope");
 
-// ── C · 思考体量护栏（REQ-014）───────────────────────────────────────────────
+	// 思考体量护栏（REQ-014 C）已于 2026-11-10 按用户要求移除，那一段的用例一并删掉。
+	// 删掉功能时不删用例，等于留一组永远绿的死断言 —— 它们测的东西已经不存在了。
+
+// ── 思考体量护栏（REQ-014 C）已于 2026-11-10 按用户要求移除 ────────────────
 //
-// 注意测试数据必须**非周期**：`"x".repeat(20000)` 会被第一层（字面重复）先抓住，
-// 那样测的就不是体量护栏了 —— 我第一次就写错，被这条断言逮住（19999 也命中了）。
+// 删掉功能时用例也一起删 —— 留着就是一组永远绿的死断言，它们测的东西已经不存在了。
+//  留着：D 段还要用它造「够长但不成周期」的数据。
 const noisy = (length) => Array.from({ length }, (_, index) => String.fromCharCode(0x4e00 + (index % 997))).join("");
-assert.equal(repeatPeriod(chars(noisy(4000))), 0, "体量用例的测试数据必须不含 16 字符周期");
-
-const reasoningStream = (totalChars) => stream([
-	{ type: "block-start", index: 0, blockType: "reasoning" },
-	{ type: "reasoning-delta", index: 0, text: noisy(totalChars) },
-	{ type: "block-start", index: 1, blockType: "text" },
-	{ type: "text-delta", index: 1, text: "结论" },
-]);
-
-// 默认值本身也是契约：反向实验里把它改成永不触发，必须有一条断言变红 ——
-// 只传显式 limits 的测试做不到这件事（我第一次就是这么漏的）。
-assert.equal(REPEAT_GUARD_DEFAULTS.maxReasoningChars, 20000, "默认体量上限是 20000；改了要同步 README/REQ/CHANGELOG");
-
-{
-	// **不传 limits**，走的就是出厂默认值
-	const cancel = [];
-	const passed = [];
-	for await (const chunk of guardStream(reasoningStream(REPEAT_GUARD_DEFAULTS.maxReasoningChars - 1), {
-		agentForSession: () => ({ cancel: (cause) => cancel.push(cause) }),
-	})) passed.push(chunk);
-	assert.equal(cancel.length, 0, "比默认上限少 1 个字符不该触发体量护栏");
-	assert.equal(passed.length, 4, "未命中时全部原样透传");
-}
-
-{
-	// 边界值本身：`maxReasoningChars` 是「上限」，等于它还不算超（`>` 而非 `>=`）
-	const cancel = [];
-	for await (const _chunk of guardStream(reasoningStream(REPEAT_GUARD_DEFAULTS.maxReasoningChars), {
-		agentForSession: () => ({ cancel: (cause) => cancel.push(cause) }),
-	})) { /* consume */ }
-	assert.equal(cancel.length, 0, "正好等于上限 20000 不触发（超了才算超）");
-}
-
-{
-	const cancel = [];
-	for await (const _chunk of guardStream(reasoningStream(REPEAT_GUARD_DEFAULTS.maxReasoningChars + 1), {
-		agentForSession: () => ({ cancel: (cause) => cancel.push(cause) }),
-	})) { /* consume */ }
-	assert.equal(cancel.length, 1, "超过出厂默认上限要取消（这条走默认值，不是显式 limits）");
-	assert.match(cancel[0].reason, /思考累计 20001 字符，超过上限 20000/);
-}
-
-{
-	const cancel = [];
-	const nudge = [];
-	const passed = [];
-	for await (const chunk of guardStream(reasoningStream(20001), {
-		limits: { maxReasoningChars: 20000 },
-		agentForSession: () => ({ cancel: (cause) => cancel.push(cause), followup: (message) => nudge.push(message) }),
-		nudgeMessage: async (reason) => ({ text: reason }),
-	})) passed.push(chunk);
-	assert.equal(cancel.length, 1, "超过体量上限要取消");
-	assert.match(cancel[0].reason, /思考累计 20001 字符，超过上限 20000/);
-	assert.equal(nudge.length, 1, "取消后要投递提示");
-	assert.deepEqual(passed, [{ type: "block-start", index: 0, blockType: "reasoning" }], "命中后不再下发");
-}
-
-{
-	// 正文不计入体量（护栏只管思考）；超长正文不该因此被掐
-	const cancel = [];
-	for await (const _chunk of guardStream(stream([
-		{ type: "block-start", index: 0, blockType: "text" },
-		{ type: "text-delta", index: 0, text: noisy(30000) },
-	]), {
-		limits: { maxReasoningChars: 20000 },
-		agentForSession: () => ({ cancel: (cause) => cancel.push(cause) }),
-	})) { /* consume */ }
-	assert.equal(cancel.length, 0, "正文长度不参与思考体量护栏");
-}
 
 // ── D · 中断后自动提示（REQ-014）─────────────────────────────────────────────
 //
@@ -241,9 +175,16 @@ function installGuard({ createUserMessage = (input) => input, isLoopRequest = (o
 	return { guard, listeners, warnings, agent, agents };
 }
 
+/**
+ * 一个「一定命中」的流：16 字符周期 × 4（REQ-013 那条路）。
+ *
+ * 2026-11-10 之前这里造的是 20001 字符的**非周期**文本，走的是 REQ-014 C 的体量护栏。
+ * 那条护栏删掉之后，非周期文本**不该**再触发任何中断 —— 所以这里换成周期数据。
+ * 名字留着（`volumeStream`）是为了让下面几处调用点不用改，但它现在不测体量了。
+ */
 const volumeStream = () => stream([
 	{ type: "block-start", index: 0, blockType: "reasoning" },
-	{ type: "reasoning-delta", index: 0, text: noisy(20001) },
+	{ type: "reasoning-delta", index: 0, text: "abcdefghijklmnop".repeat(4) },
 ]);
 
 {
@@ -263,18 +204,26 @@ const volumeStream = () => stream([
 	const foreign = stream([{ type: "block-start", index: 0, blockType: "reasoning" }, { type: "reasoning-delta", index: 0, text: noisy(30000) }]);
 	assert.equal(listeners.get("llm/stream")({ sessionId: "session-real", loop: false }, () => foreign), foreign, "非 loop 请求要旁路");
 
-	// ③ 真 loop 请求 + 体量超限 → 取消 + 真提示文案
-	for await (const _chunk of listeners.get("llm/stream")({ sessionId: "session-real", loop: true }, volumeStream)) { /* consume */ }
-	assert.equal(agent.cancelled.length, 1, "loop 请求超限要取消");
-	assert.deepEqual(agent.cancelled[0], { cause: { kind: "hook", reason: "思考累计 20001 字符，超过上限 20000" }, options: { keepInbox: true } });
+	// ③ 真 loop 请求 + 命中字面重复 → 取消 + 真提示文案
+	//
+	// 2026-11-10：这里原来用「体量超限」触发，C 删掉后改成用 REQ-013 那条路（16 字符 × 4）。
+	// 顺带把「体量再大也不掐」也测了 —— 那正是删它的理由。
+	const periodic = (text) => stream([
+		{ type: "block-start", index: 0, blockType: "reasoning" },
+		{ type: "reasoning-delta", index: 0, text },
+	]);
+	const repeatHit = () => periodic("abcdefghijklmnop".repeat(4));
+	for await (const _chunk of listeners.get("llm/stream")({ sessionId: "session-real", loop: true }, repeatHit)) { /* consume */ }
+	assert.equal(agent.cancelled.length, 1, "loop 请求命中字面重复要取消");
+	assert.deepEqual(agent.cancelled[0], { cause: { kind: "hook", reason: "思考连续重复输出（周期 16 字符，连续 4 次）" }, options: { keepInbox: true } });
 	assert.equal(agent.followed.length, 1, "取消后要投递提示");
-	assert.match(agent.followed[0].content[0].text, /检测到你在思考里绕圈（思考累计 20001 字符，超过上限 20000）/);
+	assert.match(agent.followed[0].content[0].text, /检测到你在思考里绕圈（思考连续重复输出/);
 	assert.match(agent.followed[0].content[0].text, /直接给结论/);
 	assert.deepEqual(agent.followed[0].source, { kind: "user" });
 
 	// ④ 预算打在生产闭包上：默认 3，第 4 次只取消
 	for (let round = 2; round <= 4; round += 1) {
-		for await (const _chunk of listeners.get("llm/stream")({ sessionId: "session-real", loop: true }, volumeStream)) { /* consume */ }
+		for await (const _chunk of listeners.get("llm/stream")({ sessionId: "session-real", loop: true }, repeatHit)) { /* consume */ }
 	}
 	assert.equal(agent.cancelled.length, 4, "每次都该取消");
 	assert.equal(agent.followed.length, 3, "提示上限 3 次（第 4 次只取消）");
@@ -335,3 +284,40 @@ const volumeStream = () => stream([
 }
 
 console.log("重复输出自动中断：周期阈值、跨 delta、类型隔离、无 Agent 透传、取消与后续截断 ✓");
+
+// —— 2026-11-10：思考体量护栏（REQ-014 C）已删除，得钉住「它真的不再掐」——
+//
+// 删掉一个「掐断」的能力，风险在于**没删干净**：某个角落还留着计数或阈值，
+// 于是一次正常的长推理被无预警打断 —— 那比多烧几个 token 糟得多。
+// 所以这条断言的正向作用是：30000 字符的**非周期**推理必须原样透传、不取消。
+{
+	const { guard, listeners, agent, agents } = installGuard();
+	agents.set("session-long", agent);
+	await tick();
+
+	const longButClean = () => stream([
+		{ type: "block-start", index: 0, blockType: "reasoning" },
+		{ type: "reasoning-delta", index: 0, text: noisy(30000) },
+		{ type: "block-start", index: 1, blockType: "text" },
+		{ type: "text-delta", index: 1, text: "结论：可以" },
+	]);
+	let delivered = 0;
+	for await (const _chunk of listeners.get("llm/stream")({ sessionId: "session-long", loop: true }, longButClean)) {
+		delivered += 1;
+	}
+	assert.equal(agent.cancelled.length, 0, "30000 字符的非周期推理不该被掐（体量护栏已删）");
+	assert.deepEqual(agent.followed, [], "没掐就不该发提示");
+	assert.ok(delivered >= 3, `整条流要原样透传，实际只收到 ${delivered} 个 chunk`);
+
+	// 反面对照：同样的长度，但**成周期** → 必须掐。不然这条断言可能只是「整层坏了」。
+	const longButLoopy = () => stream([
+		{ type: "block-start", index: 0, blockType: "reasoning" },
+		{ type: "reasoning-delta", index: 0, text: ("alpha-beta-gamma-").repeat(2000) },
+	]);
+	for await (const _chunk of listeners.get("llm/stream")({ sessionId: "session-long", loop: true }, longButLoopy)) { /* consume */ }
+	assert.equal(agent.cancelled.length, 1, "成周期的长推理仍然要掐 —— 删的是体量，不是重复检测");
+
+	await installed?.dispose?.();
+	guard?.dispose?.();
+	console.log("✓ 体量护栏已删：长而干净的推理透传，长而成周期的仍然掐");
+}

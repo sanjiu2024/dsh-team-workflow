@@ -1221,3 +1221,57 @@ ok("每条判定都带可读理由");
 }
 
 console.log(`\nselftest-superagent：${passed} 项全过`);
+
+// —— 20. stage：7 个里做出 5 个，每个都对 ——
+//
+// 上游 003-execution 有 7 个 stage，我们只做得出 5 个（person/delivery 要 worker slot、
+// idle 要 agent 主动上报）。这节盯的是：
+//   ① 五个能做的都得对
+//   ② 做不出的两个不能**假装**能做（比如把 running 错标成 idle）
+{
+	const { stageOf, groupByStage, STAGE_LABELS } = await import("../lib/superagent/stage.js");
+
+	// Report 优先于我们自己的推断 —— 它比「跑完了没输出」这种信号准得多
+	assert.equal(stageOf({ status: "running", report: { status: "ready" } }).stage, "person/review", "report=ready 要盖过 status=running");
+	assert.equal(stageOf({ status: "running", report: { status: "blocked" } }).stage, "person/blocked", "report=blocked");
+	assert.equal(stageOf({ status: "done", report: { status: "waiting" } }).stage, "idle", "report=waiting 才是 idle");
+
+	// 没有 Report 时按事实推断
+	assert.equal(stageOf({ status: "running" }).stage, "working", "在跑就是 working");
+	assert.equal(stageOf({ status: "done" }).stage, "person/review", "跑完等人看结果");
+	assert.equal(stageOf({ status: "failed", reason: "网络断了" }).stage, "person/failed", "失败要人看");
+	assert.equal(stageOf({ status: "needs-human" }).stage, "person/answer", "需要人");
+	assert.equal(stageOf({ status: "stopped" }).stage, "stopped", "有人说停是结束，不落进 working");
+	assert.equal(stageOf({ status: "observed" }).stage, "idle", "observe 是「没开闸」，不是等谁");
+
+	// needsPerson 的判定要和 stage 名前缀一致
+	for (const ticket of [{ status: "done" }, { status: "failed" }, { status: "needs-human" }, { status: "running" }]) {
+		const info = stageOf(ticket);
+		assert.equal(
+			info.needsPerson,
+			info.stage.startsWith("person/"),
+			`stage ${info.stage} 的 needsPerson 和前缀对不上（面板会分错组）`,
+		);
+	}
+
+	// 每个 stage 都有中文标签 —— 面板上不能露出英文 key
+	for (const ticket of [{ status: "done" }, { status: "running" }, { status: "failed" }, { status: "needs-human" }, { status: "observed" }]) {
+		const info = stageOf(ticket);
+		assert.ok(STAGE_LABELS[info.stage], `stage ${info.stage} 没有中文标签`);
+		assert.ok(info.label !== info.stage, `stage ${info.stage} 的 label 还是英文 key`);
+	}
+
+	// 分组：要人的排前面
+	{
+		const { person, working } = groupByStage([
+			{ commentId: "a", status: "running" },
+			{ commentId: "b", status: "done" },
+			{ commentId: "c", status: "failed" },
+			{ commentId: "d", status: "stopped" },
+		]);
+		assert.equal(person.length, 2, "done + failed 两个要人");
+		assert.equal(working.length, 2, "running + stopped 两个不要人");
+		assert.ok(person.every((r) => r.needsPerson === true), "person 组里每个都该 needsPerson");
+	}
+	ok("stage：Report 优先、五个 stage 都对、标签中文、分组不串");
+}
