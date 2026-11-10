@@ -209,13 +209,15 @@ feed({
 	data: {
 		turn: 1,
 		step: 1,
-		message: {
-			role: "user",
-			source: { kind: "tool", callId: "call-1" },
-			content: [
-				{ type: "tool-result", toolCallId: "call-1", content: [{ type: "text", text: "hi" }] },
-			],
-		},
+			// 形状照 host 的 `ToolResultMessage` 造（`MessageBase.content` 直接是块数组）——
+			// 曾经照 `[{type:'tool-result', content:[…]}]` 造过一版，于是套件全绿而真机 resultChars 恒为 0。
+			message: {
+				id: "msg-tool-1",
+				role: "tool",
+				toolCallId: "call-1",
+				source: { kind: "tool", callId: "call-1" },
+				content: [{ type: "text", text: "hi" }],
+			},
 	},
 });
 feed({

@@ -12,7 +12,7 @@
  */
 import * as assert from "node:assert/strict";
 import { parseCheckpoint } from "../lib/context-filter.js";
-import { FOLD_MARKER, contentText, foldMessages, headTail, looksCritical, looksImportant } from "../lib/fold-core.js";
+import { FOLD_MARKER, collapseRepeats, contentText, foldMessages, headTail, looksCritical, looksImportant } from "../lib/fold-core.js";
 
 let failures = 0;
 const check = (name, fn) => {
@@ -235,6 +235,32 @@ check("失败信号判据本身：只认失败，不认普通路径与命令", (
 	assert.ok(looksCritical("进程退出码非零：exit code: 2"));
 	assert.ok(!looksCritical("ok: wrote 42 files"));
 	assert.ok(!looksCritical("node scripts/a.mjs completed"));
+});
+
+check("重复行：连续刷同一行要压成 ×N，别把首尾预算吃光", () => {
+	const noise = "Compiling module...\n".repeat(600);
+	const body = `${noise}TypeError: boom\n`;
+	const out = collapseRepeats(body);
+	assert.match(out, /Compiling module\.\.\.  ×600/, "没有压成 ×N");
+	assert.ok(out.length < body.length / 20, `压完还剩 ${out.length} 字符，等于没压`);
+	assert.match(out, /TypeError: boom/, "压重复行不能把别的行带走");
+});
+
+check("重复行：少于 3 次不压（×2 比原样还长）", () => {
+	const body = "a\n".repeat(2) + "x".repeat(300);
+	assert.equal(collapseRepeats(body), body, "只重复两次不该压");
+});
+
+check("重复行：超长行不压（长文本里偶然重复时压掉反而难读）", () => {
+	const long = `${"L".repeat(400)}\n`.repeat(5);
+	assert.equal(collapseRepeats(long), long, "超过 200 字符的行不该压");
+});
+
+check("重复行：折叠里真的用上了（构建日志压完就不再被裁）", () => {
+	const body = `${"Compiling module...\n".repeat(600)}Error: build failed\n`;
+	const { text } = foldMessages([msg("tool", body)]);
+	assert.match(text, /×600/, "折叠产物里没看到压缩后的重复行");
+	assert.match(text, /Error: build failed/, "错误行必须还在");
 });
 
 if (failures > 0) {

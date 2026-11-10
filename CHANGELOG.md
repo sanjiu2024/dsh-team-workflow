@@ -8,6 +8,38 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.45.0] - 2026-11-11
+
+### 新增
+
+- **成本拆账 `dsh-team bill --anatomy`**（`lib/bill-anatomy.js`）。`bill` 只回答「今天花了多少」，
+  回答不了**「花在哪」**；没有归因，每次优化都是盲改。
+
+  数据不用新埋点：审计里本来就有 `system_message.chars`、`user_message.chars`、
+  `tool_result.resultChars` + `toolName`、`assistant_usage.usage`。
+
+  实测当天（2026-11-11，389 次调用）：system 基线 55.6% / 用户输入 35.7% / 工具结果 8.8% ——
+  也就是说这台机器上最该砍的是**基线文本**，不是工具输出。这种结论只能靠拆账得出。
+
+  依据 arXiv 2611.12122（cost-efficient harnesses）：harness 侧改动对准确率几乎无影响、
+  对成本能差 2.6 倍，方法是先按 trace 看 token 怎么累积。
+
+- **外部工具结果的字符预算**（`lib/tool-budget.js` + `lib/mc-adapter.js`）。桥接进来的 MCP /
+  `ctx_*` 工具结果原来**原样**进上下文 —— 一条 20 万字符的 `ctx_expand` 会跟着会话走到结束
+  （每轮都重发）。现在进上下文前过 3 万字符预算，**保头留尾**（结论常在末尾），截断必留标记
+  并告诉模型**怎么缩小参数**，而不是只说「截断了」。
+
+### 修复
+
+- **折叠时压掉连续重复行**（`lib/fold-core.js` 的 `collapseRepeats`）。构建日志里同一行刷 800 次
+  会把首尾预算全吃掉，真正有信息的那几行反而被挤出去。压成 `行 ×N`：信息不丢（次数还在），
+  长度从几百行变一行。只压**连续**且 ≤200 字符的行，少于 3 次不压（`×2` 比原样还长）。
+
+- **审计的 `tool_result.resultChars` 恒为 0**（`lib/audit.js`）。按 `[{type:'tool-result',content:[…]}]`
+  取正文，而真机是 `ToolResultMessage`（`MessageBase.content` 直接是块数组），于是
+  `contentText(undefined)` 恒为空 —— 每条 `tool_result` 的 sha256 都是**空串的哈希**。
+  自检的假替身也是照那版造的，所以套件全绿、真机全 0。已按真实类型修好，假替身一并改成真形状。
+
 ## [2.44.0] - 2026-11-11
 
 ### 修复

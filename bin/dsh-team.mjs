@@ -56,6 +56,7 @@ import {
 } from "../lib/profile-plugins.js";
 
 import { billForDay, formatBill, localDate } from "../lib/bill.js";
+import { anatomyFromRecords, formatAnatomy, readAuditDay } from "../lib/bill-anatomy.js";
 import { readAllSquads, readSquadsForCwd, renderSquadRecords, squadStoreDir } from "../lib/squad-cli.js";
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -1487,6 +1488,14 @@ function cmdMcApply() {
  */
 function cmdBill() {
 	const date = typeof flags.date === "string" ? flags.date : localDate(Date.now());
+	if (flags.anatomy === true) {
+		// 拆账：只读审计日志，不碰小队那半（小队的用量没有「正文构成」这一维）
+		const day = readAuditDay(date, { home: dshHome });
+		if (!day) return console.log(`没有 ${date} 的审计日志 —— 审计可能关着，或这天没跑过。`);
+		const a = anatomyFromRecords(day.records);
+		if (flags.json === true) return console.log(JSON.stringify({ date, file: day.file, bad: day.bad, ...a }, null, 1));
+		return console.log(formatAnatomy(a, { date }));
+	}
 	if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) fail(`--date 要写成 YYYY-MM-DD，收到的是「${date}」`);
 	// 小队那半：所有工作目录的落盘记录（命令行没有「当前小队」的概念，所以全读）
 	const squads = readAllSquads().flatMap((entry) => entry.records);
