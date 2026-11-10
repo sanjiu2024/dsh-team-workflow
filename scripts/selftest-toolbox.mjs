@@ -272,3 +272,20 @@ async function call(spec, options) {
 }
 
 console.log(`\nselftest-toolbox：${passed} 项全过`);
+
+// —— stage 分组接进面板：先「需要你处理」，再「在跑」——
+//
+// 只列 status 不够 —— 人看到 `done` / `failed` 还得自己想「那我要做什么」。
+// 这条钉的是：面板输出里必须有 stage 的中文标签，且**需要人的排前面**。
+{
+	const src = fs.readFileSync(new URL("../lib/toolbox.js", import.meta.url), "utf8");
+	// 它是动态 import（toolbox 里所有子系统都是按需加载，重东西不在模块顶层拉）
+	assert.ok(src.includes('import("./superagent/stage.js")'), "toolbox 没引入 stage.js —— 分组代码会 ReferenceError");
+	assert.ok(src.includes("groupByStage("), "toolbox 没调 groupByStage");
+	// 顺序：person 先输出，working 后输出（人先看到该自己动手的）
+	const personAt = src.indexOf("**需要你处理");
+	const workingAt = src.indexOf("在跑 / 其它");
+	assert.ok(personAt > 0 && workingAt > personAt, "面板要先列「需要你处理」再列「在跑」");
+	assert.ok(!src.includes("`  · ${ticket.commentId}  ${ticket.status"), "旧的「只列 status」循环还留着");
+	ok("面板：stage 分组接上了，需要人的排前面");
+}

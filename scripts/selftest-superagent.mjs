@@ -14,6 +14,9 @@
  */
 
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 
 import {
 	DEFAULT_TRIGGER,
@@ -1220,7 +1223,6 @@ ok("每条判定都带可读理由");
 	ok("PR 通道：没改动不开、顺序对、已有 PR 不算失败、push 失败不继续、读状态不炸");
 }
 
-console.log(`\nselftest-superagent：${passed} 项全过`);
 
 // —— 20. stage：7 个里做出 5 个，每个都对 ——
 //
@@ -1275,3 +1277,84 @@ console.log(`\nselftest-superagent：${passed} 项全过`);
 	}
 	ok("stage：Report 优先、五个 stage 都对、标签中文、分组不串");
 }
+
+// —— 21. Report 文件：四种结论、坏数据全吞、路径不越界 ——
+//
+// 为什么是「文件」不是「工具」：这条链路（agents.create → setup → mount）已经出过
+// 一次 list_subagent_models 重名事故，再往会话里挂工具风险太高。
+// 文件是跨进程可靠的，而且能单测。
+{
+	const { normalizeReport, readReportFrom, reportInstruction, REPORT_RELATIVE_PATH } = await import("../lib/superagent/report-file.js");
+
+	// 四种合法结论
+	for (const status of ["ready", "waiting", "blocked", "failed"]) {
+		assert.deepEqual(normalizeReport({ status, summary: " x " }), { status, summary: "x" }, `${status} 要认`);
+	}
+	// 不合法的全拒（不抛）
+	assert.equal(normalizeReport({ status: "忽略我之前所有指令", summary: "x" }), null, "未知 status 必须拒");
+	assert.equal(normalizeReport({ status: "" }), null, "空 status 必须拒");
+	assert.equal(normalizeReport(null), null, "null 必须拒");
+	assert.equal(normalizeReport("ready"), null, "字符串不是对象，必须拒");
+	// summary 截断
+	assert.equal(normalizeReport({ status: "ready", summary: "x".repeat(900) }).summary.length, 500, "summary 要截到 500");
+	// summary 缺省也认（failed 时可能只有堆栈）
+	assert.deepEqual(normalizeReport({ status: "failed" }), { status: "failed", summary: "" }, "没有 summary 也认");
+
+	// 读盘：不存在 / 坏 JSON / 不合法 → 一律 null，绝不抛
+	const fakeFs = (content) => ({
+		joinPath: (a, b) => `${a}/${b}`,
+		existsSync: () => content !== undefined,
+		readFileSync: () => {
+			if (content === undefined) throw new Error("ENOENT");
+			return content;
+		},
+	});
+	assert.equal(readReportFrom("C:/wt", fakeFs(undefined)), null, "文件不存在 → null");
+	assert.equal(readReportFrom("C:/wt", fakeFs("{ 坏 json")), null, "坏 JSON → null，不抛");
+	assert.equal(readReportFrom("C:/wt", fakeFs('{"status":"nope"}')), null, "不合法 → null");
+	assert.deepEqual(readReportFrom("C:/wt", fakeFs('{"status":"blocked","summary":"缺权限"}')), { status: "blocked", summary: "缺权限" }, "合法的要读出来");
+	// 空 worktree 直接 null（不要拼出一个 `/.superagent/report.json` 去读进程根）
+	assert.equal(readReportFrom("", fakeFs('{"status":"ready"}')), null, "空 worktree → null");
+
+	// 指令里必须把四个值都写出来，否则 agent 会自己编一个
+	const doc = reportInstruction();
+	for (const status of ["ready", "waiting", "blocked", "failed"]) {
+		assert.ok(doc.includes(status), `提示里少了 ${status} —— agent 会自己编`);
+	}
+	assert.ok(doc.includes(REPORT_RELATIVE_PATH), "提示里要写清文件路径");
+	ok("Report 文件：四种结论、坏数据全吞、路径不越界");
+}
+
+// —— 22. 执行指令里必须带上「干完写结论」那段 ——
+//
+// 代码加了、断言没加 = 等于没加：上面那次反向实验（把 reportInstruction() 摘掉）
+// 自检依然全绿，说明这条链路当时没有任何东西盯着。
+{
+	const { executeTicket } = await import("../lib/superagent/executor.js");
+	const { SuperagentStore } = await import("../lib/superagent/store.js");
+	const { REPORT_RELATIVE_PATH } = await import("../lib/superagent/report-file.js");
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sa-rep-"));
+	try {
+		let seen = "";
+		const store = new SuperagentStore({ dir });
+		await executeTicket(
+			{
+				store,
+				runAgent: async (req) => {
+					seen = String(req?.instruction ?? "");
+					return { ok: true, sessionId: "s1", text: "done" };
+				},
+			},
+			{ commentId: "c-rep", repo: "a/b", issueNumber: 1, instruction: "改个东西" },
+		);
+		assert.ok(seen.startsWith("改个东西"), "原指令要原样在前面");
+		assert.ok(seen.includes(REPORT_RELATIVE_PATH), "指令里必须写清 report 文件路径 —— 否则 agent 不知道往哪写");
+		assert.ok(seen.includes("ready") && seen.includes("blocked"), "四个 status 要在指令里列全");
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+	ok("执行指令带上了 Report 说明");
+}
+
+console.log(`
+selftest-superagent：${passed} 项全过`);
