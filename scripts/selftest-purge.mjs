@@ -382,4 +382,52 @@ ok("融合：团队预设带红队工具行，红队预设不再重复 persona �
 	ok("子代理 override：非空、纯英文骨架、不会退回空串");
 }
 
+// —— 锚点漂移护栏：每条补丁至少有一条 pattern 命中，或它的 marker 已经在文件里 ——
+//
+// 2026-11-11 在 dsh 0.2.2-rc.1 上踩到：#67 只是缩进从 4 tab 变 5 tab、#74 只是上游在两行
+// 之间插了变量，整条补丁就**静默跳过** —— 面板上只显示一个 `·`，没有任何报错。
+// 后果是「补丁全绿」的假象：升级请求又走审批、编辑又要求先读过。
+//
+// 这条断言盯的就是这个：把宿主源码读出来，逐条试 pattern。命中不了且 marker 也不在，就是漂移。
+{
+	const hostRoot = (() => {
+		const base = "C:/Users/Administrator/AppData/Local/Programs/DeepSeek Harness/resources/app/dsh/node_modules/@deepseek-ai";
+		return fs.existsSync(base) ? base : null;
+	})();
+	if (hostRoot === null) {
+		console.log("… 跳过锚点漂移检查：找不到宿主安装树");
+	} else {
+		// 只盯「必须打上」的那几条。optional / na 的不在此列 —— 它们命中不了是对的。
+		const WATCHED = [
+			[14, "dsh-sandbox/lib/index.js"],
+			[17, "dsh-fs-observation-policy/lib/index.js"],
+			[54, "dsh-deliverable-file-references/lib/index.js"],
+			[67, "dsh-agent-loop/lib/index.js"],
+			[74, "dsh-agent-loop/lib/index.js"],
+		];
+		const core = await import("../lib/purge/core.js");
+		const drifted = [];
+		for (const [id, rel] of WATCHED) {
+			const file = path.join(hostRoot, rel);
+			if (!fs.existsSync(file)) continue;
+			const text = fs.readFileSync(file, "utf8");
+			const patch = core.ALL_PATCHES.find((entry) => entry.id === id);
+			if (patch === void 0) { drifted.push("#" + id + " 定义不见了"); continue; }
+			const reps = patch.replacements ?? [];
+			const hit = reps.some((rep) =>
+				rep.pattern instanceof RegExp ? rep.pattern.test(text) : String(text).includes(String(rep.pattern)),
+			);
+			const marked = (patch.markers ?? []).every((marker) => text.includes(marker));
+			if (!hit && !marked) drifted.push("#" + id + " (" + patch.name + ")");
+		}
+		assert.equal(
+			drifted.length,
+			0,
+			"这些补丁的锚点在当前宿主上失配了，会静默跳过：" + drifted.join("、") +
+				"。改 pattern 跟上游，或确认它真的不适用后从 WATCHED 里去掉。",
+		);
+		ok("锚点没漂移：待打列表里每条都还咬得住");
+	}
+}
+
 console.log(`\nselftest-purge：${passed} 项全过`);

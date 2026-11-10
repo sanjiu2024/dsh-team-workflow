@@ -8,6 +8,36 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.51.0] - 2026-11-11
+
+### 修复
+
+- **剩下三条 0.2.2 锚点失配全修完**（`#14` / `#17` / `#54`）。
+
+  | 补丁 | 0.2.2 改了什么 | 修法 |
+  | --- | --- | --- |
+  | `#14` 升级请求无条件授信 | `displayReason` 从字面对象改成函数调用 `escalationDisplayReason(mode, justification)` | 加第三条 pattern（前两条分别要求「不存在」和「对象形态」） |
+  | `#17` 观察策略读写意图放行 | `editIntent` 的整段逻辑抽进了 `requirePresent(target, actor, verb)`，方法体只剩一行委托 | 加新形态 pattern（旧 pattern 要求方法体里有 `const owner = ...`） |
+  | `#54` 交付物提示词去掉 Do not call present | **提示词搬到了新包** `dsh-deliverable-file-references`（`dsh-client-ui-deliverables/lib/index.js` 现在 262 行、`prompt` 出现 0 次） | `FILES` 表里那条路径加上新包，两个都列（`allExisting` 只取存在的） |
+
+  `#17` 那条还有个连带问题：它的 `markers` 要求**两个**都在（write / edit），而 `writeIntent`
+  早就打过了、`editIntent` 因为锚点失配没打上 —— 于是整体判 skip 而不是 already，
+  面板上一个 `·` 什么都看不出来。**补丁只打一半比完全没打更糟**：人以为它生效了。
+
+### 测试
+
+- `selftest-purge` 加**锚点漂移护栏**（20 项全过）：把宿主源码读出来，逐条试 `pattern`；
+  命中不了且 `marker` 也不在，就报出来。
+  这是唯一能抓住这类静默失效的办法 —— 面板只显示一个 `·`，没有任何报错。
+- 反向实验：把 `#74` 的 pattern 改成不可能匹配的串 → 护栏红 1 条。
+
+### 状态
+
+五条现在全部可打（`#14` 1/3、`#17` 1/3、`#54` 2/2、`#67` 1/1、`#74` 1/1）。
+`#87` / `#88` 依赖 `#74` 的标记，重启后 `purge apply` 会连它们一起打上。
+
+**`purge_apply` 用的是 dsh 启动时加载的那份 `core.js`** —— 改完源码要重启 dsh 新定义才生效。
+
 ## [2.50.0] - 2026-11-11
 
 ### 修复
