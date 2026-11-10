@@ -1002,4 +1002,110 @@ ok("每条判定都带可读理由");
 	}
 }
 
+// —— 18. Thread 订阅：后续讨论不走 Eval、直接续给活着的 Ticket ——
+//
+// 上游 001-domain 的原话：Ticket 订阅 Thread 之后，"a person's message that reaches
+// a Ticket this way takes no Eval"。这是「一次讨论能接着聊」的关键 ——
+// 没有它，讨论一多就得每条都重写一遍触发词。
+//
+// `stopped` 是唯一会让 Thread 断掉的终态；`done` 仍然能接（跑完不等于讨论结束）。
+{
+	const { runRound } = await import("../lib/superagent/loop.js");
+	const { SuperagentStore } = await import("../lib/superagent/store.js");
+	const policyModule = await import("../lib/superagent/policy.js");
+	const fs = await import("node:fs");
+	const os = await import("node:os");
+	const path = await import("node:path");
+
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sa-thread-"));
+	const policyOn = { repos: ["a/b"], actors: ["YG"], acceptMode: "auto", trigger: "/agent" };
+	const ev = (id, body, issueNumber = 1) => ({
+		source: "github",
+		repo: "a/b",
+		issueNumber,
+		commentId: String(id),
+		author: "YG",
+		authorAssociation: "OWNER",
+		body,
+	});
+	const oneComment = (event) => ({
+		fetchNewComments: async () => ({ comments: [event], nextCursor: event.commentId, scanned: 1, errors: [] }),
+	});
+	try {
+		// ① Thread 上有活着的 Ticket → 这条消息不走 Eval，直接续
+		{
+			const store = new SuperagentStore({ dir: path.join(dir, "resume") });
+			await store.subscribe("a/b#1", "c-1");
+			await store.saveTicket("c-1", { status: "done", repo: "a/b", issueNumber: 1, instruction: "/agent 第一件事" });
+			const calls = [];
+			const out = await runRound(
+				{
+					store,
+					source: oneComment(ev(2, "顺便把这个也改了")), // 注意：没有触发词
+					policy: policyModule,
+					execute: async (req) => {
+						calls.push(req);
+						return { status: "done", text: "改好了" };
+					},
+					reply: async () => ({ ok: true }),
+				},
+				{ repo: "a/b", policy: policyOn },
+			);
+			assert.equal(calls.length, 1, "该续跑一次");
+			assert.equal(calls[0].commentId, "c-1", "续跑要复用原来那条 ticket id（面板上才是一条连续记录）");
+			assert.equal(calls[0].resume, true, "要标成 resume，executor 才不会拿幂等挡掉");
+			assert.equal(calls[0].messageId, "2", "要把新消息的 id 传下去（幂等按它判）");
+			assert.equal(String(calls[0].instruction), "顺便把这个也改了", "正文原样当输入");
+			assert.equal(out.executed, 1, "续跑成功要算一次执行");
+		}
+
+		// ② 人说停（stopped）→ Thread 断掉，后续不再续
+		{
+			const store = new SuperagentStore({ dir: path.join(dir, "stopped") });
+			await store.subscribe("a/b#1", "c-1");
+			await store.saveTicket("c-1", { status: "stopped", repo: "a/b", issueNumber: 1 });
+			let resumed = 0;
+			await runRound(
+				{
+					store,
+					source: oneComment(ev(2, "继续啊")),
+					policy: policyModule,
+					execute: async (req) => {
+						if (req.resume === true) resumed += 1;
+						return { status: "done", text: "x" };
+					},
+					reply: async () => ({ ok: true }),
+				},
+				{ repo: "a/b", policy: policyOn },
+			);
+			assert.equal(resumed, 0, "stopped 是唯一会让 Thread 断掉的终态");
+		}
+
+		// ③ issue 正文不参与续跑（它是 Thread 的开头，拿来续会把旧需求再执行一遍）
+		{
+			const store = new SuperagentStore({ dir: path.join(dir, "body") });
+			await store.subscribe("a/b#1", "c-1");
+			await store.saveTicket("c-1", { status: "done", repo: "a/b", issueNumber: 1 });
+			let resumed = 0;
+			await runRound(
+				{
+					store,
+					source: oneComment({ ...ev("issue-1", "/agent 老需求"), kind: "issue-body" }),
+					policy: policyModule,
+					execute: async (req) => {
+						if (req.resume === true) resumed += 1;
+						return { status: "done", text: "x" };
+					},
+					reply: async () => ({ ok: true }),
+				},
+				{ repo: "a/b", policy: policyOn },
+			);
+			assert.equal(resumed, 0, "issue 正文是 Thread 的开头，不能拿去续一个进行中的任务");
+		}
+		ok("Thread 订阅：后续讨论不走 Eval 直接续、stopped 才断、issue 正文不参与");
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+}
+
 console.log(`\nselftest-superagent：${passed} 项全过`);

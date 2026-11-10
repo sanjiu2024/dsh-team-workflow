@@ -8,6 +8,42 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.35.0] - 2026-11-10
+
+### 新增
+
+- **Thread 订阅：后续讨论自动续给同一个 Ticket**（REQ-038 第一批）。上游 `001-domain`
+  把它当一等概念，原话是：
+
+  > An ended Ticket keeps its Subscriptions... **a person's message resumes it under the
+  > same Mandate**；"a person's message that reaches a Ticket this way **takes no Eval**"
+
+  我之前的实现是「每条评论独立判定」，讨论一多就得每条都重写一遍触发词 —— 那不像在跟人协作，
+  像在打命令。
+
+  **现在的语义**：
+
+  | 情况 | 行为 |
+  | --- | --- |
+  | Thread（`repo#issue`）上有能接的 Ticket | 这条消息**不走 Eval**，直接作为输入续给它（复用同一个 ticket id） |
+  | Ticket 是 `done` | **仍然能接** —— 跑完不等于讨论结束，人再说话就接着干 |
+  | Ticket 是 `stopped` | **不再接**，且退订 —— 这是唯一会让 Thread 断掉的方式 |
+  | `failed` / `needs-human` | 能接（它们等的就是人再说一句） |
+  | issue **正文** | 不参与续跑 —— 它是 Thread 的开头，拿来续会把旧需求再执行一遍 |
+
+  每个 Thread 只留**一个** Ticket：一个 issue 同时被两个 agent 改，本来就是人不想要的状态。
+
+  续跑的幂等按**新消息 id** 判（`messageId`），不按 ticket id —— 否则同一条消息每轮都会被续一次。
+
+  自检 18 → 19 项。反向实验：把 fan-out 那段关掉，自检变红（"该续跑一次"）。
+
+### 还没做（下一批）
+
+- PR 作为 Channel（现在只会回评论）
+- 7 个 stage（面板靠它显示「什么需要人」）
+- Mandate / Policy 版本化
+- worker slot / 后台工作 30 分钟
+
 ## [2.34.0] - 2026-11-10
 
 ### 新增
