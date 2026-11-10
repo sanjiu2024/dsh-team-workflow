@@ -8,6 +8,38 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.30.0] - 2026-11-10
+
+### 新增
+
+- **子代理模型价目表常驻系统提示**（`lib/model-menu.js`，REQ-036 第二半）。
+
+  开了「能选模型」只是第一步：不给价格，模型会做两件蠢事 —— 一律用默认档（贵活便宜活一个价），
+  或者偶尔挑个最贵的去做琐事（`kimi-k3` 输出 $85.5/M，一次长回答顶几十次 flash）。
+
+  所以注入一张表，14 个 chat 模型各一行：**输入 / 输出 / 缓存读单价 + 实测延迟 + 什么时候用它**。
+  第三列比价格更重要 —— 只给价格模型还是不会选，它要的是「这个任务描述匹配哪一行」。
+
+  六条选择规则：默认 `deepseek-v4.1-flash`；先估这一步值多少钱；审查类一律 `claude-haiku-5-5`；
+  扇出 5 个以上用 `glm-5.3-flash`（延迟 1.2s，总耗时短）；升档要能说出理由；用了中档以上在结论里
+  写一句用了哪个。
+
+  为什么常驻而不是做成 `model_price` 工具：做成工具要模型**主动想起来调**，而「想起来」正是最不可靠
+  的一环。常驻约 754 token，相对每次派活省下的钱可以忽略。想省就关（见下）。
+
+- **子代理可选模型白名单加全**：从 4 条（3 个 tumianyue + 1 个 opencode-go）扩到 15 条 ——
+  `tumianyue-api` 上**全部 14 个 chat 模型**（`claude-haiku-5-5` / `deepseek-v4-pro` /
+  `deepseek-v4.1-flash` / `gemini-4-argon` / `glm-5.2` / `glm-5.3` / `glm-5.3-flash` / `grok-4.7` /
+  `kimi-k2.7-code` / `kimi-k3` / `minimax-m3` / `nvidia/nemotron-3-ultra-550b-a55b:free` /
+  `qwen3.8-flash` / `qwen3.8-max`）加 `opencode-go` 的 `deepseek-v4.1-flash`。
+
+  TTS / ASR / 图片增强那几个（`moss-*`）不是 chat 模型，白名单里不列 —— 列了模型会去试，然后报错。
+
+### 开关
+
+`team/agent-settings.json` 里 `subagents.modelSelection.enabled` 控制白名单，价目表本身要不要注入
+暂时不在这里（在 `lib/index.js` 调 `installModelMenu` 的地方）—— 要关就把那两行注释掉。
+
 ## [2.29.0] - 2026-11-10
 
 ### 新增

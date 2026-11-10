@@ -33,15 +33,59 @@
       "allowedModels": [
         {
           "provider": "tumianyue-api",
-          "model": "deepseek-v4.1-flash"
-        },
-        {
-          "provider": "tumianyue-api",
           "model": "claude-haiku-5-5"
         },
         {
           "provider": "tumianyue-api",
           "model": "deepseek-v4-pro"
+        },
+        {
+          "provider": "tumianyue-api",
+          "model": "deepseek-v4.1-flash"
+        },
+        {
+          "provider": "tumianyue-api",
+          "model": "gemini-4-argon"
+        },
+        {
+          "provider": "tumianyue-api",
+          "model": "glm-5.2"
+        },
+        {
+          "provider": "tumianyue-api",
+          "model": "glm-5.3"
+        },
+        {
+          "provider": "tumianyue-api",
+          "model": "glm-5.3-flash"
+        },
+        {
+          "provider": "tumianyue-api",
+          "model": "grok-4.7"
+        },
+        {
+          "provider": "tumianyue-api",
+          "model": "kimi-k2.7-code"
+        },
+        {
+          "provider": "tumianyue-api",
+          "model": "kimi-k3"
+        },
+        {
+          "provider": "tumianyue-api",
+          "model": "minimax-m3"
+        },
+        {
+          "provider": "tumianyue-api",
+          "model": "nvidia/nemotron-3-ultra-550b-a55b:free"
+        },
+        {
+          "provider": "tumianyue-api",
+          "model": "qwen3.8-flash"
+        },
+        {
+          "provider": "tumianyue-api",
+          "model": "qwen3.8-max"
         },
         {
           "provider": "opencode-go",
@@ -52,5 +96,5 @@
   },
   "_tierProviders 为什么要加": "tierTools 是「档位→模型名」的平表，provider 只能共享一个。于是 power 档写着 gpt-6.1-sol、provider 却是 opencode-go，而那个模型在 opencode-go 下**不存在** —— 2026-11-08 实测调用即报 pi-ai provider \"opencode-go\" has no configured model \"gpt-6.1-sol\"，subagent_power 整个不可用。现在每档可以单独覆盖 provider：power 走 tumianyue-api（我们的中转站，zzcraft.cn），模型 claude-haiku-5-5（$0.57/$2.85 每 M，实测 225.8t/s）。注意：这两项是**团队默认值**，别人不用这个网关时按需改。",
   "_allowModelSelection 是什么": "true = 三档工具行生成 modelSelectionSettings: true，于是调用时可以显式传 provider/model/reasoning_effort 挑选模型（多出 list_subagent_models 工具）。默认 false —— 因为真正的开关在另一个服务（subagentModelSelection.enabled，默认也是 false），两层都开才生效；不传时仍然用 tierTools 钉死的档位，行为和现在完全一样。",
-  "_modelSelection 是什么": "主 agent 派活时可以自己挑模型：三档工具行开 modelSelectionSettings: true（多出 list_subagent_models 工具 + provider/model/reasoning_effort 参数），这份白名单决定「能挑哪些」。不填参数时仍用 tierTools 钉死的档位。\n\n只能列**provider 那边真的配了**的模型：tumianyue-api（zzcraft.cn 中转站）目前只配了 deepseek-v4.1-flash / claude-haiku-5-5 / deepseek-v4-pro 三个。站上有 26 个（glm-5.3-flash、qwen3.8-flash、kimi-k3、minimax-m3、grok-4.7 …），要在 profile 的 llm-pi-ai 的 providers.tumianyue-api.models 里先加上，再加到这里。\n\n白名单空了还开 enabled=true 会在生成期直接抛 —— 那样每台机器新建会话都失败。"
+  "_modelSelection 是什么": "主 agent 派活时可以自己挑模型：三档工具行开 modelSelectionSettings: true（多出 list_subagent_models 工具 + provider/model/reasoning_effort 参数），这份白名单决定能挑哪些。不填参数时仍用 tierTools 钉死的档位。\n\n白名单里 tumianyue-api 那 14 条是它的 chat 模型（TTS/ASR/图片增强那几个不是 chat，不列）。单价与「按难度怎么选」由 lib/model-menu.js 注入系统提示（常驻，约 1.2k token）—— 那份表是给人改的，改价改策略都改那里。\n\n白名单空了还开 enabled=true 会在生成期直接抛 —— 那样每台机器新建会话都失败。"
 }
