@@ -1,0 +1,10 @@
+{
+  "_说明": "凭据保险库（REQ-037）：AES-256-GCM 加密存密码/token/API key，通过 credential 工具按名取用。移植自 DSH-plugins 的 dsh-credential-vault 0.6.0。",
+  "_enabled": "默认 false —— 打开会在 $DSH_HOME/credential-vault/ 下建 vault.json、master.key、audit.log。",
+  "_use 为什么不给明文": "credential 工具的 use 动作只返回环境变量名（DSH_CRED_xxx），值由宿主 dsh-shell-env 注入到每次 shell 调用 —— 密钥不进对话、不进会话日志。reveal 是逃生门，每次写 audit.log。",
+  "_vaultDir": "留空 = <DSH_HOME>/credential-vault。",
+  "_grantTtlMs": "use 发出去的环境变量名多久过期。默认 10 分钟。",
+  "enabled": false,
+  "vaultDir": "",
+  "grantTtlMs": 600000
+}
