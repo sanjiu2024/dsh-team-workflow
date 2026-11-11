@@ -13,6 +13,9 @@ Windows 上可用的 linux 命令工具、子代理的 worktree 隔离、一个 
 
 ## 装
 
+> **让 AI 来装**：照 [`docs/INSTALL-FOR-AI.md`](docs/INSTALL-FOR-AI.md) 走。它是同一件事的可执行序列 ——
+> 每一步给了命令、期望输出、以及输出对不上时怎么办（尤其是「选哪个 profile」和「哪一步失败可以忽略」）。
+
 ```bash
 dsh-team install --profile tauri     # 等价于 dsh plugin --profile tauri add link:<本目录>
 ```
