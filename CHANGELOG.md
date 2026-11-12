@@ -8,6 +8,46 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.53.0] - 2026-11-12
+
+### 新增
+
+- **`scripts/codex-login.mjs`**：用 ChatGPT 账号登录，把 OAuth 凭据写进 dsh 的 credentials。
+
+  **为什么需要它**：dsh 0.2.2-rc.1 **原生支持** `openai-codex` ——
+
+  - pi-ai 的 catalog 里有这个 provider：`env: []`（不要 API key），
+    `defaultBaseURL: "https://chatgpt.com/backend-api"`（走 ChatGPT 订阅额度，不是 API 计费）
+  - OAuth 实现完整：`loginOpenAICodex`（浏览器回调 1455）+ `loginOpenAICodexDeviceCode`（设备码）
+  - `dsh-llm-pi-ai` **无条件**给每个 catalog provider 注册了
+    `ctx.authorization.registerFlow`（注释原话："Registration is unconditional on configuration"）
+
+  **但没有任何 UI 消费它**：`authorization.list()` 全树零调用方；模型设置页里
+  `authorization` 出现 0 次（只做 API key + baseURL）；账号页是 DeepSeek 账号的引导步骤
+  （`step: done`）。**能力注册了，入口没做。**
+
+  这个脚本补的就是那个入口。它走设备码（不占 1455 端口、不和 Codex CLI 抢），
+  打印 8 位码 + 链接，轮询到 token 后写 `~/.dsh/.credentials.yaml` 的
+  `llm-pi-ai/openai-codex` 记录。**写之前备份**，只动那一个键，不碰 `refs:`。
+
+### 验证到什么程度（诚实记）
+
+- **前半段实测通过**：真的申请到了设备码，打印出
+  `https://auth.openai.com/codex/device` + `E9Y4-B0EFI`（900 秒有效）
+- **轮询阶段没验证完**：`ECONNRESET` 到 `auth.openai.com:443`。查了本机代理
+  （127.0.0.1:7897 在监听，pid 23748），但 `curl -x` 连 google 和 chatgpt 都返回 `000` ——
+  **节点不通，不是脚本问题**
+- 所以「拿到凭据 + 写文件 + 重启后能选模型」这三步**还没有真实运行结果**
+
+### 用法
+
+```bash
+node scripts/codex-login.mjs            # 设备码（推荐）
+node scripts/codex-login.mjs --browser  # 浏览器回调（需 1455 端口空闲）
+```
+
+前提：网络能到 `auth.openai.com`，且有 ChatGPT 订阅（Plus / Pro / Business）。
+
 ## [2.52.0] - 2026-11-11
 
 ### 修复
