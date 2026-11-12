@@ -1,0 +1,9 @@
+{
+  "_说明": "ChatGPT (Codex) 登录入口（REQ-039）。dsh 0.2.2 的 dsh-llm-pi-ai 给 openai-codex 注册了 authorization flow，但没有任何 UI 消费它 —— 模型页只能填 API key，而 openai-codex 是 OAuth-only，于是永远签不进去。这个子系统把那个 flow 接出来：设备码登录，成功后凭据写进 dsh 的 credentials。",
+  "_providerKey": "要授权的凭据记录名。dsh-llm-pi-ai 的 RECORD_SCOPE 是 llm-pi-ai，provider id 是 openai-codex，拼起来就是这个。改它要同时确认宿主那边注册的是同一个 key。",
+  "_method": "flow 的方法 id。dsh-llm-pi-ai 只注册一个 oauth。",
+  "_怎么用": "打开后重启 dsh，工具箱里会出现「ChatGPT 登录」按钮（或者直接 POST /codex-login/start）。点一次拿到设备码，浏览器打开 https://auth.openai.com/codex/device 输码，再点「查登录状态」看结果。成功之后重启 dsh，模型页的 openai-codex 就能列模型了。",
+  "enabled": false,
+  "providerKey": "llm-pi-ai/openai-codex",
+  "method": "oauth"
+}

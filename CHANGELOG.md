@@ -44,6 +44,49 @@
   `check-ui-ignore` 豁免生效、退出码 0/1/2 的契约。
 - `scripts/selftest-radar.mjs` 加用例：只有泛词时不瞎定落点；name/topics 命中的具体词才可信。
 
+## [2.54.0] - 2026-11-12
+
+### 新增
+
+- **`codex-login` 子系统：ChatGPT (Codex) 的登录入口**（REQ-039）。
+
+  上一版只给了一个命令行脚本（`scripts/codex-login.mjs`）。这一版把它做成**插件**：
+  工具箱里两个按钮 + 三条 HTTP 路由，用的还是宿主已经注册好的那个 flow。
+
+  **它补的是什么洞**：dsh 0.2.2-rc.1 有完整能力但**没有入口** ——
+
+  | 层 | 状态 |
+  | --- | --- |
+  | pi-ai catalog | `openai-codex` 在（`env: []`，`baseURL: chatgpt.com/backend-api`） |
+  | OAuth 实现 | `loginOpenAICodex` / `loginOpenAICodexDeviceCode` / `refreshOpenAICodexToken` 全在 |
+  | dsh 注册 | `dsh-llm-pi-ai:2620` **无条件**注册 `authorization.registerFlow` |
+  | **UI 消费** | **零** —— `authorization.list()` 全树没有调用方 |
+
+  而 `openai-codex` 是 **OAuth-only**（`env: []`，没有 key 可填）。所以模型页里点开它，
+  只能看到「API 地址 + 模型目录」，**永远签不进去**。
+
+  **接口**：
+
+  ```
+  POST /codex-login/start   起一次设备码登录，立刻返回（含 8 位码 + 链接）
+  GET  /codex-login/status  问进度（idle / pending / authorized / failed / cancelled）
+  POST /codex-login/cancel  取消
+  ```
+
+  **为什么拆成「启动 / 查状态」**：`authorization.begin()` 要等人授权才返回（设备码 900 秒有效），
+  一次请求里等 15 分钟必然超时。所以 start 起完就返回，进度落在 `state` 上。
+
+  **默认设备码**，不用浏览器回调：1455 端口和 Codex CLI 共用，常被占。
+
+  配置 `team/extensions/codex-login.json`：`enabled`（默认 **false**）/ `providerKey` / `method`。
+
+### 测试
+
+- `selftest-codex-login` 接进 `npm test`。7 条断言：默认关、每个配置键都有校验器、
+  关着时不注册路由、缺 `authorization` 服务不炸且错误点名缺什么、有 authorization 但没注册
+  flow 时错误指向 `dsh-llm-pi-ai`、**start 立刻返回 pending 不阻塞**、设备码能落到 state 上、
+  重复 start 给提示不重复起。
+
 ## [2.53.0] - 2026-11-12
 
 ### 新增
