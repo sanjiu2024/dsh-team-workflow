@@ -1,0 +1,10 @@
+# Bundle patch layer for dsh-codex-login.
+#
+# One host-side row. `authorization` is not declared here on purpose: the plugin
+# reads it through a conditional inject, so a profile without it loses the
+# feature instead of failing to load.
+- insert:
+    - id: codex-login
+      name: dsh-codex-login
+      config:
+        enabled: false

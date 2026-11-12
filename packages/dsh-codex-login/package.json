@@ -1,0 +1,30 @@
+{
+  "name": "dsh-codex-login",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sign in with ChatGPT (Codex) for DeepSeek Harness. dsh 0.2.2 ships the openai-codex provider and registers its OAuth flow, but nothing consumes authorization.list(), so the provider is unreachable from the GUI — it is OAuth-only and the Models page only offers an API key field. This plugin adds the missing surface: POST /codex-login/start returns a device code immediately, GET /codex-login/status reports progress, and a codex_login tool lets an agent walk the user through it. The credential lands in ~/.dsh/.credentials.yaml exactly as the built-in flow would.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node test/selftest.mjs"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-web-app": "*"
+  },
+  "keywords": ["dsh", "dsh-plugin", "codex", "chatgpt", "openai", "oauth"]
+}

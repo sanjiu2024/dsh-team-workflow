@@ -8,6 +8,42 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.56.0] - 2026-11-13
+
+### 新增
+
+- **`packages/dsh-codex-login/`：把 ChatGPT (Codex) 登录拆成独立包**，可以直接发给别人。
+
+  原来它是本包的一个子系统（`lib/codex-login/`），跟着 `dsh-team-workflow` 一起装。但这件事
+  跟团队工作流没关系 —— 谁用 dsh 都可能撞上「`openai-codex` 是 OAuth-only 但模型页只让填
+  API key」这个洞。所以独立出来，`link:` 进任何 profile 就能用。
+
+  | 文件 | 作用 |
+  | --- | --- |
+  | `index.js` | cordis 插件入口：`name` / `inject` / `Config` / `apply` |
+  | `lib/codex-login.js` | 核心逻辑（从本包搬过来，267 行） |
+  | `cordis.patch.yml` | 一行 insert，**出厂 `enabled: false`** |
+  | `package.json` | `dsh.manifestVersion: 1` + `dsh.bundle.patch`，零运行时依赖 |
+  | `README.md` | 问题、证据、安装、用法、前提 |
+  | `test/selftest.mjs` | 5 组断言 |
+
+  **比本包那版多了两样**：
+
+  1. **`codex_login` 工具** —— agent 可以直接走完流程（`action:"start"` 返回设备码，让用户去浏览器；
+     `action:"status"` 查结果），不用人去点面板。
+  2. **手写 `Config` + `normalizeConfig()`** —— 独立包不能依赖本包的工具函数，也不能靠
+     schemastery（零依赖是硬约束）。**未知键丢掉而不是报错**：为新版写的配置应该能在旧版上加载。
+
+  **`inject` 只声明 `webServer`**，`authorization` 和 `tools` 走条件 inject —— 缺哪个都只是少一个
+  功能，不会让整个插件不激活。
+
+### 测试
+
+- `packages/dsh-codex-login/test/selftest.mjs`：5 组断言（默认关 / 配置归一化含未知键 /
+  关着时不注册路由 / 缺 authorization 点名服务 / 没 flow 时指向 dsh-llm-pi-ai /
+  start 立刻 pending 且设备码落 state / 重复 start 给提示）。
+- 本包原来的 `lib/codex-login/` **保留**（团队模式下工具箱那两个按钮还在用它），两处逻辑同源。
+
 ## [2.55.0] - 2026-11-13
 
 ### 新增
