@@ -8,6 +8,42 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.54.0] - 2026-11-12
+
+### 新增
+
+- **界面「AI 味」检查器**（`tools/check-ui.mjs`）。移植自
+  [minorun365/unslop-ai-app](https://github.com/minorun365/unslop-ai-app)（Apache-2.0），
+  规则逻辑原样保留、提示文案改成中文。零依赖，扫 html/css/jsx/tsx/vue/svelte，
+  抓 18 类「一眼就是 AI 拼的」写法：卡片单边色条、彩色发光、文字渐变、紫粉艳渐变、
+  `transition: all`、悬停放大、常驻循环动画、字重 800+、全大写拉字距、斜体、
+  间距不在 4px 栅格、输入框字号 <16px（iOS Safari 放大整页）、悬停才开的菜单、
+  kbd 快捷键、填空白态的寒暄、堆功效的形容词、感叹号。
+
+  为什么不写成 AST 检查：这些全是**写法特征**，正则足够；而 AST 要为每种语言配解析器，
+  换成 18 条正则就能同时吃六种文件，且零依赖。
+
+- **`skills/ui-review` 增加了「先跑机器检查」一步**，把 18 类规则的类别表和豁免方式
+  （行内写 `check-ui-ignore`）写进了技能正文。
+
+### 修复
+
+- **雷达的「建议落点」会瞎指**。原来是「按顺序取第一个命中的规则」，而
+  `tool` / `agent` / `mcp` 这类词在任何项目描述里都出现，于是：
+  `yandex-metrika-mcp`（Yandex 统计服务器）被判要落到 `lib/squad*.js`、
+  `pktq/lasik`（BLA 去混淆器）被判要落到 `team/agent-settings.json` ——
+  全是错配，反而稀释了日报的可信度。
+
+  现在要求**至少有一个「具体词」撑着**才给结论：泛词（`tool`/`agent`/`mcp` 等 13 个，
+  可在 `team/radar.json` 的 `landingGeneric` 里改）单独命中不算证据；
+  命中多个关键词、或命中 name/topics 权重更高。全泛词命中时诚实返回「先读代码再判」。
+
+### 自检
+
+- 新增 `scripts/selftest-ui-check.mjs`：17 条规则逐条确认咬得住、干净文件零误报、
+  `check-ui-ignore` 豁免生效、退出码 0/1/2 的契约。
+- `scripts/selftest-radar.mjs` 加用例：只有泛词时不瞎定落点；name/topics 命中的具体词才可信。
+
 ## [2.53.0] - 2026-11-12
 
 ### 新增

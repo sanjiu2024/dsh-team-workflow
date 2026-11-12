@@ -281,13 +281,36 @@ function loadSeen(file) {
 /**
  * 这个项目该往我们哪个文件上落？规则在 team/radar.json 的 landing —— 让它可配置，
  * 是因为「落点」是随仓库演进的（模块改名、拆文件），写死在代码里第二天就过期。
+ *
+ * 2026-11-12 修：原来是「按顺序取第一个命中」，而 tool / agent / mcp 都是高频词，
+ * 于是 yandex-metrika-mcp（Yandex 统计服务器）落到 lib/squad*.js、lasik（BLA 去混淆器）
+ * 落到 team/agent-settings.json —— 全是错配，反而稀释了这份日报的可信度。
+ *
+ * 现在的判据：**一个落点结论至少要有一个「具体词」撑着**。
+ * 「泛词」（tool/agent/mcp/...，见 team/radar.json 的 landingGeneric）自己不算证据，
+ * 因为它们在任何项目描述里都出现；`compaction`、`squad`、`subagent` 这种才是真信号。
+ * 命中多个关键词、或命中 name/topics，权重更高。
  */
 export function suggestLanding(repo, cfg) {
-	const text = `${repo.name || ""} ${repo.description || ""} ${(repo.topics || []).join(" ")}`.toLowerCase();
+	const name = (repo.name || "").toLowerCase();
+	const topics = (repo.topics || []).join(" ").toLowerCase();
+	const text = `${name} ${repo.description || ""} ${topics}`.toLowerCase();
+	const generic = new Set(cfg.landingGeneric || []);
+
+	let best = null;
 	for (const rule of cfg.landing || []) {
-		if (rule.match.some((m) => text.includes(m))) return rule.target;
+		const hits = rule.match.filter((m) => text.includes(m));
+		if (!hits.length) continue;
+		// 全是泛词 → 这条规则对这个项目没有指向性，跳过
+		if (hits.every((m) => generic.has(m))) continue;
+		// name / topics 里出现的关键词是「这个项目自称是干什么的」，比描述里顺手一提可信
+		const strong = rule.match.filter((m) => name.includes(m) || topics.includes(m)).length;
+		const weight = hits.length + strong * 2;
+		if (!best || weight > best.weight) best = { rule, weight };
 	}
-	return "先读代码再判（无匹配规则）";
+
+	if (!best) return "先读代码再判（无匹配规则）";
+	return best.rule.target;
 }
 
 /** 去重：已 adopted 的永久跳过；已 ignored 且分数没涨 10 分以上的也不再提。 */

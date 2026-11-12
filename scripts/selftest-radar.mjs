@@ -163,6 +163,33 @@ function repo(over = {}) {
 	ok("落点建议按配置命中，未命中不瞎指");
 }
 
+// ── 10b. 落点建议：一个泛关键词不足以定落点（2026-11-12 的错配回归）────────
+{
+	// 真实错配：Yandex 统计的 MCP 服务器，描述里只有 "mcp" 一个词命中，
+	// 旧逻辑按顺序取第一个规则，把它指到了 lib/squad*.js —— 纯噪音。
+	const yandex = suggestLanding(
+		repo({
+			name: "yandex-metrika-mcp",
+			description: "Read-only MCP server for Yandex Metrika: visits, sources, goals",
+			topics: [],
+		}),
+		cfg,
+	);
+	assert.ok(
+		yandex.includes("先读代码"),
+		`只命中一个描述里的泛词时不该下定论，实际「${yandex}」`,
+	);
+
+	// 但关键词出现在 name / topics 里就是「它自称是干什么的」，可以信
+	const named = suggestLanding(
+		repo({ name: "context-window-compaction", description: "a library", topics: ["compaction"] }),
+		cfg,
+	);
+	assert.ok(named.includes("lib/mc.js"), `name/topics 命中应给落点，实际「${named}」`);
+
+	ok("落点建议：单个泛关键词不瞎定，name/topics 命中才可信");
+}
+
 // ── 11. 论文打分：工程手段给高分，要训练的判低 ──────────────────────────
 {
 	const good = scorePaper(

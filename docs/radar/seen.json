@@ -8,38 +8,38 @@
 	},
 	"RayJitan/dsh-ima-ragplugin": {
 		"first": "2026-11-11",
-		"last": "2026-11-11",
+		"last": "2026-11-12",
 		"score": 94,
 		"status": "watch",
 		"stars": 7
 	},
 	"FJNB5/fujiang-pojia": {
 		"first": "2026-11-11",
-		"last": "2026-11-11",
+		"last": "2026-11-12",
 		"score": 82,
 		"status": "watch",
-		"stars": 484
+		"stars": 635
 	},
 	"DevCrabs-Inc/yandex-metrika-mcp": {
 		"first": "2026-11-11",
-		"last": "2026-11-11",
+		"last": "2026-11-12",
 		"score": 80,
 		"status": "watch",
-		"stars": 127
+		"stars": 130
 	},
 	"minorun365/unslop-ai-app": {
 		"first": "2026-11-11",
-		"last": "2026-11-11",
+		"last": "2026-11-12",
 		"score": 79,
 		"status": "watch",
-		"stars": 39
+		"stars": 41
 	},
 	"shanselman/sandbox-mcp": {
 		"first": "2026-11-11",
-		"last": "2026-11-11",
+		"last": "2026-11-12",
 		"score": 77,
 		"status": "watch",
-		"stars": 398
+		"stars": 412
 	},
 	"imsai-sh/fish-pocket": {
 		"first": "2026-11-11",
@@ -57,17 +57,17 @@
 	},
 	"endtoend-ai/Company-Brain": {
 		"first": "2026-11-11",
-		"last": "2026-11-11",
+		"last": "2026-11-12",
 		"score": 68,
 		"status": "watch",
 		"stars": 3
 	},
 	"yusuke-114/claude-xcode-agent": {
 		"first": "2026-11-11",
-		"last": "2026-11-11",
+		"last": "2026-11-12",
 		"score": 63,
 		"status": "watch",
-		"stars": 37
+		"stars": 58
 	},
 	"yucezerey/turkish-anti-ai-skill": {
 		"first": "2026-11-11",
@@ -85,10 +85,10 @@
 	},
 	"kilolonion/agent-vscreen": {
 		"first": "2026-11-11",
-		"last": "2026-11-11",
+		"last": "2026-11-12",
 		"score": 53,
 		"status": "watch",
-		"stars": 47
+		"stars": 56
 	},
 	"Glen-Web-App/best-agent-memory-mcp": {
 		"first": "2026-11-11",
@@ -99,24 +99,24 @@
 	},
 	"SparkofSpike/Brain4Agent": {
 		"first": "2026-11-11",
-		"last": "2026-11-11",
-		"score": 51,
+		"last": "2026-11-12",
+		"score": 55,
 		"status": "watch",
-		"stars": 74
+		"stars": 142
 	},
 	"Dodaios/ste80-humanizer": {
 		"first": "2026-11-11",
-		"last": "2026-11-11",
+		"last": "2026-11-12",
 		"score": 50,
 		"status": "watch",
-		"stars": 274
+		"stars": 406
 	},
 	"bookleme/bookleme": {
 		"first": "2026-11-11",
-		"last": "2026-11-11",
-		"score": 49,
+		"last": "2026-11-12",
+		"score": 53,
 		"status": "ignored",
-		"stars": 72
+		"stars": 142
 	},
 	"JosssphZhou/poki": {
 		"first": "2026-11-11",
@@ -127,17 +127,17 @@
 	},
 	"RapidSailorFreeze/studsmith": {
 		"first": "2026-11-11",
-		"last": "2026-11-11",
+		"last": "2026-11-12",
 		"score": 47,
 		"status": "ignored",
 		"stars": 95
 	},
 	"21stware/bowel": {
 		"first": "2026-11-11",
-		"last": "2026-11-11",
+		"last": "2026-11-12",
 		"score": 47,
 		"status": "ignored",
-		"stars": 404
+		"stars": 441
 	},
 	"Nanoutrolley/roblox-studio-mcp": {
 		"first": "2026-11-11",
@@ -148,10 +148,10 @@
 	},
 	"gogoymh/auto-ontology-mcp": {
 		"first": "2026-11-11",
-		"last": "2026-11-11",
+		"last": "2026-11-12",
 		"score": 47,
 		"status": "ignored",
-		"stars": 284
+		"stars": 369
 	},
 	"quyetcao/ai-manus": {
 		"first": "2026-11-11",
@@ -218,21 +218,21 @@
 	},
 	"Smr171/chatbox-vision-imagefix": {
 		"first": "2026-11-11",
-		"last": "2026-11-11",
+		"last": "2026-11-12",
 		"score": 40,
 		"status": "ignored",
 		"stars": 3
 	},
 	"minanyang/token2agent": {
 		"first": "2026-11-11",
-		"last": "2026-11-11",
+		"last": "2026-11-12",
 		"score": 38,
 		"status": "ignored",
-		"stars": 10
+		"stars": 11
 	},
 	"LadyViaCloud61243/PVF-Ai-resp-Agent-Workbench": {
 		"first": "2026-11-11",
-		"last": "2026-11-11",
+		"last": "2026-11-12",
 		"score": 36,
 		"status": "ignored",
 		"stars": 40
@@ -253,17 +253,17 @@
 	},
 	"jianhao-wu6/rag-learning-assistant": {
 		"first": "2026-11-11",
-		"last": "2026-11-11",
+		"last": "2026-11-12",
 		"score": 32,
 		"status": "ignored",
-		"stars": 6
+		"stars": 7
 	},
 	"ilyautov/llm-manual-lab": {
 		"first": "2026-11-11",
-		"last": "2026-11-11",
+		"last": "2026-11-12",
 		"score": 29,
 		"status": "ignored",
-		"stars": 7
+		"stars": 8
 	},
 	"Sam-2610/agentic-rag": {
 		"first": "2026-11-11",
@@ -274,9 +274,331 @@
 	},
 	"pktq/lasik": {
 		"first": "2026-11-11",
-		"last": "2026-11-11",
+		"last": "2026-11-12",
 		"score": 82,
 		"status": "watch",
-		"stars": 53
+		"stars": 104
+	},
+	"mintlify/agent-traffic": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 76,
+		"status": "watch",
+		"stars": 62
+	},
+	"FrigadeHQ/yogurt": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 72,
+		"status": "watch",
+		"stars": 403
+	},
+	"PersiOnOff/locallens": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 72,
+		"status": "watch",
+		"stars": 5
+	},
+	"SsKanDon/blender-ai-mcp-addon": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 66,
+		"status": "watch",
+		"stars": 88
+	},
+	"transparent-pegasus/utsurigi-agent-hub": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 59,
+		"status": "watch",
+		"stars": 9
+	},
+	"claudememory/claude-memory": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 62,
+		"status": "watch",
+		"stars": 125
+	},
+	"tareq199923/workflow-first": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 60,
+		"status": "watch",
+		"stars": 5
+	},
+	"alexturkey/ozel-uzak-masaustu": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 50,
+		"status": "watch",
+		"stars": 26
+	},
+	"shany9200/Three": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 42,
+		"status": "ignored",
+		"stars": 60
+	},
+	"Mladery/pojia-modifier": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 40,
+		"status": "ignored",
+		"stars": 22
+	},
+	"8hjkkwikl8/ai-portfolio": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 47,
+		"status": "ignored",
+		"stars": 73
+	},
+	"huawei-csl/MACaQ": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 32,
+		"status": "ignored",
+		"stars": 91
+	},
+	"Veloresearch/kinetic": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 32,
+		"status": "ignored",
+		"stars": 69
+	},
+	"agentes-chat/agentes-chat": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 30,
+		"status": "ignored",
+		"stars": 162
+	},
+	"emplio-app/emplio": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 29,
+		"status": "ignored",
+		"stars": 19
+	},
+	"wang-bool/travel-story-dsh": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 96,
+		"status": "watch",
+		"stars": 7
+	},
+	"JKZeng-cell/moki-library-for-dsh": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 94,
+		"status": "watch",
+		"stars": 13
+	},
+	"fendouai/ViralForge": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 85,
+		"status": "watch",
+		"stars": 21
+	},
+	"AlekseiUL/drevo": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 79,
+		"status": "watch",
+		"stars": 4
+	},
+	"LesterTown/qq-auto-reply": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 78,
+		"status": "watch",
+		"stars": 7
+	},
+	"p2pswarm/p2p-swarm": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 76,
+		"status": "watch",
+		"stars": 7
+	},
+	"PolyzonOrg/PolyzonMaker": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 68,
+		"status": "watch",
+		"stars": 6
+	},
+	"EdwinBekaert/grainbill": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 67,
+		"status": "watch",
+		"stars": 1
+	},
+	"memcpython/no-slop": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 65,
+		"status": "watch",
+		"stars": 16
+	},
+	"krevaya/krevaya-app": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 64,
+		"status": "watch",
+		"stars": 5
+	},
+	"Sandeepkg123/CogniMesh": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 62,
+		"status": "watch",
+		"stars": 2
+	},
+	"DandanLLab/SnowCatQQ": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 61,
+		"status": "watch",
+		"stars": 194
+	},
+	"MidasAI/finvector-mcp": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 56,
+		"status": "watch",
+		"stars": 4
+	},
+	"october-dev/car-use": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 55,
+		"status": "watch",
+		"stars": 5
+	},
+	"1433223qqq-wbz/zhudong-workbuddy": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 54,
+		"status": "watch",
+		"stars": 6
+	},
+	"XYenon/agent37-orb-provider": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 54,
+		"status": "watch",
+		"stars": 3
+	},
+	"YOLOW92/yolowhtml": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 54,
+		"status": "watch",
+		"stars": 1
+	},
+	"Automate-Workflow/ai-agent-hub": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 52,
+		"status": "watch",
+		"stars": 2
+	},
+	"Krixx1337/ReAgentLive": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 51,
+		"status": "watch",
+		"stars": 12
+	},
+	"toxy4ny/Napsha-skill": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 50,
+		"status": "watch",
+		"stars": 3
+	},
+	"molly554/whiteboard-ai-tutor": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 47,
+		"status": "ignored",
+		"stars": 44
+	},
+	"jackson-cmd/risk-aware-trading-agents": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 46,
+		"status": "ignored",
+		"stars": 34
+	},
+	"lovekeshbhagat/design-canvas": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 46,
+		"status": "ignored",
+		"stars": 6
+	},
+	"liu1272/Kasama-Release": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 44,
+		"status": "ignored",
+		"stars": 3
+	},
+	"luohongqaq/RNA-Companion": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 43,
+		"status": "ignored",
+		"stars": 2
+	},
+	"SternI/FortniteMCP": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 42,
+		"status": "ignored",
+		"stars": 6
+	},
+	"neptunenakub/thai-token-tax": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 38,
+		"status": "ignored",
+		"stars": 4
+	},
+	"LZD88/CareerFlow-AI-Platform": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 38,
+		"status": "ignored",
+		"stars": 2
+	},
+	"flashdatadev/youtube-transcript-api": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 38,
+		"status": "ignored",
+		"stars": 2
+	},
+	"sylhl/paperex": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 31,
+		"status": "ignored",
+		"stars": 5
+	},
+	"Varshanth53/DocuMind-AI": {
+		"first": "2026-11-12",
+		"last": "2026-11-12",
+		"score": 28,
+		"status": "ignored",
+		"stars": 1
 	}
 }

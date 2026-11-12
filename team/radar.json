@@ -6,26 +6,57 @@
 	"outputDir": "docs/radar",
 	"seenFile": "docs/radar/seen.json",
 	"_thresholds": "adopt 以上进「移植候选」，watch 以上进「观察」，其余只留一行理由。定时任务只能提 adopt 的。",
-	"thresholds": { "adopt": 70, "watch": 50 },
-	"weights": { "portability": 40, "relevance": 30, "activity": 20, "license": 10 },
+	"thresholds": {
+		"adopt": 70,
+		"watch": 50
+	},
+	"weights": {
+		"portability": 40,
+		"relevance": 30,
+		"activity": 20,
+		"license": 10
+	},
 	"github": {
 		"_why": "GitHub Trending 没有 API，只能拿 created/pushed 两个时间窗构造代理指标；perQuery 是每个查询取的条数",
 		"queries": [
-			{ "name": "agent 编排", "q": "topic:ai-agent" },
-			{ "name": "LLM 工程", "q": "topic:llm" },
-			{ "name": "MCP/工具协议", "q": "topic:mcp" },
-			{ "name": "上下文/RAG", "q": "topic:rag" }
+			{
+				"name": "agent 编排",
+				"q": "topic:ai-agent"
+			},
+			{
+				"name": "LLM 工程",
+				"q": "topic:llm"
+			},
+			{
+				"name": "MCP/工具协议",
+				"q": "topic:mcp"
+			},
+			{
+				"name": "上下文/RAG",
+				"q": "topic:rag"
+			}
 		],
 		"perQuery": 10
 	},
 	"ecosystem": {
 		"_why": "2026-11-11 实测：GitHub 近 7 天新建的 AI 项目前四名里三个是 dsh 生态的（fujiang-pojia 473★ / dsh-game-studio 463★ / fish-pocket 183★）—— 这条线比泛 AI 更值钱",
-		"queries": ["dsh", "deepseek-harness", "agent-preset", "pi-agent"],
+		"queries": [
+			"dsh",
+			"deepseek-harness",
+			"agent-preset",
+			"pi-agent"
+		],
 		"minStars": 3,
 		"perQuery": 8
 	},
 	"keywords": {
-		"ecosystem": ["dsh", "deepseek-harness", "agent-preset", "pi-agent", "modsdk"],
+		"ecosystem": [
+			"dsh",
+			"deepseek-harness",
+			"agent-preset",
+			"pi-agent",
+			"modsdk"
+		],
 		"topic": [
 			"agent",
 			"orchestrat",
@@ -40,7 +71,14 @@
 			"harness",
 			"hook"
 		],
-		"general": ["llm", "ai", "rag", "mcp", "cli", "plugin"]
+		"general": [
+			"llm",
+			"ai",
+			"rag",
+			"mcp",
+			"cli",
+			"plugin"
+		]
 	},
 	"penalty": {
 		"_why": "命中即判定「物理上搬不进这个包」（零运行时依赖 / 纯 ESM），不是降分是判死；理由会写进日报的忽略区",
@@ -61,29 +99,102 @@
 	},
 	"_landing": "「这个项目该落到我们哪个文件」——按顺序第一个命中的就是答案。写进配置是因为模块改名/拆文件后它需要单独维护，写死在代码里第二天就过期。",
 	"landing": [
-		{ "match": ["context window", "compaction", "token budget", "context management", "memory"], "target": "lib/mc.js / 压缩后端（先看 fold）" },
-		{ "match": ["skill"], "target": "skills/（项目技能目录）" },
-		{ "match": ["prompt", "preset", "system", "instruction"], "target": "team/agent-settings.json + prompt-inject.md" },
-		{ "match": ["agent", "orchestrat", "subagent", "workflow", "squad"], "target": "lib/squad*.js / lib/preset-gen.js" },
-		{ "match": ["plugin", "hook", "mcp", "tool"], "target": "lib/index.js（插件挂载面）" },
-		{ "match": ["cli", "install", "doctor", "setup"], "target": "bin/dsh-team.mjs" },
-		{ "match": ["eval", "bench", "test", "metric"], "target": "scripts/selftest-*（当评测设计参考）" }
+		{
+			"match": [
+				"context window",
+				"compaction",
+				"token budget",
+				"context management",
+				"memory"
+			],
+			"target": "lib/mc.js / 压缩后端（先看 fold）"
+		},
+		{
+			"match": [
+				"skill"
+			],
+			"target": "skills/（项目技能目录）"
+		},
+		{
+			"match": [
+				"prompt",
+				"preset",
+				"system",
+				"instruction"
+			],
+			"target": "team/agent-settings.json + prompt-inject.md"
+		},
+		{
+			"match": [
+				"agent",
+				"orchestrat",
+				"subagent",
+				"workflow",
+				"squad"
+			],
+			"target": "lib/squad*.js / lib/preset-gen.js"
+		},
+		{
+			"match": [
+				"plugin",
+				"hook",
+				"mcp",
+				"tool"
+			],
+			"target": "lib/index.js（插件挂载面）"
+		},
+		{
+			"match": [
+				"cli",
+				"install",
+				"doctor",
+				"setup"
+			],
+			"target": "bin/dsh-team.mjs"
+		},
+		{
+			"match": [
+				"eval",
+				"bench",
+				"test",
+				"metric"
+			],
+			"target": "scripts/selftest-*（当评测设计参考）"
+		}
 	],
-	"sources": { "github": true, "hn": true, "openrouter": true, "arxiv": true },
+	"sources": {
+		"github": true,
+		"hn": true,
+		"openrouter": true,
+		"arxiv": true
+	},
 	"hn": {
 		"days": 2,
 		"minPoints": 20,
 		"perQuery": 10,
 		"_why": "只搜工程向的词：模型发布会自己出现在 OpenRouter 那节，HN 这节要的是「别人踩了什么坑」",
-		"queries": ["agent harness", "context window", "prompt engineering", "eval", "coding agent"]
+		"queries": [
+			"agent harness",
+			"context window",
+			"prompt engineering",
+			"eval",
+			"coding agent"
+		]
 	},
 	"papers": {
 		"_why": "论文不能像仓库那样「搬代码」—— 能移植的只有方法。所以判据换了一套：能不能用几十行零依赖 JS 实现（要训练/微调的判死），加上它是不是在讲我们真正在干的事。",
-		"cats": ["cs.AI", "cs.CL", "cs.SE"],
+		"cats": [
+			"cs.AI",
+			"cs.CL",
+			"cs.SE"
+		],
 		"days": 7,
 		"perCat": 300,
 		"top": 6,
-		"thresholds": { "adopt": 60, "watch": 40 },
+		"thresholds": {
+			"adopt": 60,
+			"watch": 40
+		},
 		"_signals_why": "landing 命中 = 方法本身是工程手段；training 命中 = 要训练，我们做不了，直接判低",
 		"landingSignals": [
 			"harness",
@@ -143,6 +254,28 @@
 			"pipeline"
 		],
 		"_dataset_why": "数据集/评测集类论文探到的是「有个东西可以测」，不是「有个方法可以抄」——判据里要单独降档，否则 Context-Grounded QA Dataset 这种会排第一",
-		"datasetSignals": ["dataset", "benchmark", "corpus", "we collect", "annotation", "leaderboard"]
-	}
+		"datasetSignals": [
+			"dataset",
+			"benchmark",
+			"corpus",
+			"we collect",
+			"annotation",
+			"leaderboard"
+		]
+	},
+	"landingGeneric": [
+		"tool",
+		"tools",
+		"agent",
+		"agents",
+		"mcp",
+		"plugin",
+		"hook",
+		"memory",
+		"prompt",
+		"system",
+		"instruction",
+		"test",
+		"tests"
+	]
 }
