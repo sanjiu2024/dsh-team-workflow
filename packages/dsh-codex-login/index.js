@@ -38,7 +38,7 @@
 // The browser path binds :1455, which the Codex CLI also uses and which is
 // frequently already taken. Device code needs no listener.
 
-import { CODEX_LOGIN_DEFAULTS, CODEX_LOGIN_FIELDS, CODEX_LOGIN_ROUTE, activeCodexLogin, installCodexLogin } from './lib/codex-login.js'
+import { CODEX_LOGIN_DEFAULTS, CODEX_LOGIN_FIELDS, CODEX_LOGIN_ROUTE, activeCodexLogin, installCodexLogin, installProviderGuard } from './lib/codex-login.js'
 
 export const name = 'dsh-codex-login'
 
@@ -52,6 +52,10 @@ export const Config = {
 	enabled: { type: 'boolean', default: CODEX_LOGIN_DEFAULTS.enabled },
 	providerKey: { type: 'string', default: CODEX_LOGIN_DEFAULTS.providerKey },
 	method: { type: 'string', default: CODEX_LOGIN_DEFAULTS.method },
+	// 没凭据就不许存在这个 provider（写完立刻撤掉）。默认开。
+	guard: { type: 'boolean', default: true },
+	// provider 配置所在的 settings 命名空间（cordis entry id）。
+	settingsNamespace: { type: 'string', default: 'llm-pi-ai' },
 }
 
 /**
@@ -65,7 +69,7 @@ export const Config = {
  */
 export function normalizeConfig(raw) {
 	const input = raw !== null && typeof raw === 'object' ? raw : {}
-	const out = { ...CODEX_LOGIN_DEFAULTS }
+	const out = { ...CODEX_LOGIN_DEFAULTS, guard: true, settingsNamespace: 'llm-pi-ai' }
 	for (const key of Object.keys(CODEX_LOGIN_DEFAULTS)) {
 		const validate = CODEX_LOGIN_FIELDS[key]
 		const value = validate(input[key])
@@ -137,6 +141,19 @@ export function apply(ctx, rawConfig = {}) {
 			log(`注册 codex_login 工具失败：${String(error?.message ?? error)}`)
 		}
 	})
+
+	// 守卫：没有凭据就不许存在 openai-codex 这个 provider。
+	// 写在 settings/updated 之后撤掉 —— dsh-settings 没有 before-write 钩子。
+	if (config.guard !== false) {
+		ctx.inject(['settings'], (scope) => {
+			const dispose = installProviderGuard(
+				{ on: (...args) => ctx.on(...args) },
+				{ providerKey: config.providerKey, settingsNamespace: config.settingsNamespace, log },
+			);
+			ctx.effect(() => dispose, 'codex-login:guard');
+			void scope;
+		});
+	}
 
 	log(`已挂载（enabled=${config.enabled}，路由前缀 ${CODEX_LOGIN_ROUTE}）`)
 }

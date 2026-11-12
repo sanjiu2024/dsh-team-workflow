@@ -265,3 +265,80 @@ export function installCodexLogin(ctx, options = {}) {
 		snapshot,
 	};
 }
+
+/**
+ * 守卫：没有凭据就不许存在 `openai-codex` 这个 provider。
+ *
+ * ## 为什么是「写完再回滚」而不是「写入前拒绝」
+ *
+ * `dsh-settings` 只发 **写入之后** 的 `settings/updated` / `settings/document-updated`，
+ * **没有 before-write 钩子**（2026-11-13 在 0.2.2-rc.1 上查实）。所以插件拦不住那次写入，
+ * 只能写完之后立刻撤掉 —— 效果一样（列表里留不下），代价是多一次写。
+ *
+ * ## 为什么必须这么做
+ *
+ * `openai-codex` 是 OAuth-only（`env: []`，pi-ai catalog 原话）。模型页只让填 API key 与
+ * baseURL，所以用户点「保存」能存下一个**永远用不了**的 provider：没有 key 可填、模型目录
+ * 永远为空、请求时报 `Provider is not configured`。与其让人事后困惑，不如当场拦下来并告诉他
+ * 先登录。
+ *
+ * @param {object} ctx
+ * @param {{ providerKey: string, settingsNamespace: string, log: (m: string) => void }} options
+ * @returns {() => void} 卸载
+ */
+export function installProviderGuard(ctx, options) {
+	const { providerKey, settingsNamespace, log } = options;
+	const providerId = String(providerKey).split("/").pop() ?? "";
+
+	const check = async (scope, ns) => {
+		// 只关心 llm-pi-ai 那一份文档；别的命名空间一律放过
+		if (ns !== undefined && ns !== settingsNamespace) return;
+		const settings = scope.settings;
+		if (settings === undefined || typeof settings.get !== "function") return;
+		const doc = settings.get(settingsNamespace);
+		const providers = doc?.providers;
+		if (providers === null || typeof providers !== "object") return;
+		if (!Object.hasOwn(providers, providerId)) return;
+
+		// 有凭据就放行 —— 登录过的人当然可以留着
+		const credentials = scope.credentials;
+		let stored = false;
+		try {
+			const described = credentials?.describe?.(providerKey);
+			stored = described !== undefined && described !== null;
+			if (!stored && typeof credentials?.get === "function") {
+				stored = (await credentials.get(providerKey)) !== undefined;
+			}
+		} catch {
+			// 读凭据失败时按「没有」处理 —— 宁可多拦一次，也不要放过一个用不了的 provider
+			stored = false;
+		}
+		if (stored) return;
+
+		// 没凭据：撤掉这个 provider，并说明为什么
+		try {
+			await settings.mutate(settingsNamespace, [{ op: "unset", path: ["providers", providerId] }]);
+			log(
+				`拒绝了 provider "${providerId}"：它是 OAuth-only（没有 API key 可填），` +
+					`必须先走一次登录。用 /codex-login/start 或 codex_login 工具。`,
+			);
+		} catch (error) {
+			log(`撤掉 "${providerId}" 失败：${String(error?.message ?? error)}`);
+		}
+	};
+
+	// settings 与 credentials 都是可选服务：缺任何一个就静默不装守卫，
+	// 不该让整个插件不激活（这个包要装进别人的 profile）。
+	let stop = () => {};
+	ctx.inject(["settings", "credentials"], (scope) => {
+		// handler 是 async 的：cordis 的 emit 不会等它，但返回 promise 让测试（和未来的
+		// 调用方）能等到「撤完了」。之前写成 void check(...) 时，测试断言日志永远是空的。
+		const disposer = ctx.on("settings/updated", async (...args) => {
+			// 事件参数在不同版本里可能是 (ns) / (ns, doc) / (doc, ns)，取第一个字符串当 ns
+			const ns = args.find((value) => typeof value === "string");
+			return check(scope, ns);
+		});
+		stop = typeof disposer === "function" ? disposer : () => {};
+	});
+	return () => stop();
+}

@@ -8,6 +8,31 @@
   「改了版本号忘了记录」或「记了但没改包」这种只有发完包才发现的分叉。
 - 递增规则：加能力或改默认行为 → minor；只修 bug → patch；改配置格式且不兼容 → major。
 
+## [2.57.0] - 2026-11-13
+
+### 新增
+
+- **`dsh-codex-login` 加守卫：没凭据的 `openai-codex` 存不下来**（用户要求「加渠道时就要求登录」）。
+
+  **为什么是「写完再回滚」而不是「写入前拒绝」**：`dsh-settings` 只发**写入之后**的
+  `settings/updated` / `settings/document-updated`，**没有 before-write 钩子**（0.2.2-rc.1 查实）。
+  插件拦不住那次写入，只能写完之后立刻 `unset providers.<id>` —— 列表里留不下，效果一样。
+
+  **不做会怎样**：用户能在模型页存下一个**永远用不了**的 provider —— 它是 OAuth-only（没有 key
+  可填），模型目录永远空，第一次请求报 `Provider is not configured`。
+
+  配置 `guard`（默认 `true`）/ `settingsNamespace`（默认 `llm-pi-ai`，是 cordis entry id）。
+
+  **实现里踩到的坑**：守卫的 handler 一开始写成 `void check(...)`，于是
+  「`mutate` 已经调了但日志永远是空的」—— 测试断言 `logs` 拿到 `''` 才暴露。改成
+  `async` handler 返回 promise，调用方能等到「撤完了」。
+
+### 测试
+
+- `packages/dsh-codex-login/test/selftest.mjs` 加第 ⑦ 组：没凭据 → 撤掉（含 ops 形状断言）、
+  有凭据 → 放过、别的命名空间 → 不碰。
+- 反向实验：去掉 `settings.mutate` 那行 → 守卫用例红 1 条。
+
 ## [2.56.0] - 2026-11-13
 
 ### 新增
